@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "releaseQualified": false,
+  "lanes": {
+    "fullstack": [
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "saves a real username change, revokes the old session, and explicitly discards unsaved identity drafts"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "preserves an identity draft on a real competing-version conflict and reloads only after explicit discard"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "cancels a staged role change and saves exact enrolled Manager downgrade and restoration through native UI"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "persists real skill, recurring and dated availability and preserves a stale UI draft against a competing native write"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "resets the exact employee PIN, rejects the old credential and enforces actual mandatory replacement"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "deactivates and reactivates the exact employee while preserving a real published assignment and revoked session"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "cancels irreversible removal then actually removes only an unused seeded employee with independent absence proof"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "staff-lifecycle-acceptance.spec.ts",
+        "titlePath": [
+          "staff-lifecycle-acceptance.spec.ts",
+          "Proposed native Staff lifecycle acceptance",
+          "rejects real least-privilege staff administration and self-role mutation without changing saved identity or access"
+        ],
+        "project": "chromium"
+      }
+    ]
+  }
+}

@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { hasLunchBreakReadAccess, hasSchedulingReadAccess } from './lib/permissions';
 import { readBoundedJson, withRequestTimeout } from './lib/http-safety';
-import { parseApprovedAppOrigin, safeSameOriginReturnPath } from './lib/safe-navigation';
+import { safeSameOriginReturnPath } from './lib/safe-navigation';
+import { approvedServerAppOrigin } from './lib/server-app-origin';
 import { createContentSecurityPolicy } from './lib/content-security-policy';
 
 const PROTECTED_PATH_ROOTS = ['/admin', '/dashboard'];
@@ -21,6 +22,7 @@ type AuthUser = {
     workspaceScope: string;
     sessionScope: string;
     permissions: string[];
+    pinResetRequired: boolean;
     mfaRequired?: boolean;
     mfaVerified?: boolean;
 };
@@ -45,12 +47,9 @@ function safePasswordResetToken(value: string | null): string | null {
 
 function approvedAppOrigin(request: NextRequest): string | null {
     const configured = process.env.NEXT_PUBLIC_APP_ORIGIN?.trim()
-        || process.env.NEXT_PUBLIC_APP_URL?.trim();
-    if (configured) {
-        return parseApprovedAppOrigin(configured, process.env.NODE_ENV === 'production');
-    }
-    if (process.env.NODE_ENV === 'production') return null;
-    return parseApprovedAppOrigin(request.nextUrl.origin, false);
+        ? process.env.NEXT_PUBLIC_APP_ORIGIN
+        : process.env.NEXT_PUBLIC_APP_URL;
+    return approvedServerAppOrigin(configured, request.nextUrl.origin);
 }
 
 function parseServiceBase(value: string): string | null {
@@ -139,6 +138,8 @@ function parseAuthUser(payload: unknown): AuthUser | null {
         return null;
     }
 
+    if (typeof user.pinResetRequired !== 'boolean') return null;
+
     const permissions = user.permissions ?? [];
     if (!Array.isArray(permissions) || permissions.length > 200 || !permissions.every(safeHeaderToken)) {
         return null;
@@ -155,6 +156,7 @@ function parseAuthUser(payload: unknown): AuthUser | null {
         workspaceScope: user.workspaceScope,
         sessionScope: user.sessionScope,
         permissions: [...permissions],
+        pinResetRequired: user.pinResetRequired,
         mfaRequired: user.mfaRequired as boolean | undefined,
         mfaVerified: user.mfaVerified as boolean | undefined,
     };
@@ -380,6 +382,12 @@ export async function proxy(request: NextRequest) {
 
     if (!user) {
         return redirectToLogin('redirect_login_missing_user_after_auth');
+    }
+
+    if (user.pinResetRequired) {
+        const resetUrl = new URL('/auth/reset-pin', appOrigin);
+        resetUrl.searchParams.set('next', returnPath);
+        return secureResponse(NextResponse.redirect(resetUrl));
     }
 
     const mfaRequired = user.mfaRequired === true;

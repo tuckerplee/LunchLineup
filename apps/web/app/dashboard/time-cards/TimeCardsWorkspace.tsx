@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react';
 import { createLatestRequestGate } from '@/lib/latest-request';
 import {
     clockInTimeCard,
@@ -12,6 +12,7 @@ import {
     locationContinuation,
 } from './time-card-api';
 import { formatTimeCardTimestamp } from './time-card-format';
+import { isTimeCardValidationRejection } from './time-card-mutation-result';
 import {
     ClockInRequestKey,
     isClockInTargetExplicit,
@@ -49,11 +50,16 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const [notice, setNotice] = useState<string | null>(null);
     const cardsRequestGate = useRef(createLatestRequestGate<string>());
     const clockInRequestKey = useRef(new ClockInRequestKey());
+    const correctionGeneration = useRef(0);
+    const renderedCorrectionGeneration = correctionGeneration.current;
+
+    useEffect(() => () => { correctionGeneration.current += 1; }, []);
 
     const isTeamTime = view === 'team';
     const selectedUserId = selectedTimeCardUserId({ view, currentUserId, selectedTeamUserId });
     const selectedTargetKey = selectedUserId ? `${view}:${selectedUserId}` : '';
     const isLoading = isReferenceLoading || isCardsLoading;
+    const isCorrectionOpen = Boolean(correctingCard);
     const activeCardForSelectedUser = activeCard && (!isTeamTime || isTimeCardForEmployee(activeCard, selectedUserId))
         ? activeCard
         : null;
@@ -113,42 +119,58 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setIsLoadingMoreLocations(false);
         }
     }, [nextLocationCursor]);
-    const loadCards = useCallback(async (userId: string, targetView: TimeCardView) => {
+    const loadCards = useCallback(async (userId: string, targetView: TimeCardView,
+        preserveCorrectionGeneration?: number) => {
+        const ownsCorrection = () => preserveCorrectionGeneration === undefined
+            || correctionGeneration.current === preserveCorrectionGeneration;
+        if (!ownsCorrection()) return;
+        if (preserveCorrectionGeneration === undefined) correctionGeneration.current += 1;
         const targetKey = `${targetView}:${userId}`;
         const ticket = cardsRequestGate.current.begin(targetKey);
-        setIsCardsLoading(true);
-        setLoadedTargetKey(null);
-        setCanStartNewTimeCard(false);
-        setActiveCard(null);
-        setCards([]);
-        setNextCardsCursor(null);
-        setIsMoreCardsLoading(false);
-        setCorrectingCard(null);
-        setError(null);
+        const isCurrent = () => cardsRequestGate.current.isLatest(ticket) && ownsCorrection();
+        function publish<T>(setter: Dispatch<SetStateAction<T>>, value: SetStateAction<T>) {
+            if (preserveCorrectionGeneration === undefined) { setter(value); return; }
+            // Recheck ownership when React evaluates a queued update, too.
+            setter((current) => isCurrent()
+                ? typeof value === 'function' ? (value as (current: T) => T)(current) : value
+                : current);
+        }
+        publish(setIsCardsLoading, true);
+        publish(setLoadedTargetKey, null);
+        publish(setCanStartNewTimeCard, false);
+        publish(setActiveCard, null);
+        publish(setCards, []);
+        publish(setNextCardsCursor, null);
+        publish(setIsMoreCardsLoading, false);
+        if (preserveCorrectionGeneration === undefined) setCorrectingCard(null);
+        publish(setError, null);
 
         try {
             const snapshot = await fetchTimeCardSnapshot(userId, canManageTeam);
-            if (!cardsRequestGate.current.isLatest(ticket)) return;
+            if (!isCurrent()) return;
 
-            setActiveCard(targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
-            setLoadedTargetKey(targetKey);
-            setCanStartNewTimeCard(snapshot.historyResponse.ok);
+            publish(setActiveCard, targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
+            publish(setLoadedTargetKey, targetKey);
+
             if (snapshot.historyResponse.ok) {
                 const page = (await snapshot.historyResponse.json()) as TimeCardPage;
-                if (!cardsRequestGate.current.isLatest(ticket)) return;
-                const rows = Array.isArray(page.data) ? page.data : [];
-                setCards(targetView === 'team' ? rows.filter((card) => card.userId === userId) : rows);
-                setNextCardsCursor(page.pagination?.nextCursor ?? null);
+                if (!isCurrent()) return;
+                if (!Array.isArray(page.data)) throw new Error('Time card history could not be verified.');
+                const rows = page.data;
+                publish(setCanStartNewTimeCard, true);
+                publish(setCards, targetView === 'team' ? rows.filter((card) => card.userId === userId) : rows);
+                publish(setNextCardsCursor, page.pagination?.nextCursor ?? null);
+                return rows;
             } else {
-                setCards([]);
-                setError('Time card history and new clock-ins are unavailable. You can still clock out an open card.');
+                publish(setCards, []);
+                publish(setError, 'Time card history and new clock-ins are unavailable. You can still clock out an open card.');
             }
         } catch (loadError) {
-            if (cardsRequestGate.current.isLatest(ticket)) {
-                setError(loadError instanceof Error ? loadError.message : 'Unable to load time cards.');
+            if (isCurrent()) {
+                publish(setError, loadError instanceof Error ? loadError.message : 'Unable to load time cards.');
             }
         } finally {
-            if (cardsRequestGate.current.isLatest(ticket)) setIsCardsLoading(false);
+            if (isCurrent()) publish(setIsCardsLoading, false);
         }
     }, [canManageTeam]);
 
@@ -231,6 +253,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     }, []);
 
     const clearLoadedPerson = useCallback(() => {
+        correctionGeneration.current += 1;
         cardsRequestGate.current.invalidate();
         setActiveCard(null);
         setCards([]);
@@ -258,6 +281,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
     const selectLocation = useCallback((locationId: string) => {
         if (locationId === selectedLocationId) return;
+        correctionGeneration.current += 1;
         clockInRequestKey.current.reset();
         setSelectedLocationId(locationId);
         setBreakMinutes('30');
@@ -314,16 +338,31 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setError(`Choose ${activeCardForSelectedUser.location?.name ?? 'the active card location'} before clocking out ${selectedStaffName}.`);
             return;
         }
+        const typedBreakMinutes = breakMinutes.trim();
+        const parsedBreakMinutes = Number(typedBreakMinutes);
+        if (!/^[0-9]+$/.test(typedBreakMinutes) || !Number.isSafeInteger(parsedBreakMinutes)) {
+            setError('Enter break minutes as a whole non-negative number, including 0 for no break.');
+            setNotice(null);
+            return;
+        }
+        const normalizedNotes = notes.trim() || undefined;
+        const desired = Object.freeze({
+            cardId: activeCardForSelectedUser.id,
+            userId: activeCardForSelectedUser.userId,
+            breakMinutes: parsedBreakMinutes,
+            notes: normalizedNotes,
+            // An omitted note leaves the previously saved value unchanged.
+            savedNotes: normalizedNotes === undefined ? activeCardForSelectedUser.notes ?? null : normalizedNotes,
+        });
         const targetName = selectedStaffName;
         const targetLocationName = activeCardForSelectedUser.location?.name ?? selectedLocationName;
         setIsSaving(true);
         setError(null);
         setNotice(null);
         try {
-            const parsedBreakMinutes = Number.parseInt(breakMinutes, 10);
-            await clockOutTimeCard(activeCardForSelectedUser.id, {
-                breakMinutes: Number.isFinite(parsedBreakMinutes) ? parsedBreakMinutes : 0,
-                notes: notes.trim() || undefined,
+            await clockOutTimeCard(desired.cardId, {
+                breakMinutes: desired.breakMinutes,
+                notes: desired.notes,
             });
             setNotice(isTeamTime
                 ? `${targetName} was clocked out${targetLocationName ? ` from ${targetLocationName}` : ''}.`
@@ -332,7 +371,26 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setNotes('');
             await loadCards(selectedUserId, view);
         } catch (saveError) {
-            setError(saveError instanceof Error ? saveError.message : 'Unable to clock out.');
+            if (isTimeCardValidationRejection(saveError)) {
+                // A rejected input did not commit; retain the draft and explain
+                // how to correct it. Lost responses still require readback.
+                setError(saveError.message);
+                return;
+            }
+            const refreshedCards = await loadCards(selectedUserId, view);
+            const confirmed = refreshedCards?.find((card) => card.id === desired.cardId
+                && card.userId === desired.userId
+                && card.status === 'CLOSED'
+                && typeof card.clockOutAt === 'string' && Number.isFinite(Date.parse(card.clockOutAt))
+                && card.breakMinutes === desired.breakMinutes
+                && (card.notes ?? null) === desired.savedNotes);
+            if (confirmed) {
+                setNotice('Saved time card matches your clock-out entries after refreshing.');
+                setBreakMinutes('30');
+                setNotes('');
+            } else {
+                setError('Clock-out could not be confirmed against your entries. Your entries have been retained. Review the current card before retrying.');
+            }
         } finally {
             setIsSaving(false);
         }
@@ -364,10 +422,10 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                                 ? 'Choose a person and location before any Team Time action.'
                                 : isLoading
                                     ? 'Loading time cards...'
-                                    : `${cards.length} card${cards.length === 1 ? '' : 's'} for ${selectedStaffName}`}
+                                    : !canStartNewTimeCard ? 'Time card count unavailable' : `${cards.length} card${cards.length === 1 ? '' : 's'} for ${selectedStaffName}`}
                         </p>
                     </div>
-                    <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId, view)} disabled={!selectedUserId || isLoading || isSaving}>
+                    <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId, view)} disabled={!selectedUserId || isLoading || isSaving || isCorrectionOpen}>
                         Refresh
                     </button>
                 </div>
@@ -379,7 +437,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             className={view === 'mine' ? 'btn btn-primary' : 'btn btn-secondary'}
                             aria-pressed={view === 'mine'}
                             onClick={() => selectView('mine')}
-                            disabled={isSaving}
+                            disabled={isSaving || isCorrectionOpen}
                         >
                             My Time
                         </button>
@@ -388,7 +446,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             className={view === 'team' ? 'btn btn-primary' : 'btn btn-secondary'}
                             aria-pressed={view === 'team'}
                             onClick={() => selectView('team')}
-                            disabled={isSaving}
+                            disabled={isSaving || isCorrectionOpen}
                         >
                             Team Time
                         </button>
@@ -434,7 +492,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             <select
                                 value={selectedTeamUserId}
                                 onChange={(event) => selectEmployee(event.target.value)}
-                                disabled={isSaving}
+                                disabled={isSaving || isCorrectionOpen}
                                 style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                             >
                                 <option value="">Choose a team member</option>
@@ -450,7 +508,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                         <select
                             value={selectedLocationId}
                             onChange={(event) => selectLocation(event.target.value)}
-                            disabled={isSaving || !canWriteTimeCards || (isTeamTime && !selectedTeamUserId)}
+                            disabled={isSaving || isCorrectionOpen || !canWriteTimeCards || (isTeamTime && !selectedTeamUserId)}
                             style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                         >
                             <option value="">Choose a location</option>
@@ -483,7 +541,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             step="1"
                             value={breakMinutes}
                             onChange={(event) => setBreakMinutes(event.target.value)}
-                            disabled={!activeCardForSelectedUser || !canWriteTimeCards || !hasCurrentCards}
+                            disabled={isSaving || !activeCardForSelectedUser || !canWriteTimeCards || !hasCurrentCards}
                             style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                         />
                     </label>
@@ -503,11 +561,11 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 {error ? <div role="alert" style={{ fontSize: '0.83rem', color: '#cb3653' }}>{error}</div> : null}
                 {notice ? <div role="status" style={{ fontSize: '0.83rem', color: '#0f8c52' }}>{notice}</div> : null}
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '0.8rem', alignItems: 'center' }}>
-                    <div className="surface-muted" style={{ padding: '0.8rem' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', alignItems: 'center' }}>
+                    <div className="surface-muted" style={{ padding: '0.8rem', flex: '1 1 240px', minWidth: 0, overflowWrap: 'anywhere' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 800 }}>Current status</div>
                         <div style={{ marginTop: 4, fontSize: '1rem', fontWeight: 800, color: activeCardForSelectedUser ? '#166534' : 'var(--text-primary)' }}>
-                            {!selectedUserId ? 'Choose a team member to load status.' : !hasCurrentCards ? 'Loading status...' : activeCardForSelectedUser
+                            {!selectedUserId ? 'Choose a team member to load status.' : !hasCurrentCards ? (isCardsLoading ? 'Loading status...' : 'Status unavailable. Reload to confirm.') : activeCardForSelectedUser
                                 ? `Clocked in at ${formatTimeCardTimestamp(activeCardForSelectedUser.clockInAt, activeCardForSelectedUser.displayTimeZone)}`
                                 : 'Not clocked in'}
                         </div>
@@ -523,11 +581,11 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
                     {canWriteTimeCards ? (
                         activeCardForSelectedUser ? (
-                            <button className="btn btn-primary" onClick={() => void clockOut()} disabled={isSaving || !canClockOut}>
+                            <button className="btn btn-primary" onClick={() => void clockOut()} disabled={isSaving || isCorrectionOpen || !canClockOut}>
                                 {isSaving ? `Clocking out ${selectedStaffName}...` : clockOutLabel}
                             </button>
                         ) : (
-                            <button className="btn btn-primary" onClick={() => void clockIn()} disabled={isSaving || !canClockIn}>
+                            <button className="btn btn-primary" onClick={() => void clockIn()} disabled={isSaving || isCorrectionOpen || !canClockIn}>
                                 {isSaving ? `Clocking in ${selectedStaffName || 'team member'}...` : clockInLabel}
                             </button>
                         )
@@ -535,33 +593,51 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 </div>
             </section>
 
+            {correctingCard ? <p role="note">Save or cancel the correction before refreshing, changing the view, person or location, starting another time action, or choosing another correction.</p> : null}
+
             {correctingCard ? (
                 <TimeCardCorrectionPanel
                     key={correctingCard.id + correctingCard.updatedAt}
                     card={correctingCard}
-                    onCancel={() => setCorrectingCard(null)}
-                    onSaved={async () => {
-                        setNotice('Time card corrected.');
+                    onCancel={() => {
+                        correctionGeneration.current += 1;
                         setCorrectingCard(null);
-                        await loadCards(selectedUserId, view);
+                    }}
+                    onSaved={async (acknowledged, canClose) => {
+                        const ownsCompletion = () => correctionGeneration.current === renderedCorrectionGeneration
+                            && acknowledged.id === correctingCard.id && acknowledged.userId === selectedUserId;
+                        if (!ownsCompletion()) return;
+                        setNotice((current) => ownsCompletion() ? 'Time card corrected.' : current);
+                        // A correction can move a row across a history cursor.
+                        // Refresh the authoritative first page without changing
+                        // the editor identity, original key, or local draft.
+                        const rows = await loadCards(selectedUserId, view, renderedCorrectionGeneration);
+                        if (!Array.isArray(rows)) return; // Keep the draft/CAS if the readback is unavailable.
+                        setCorrectingCard((current) => ownsCompletion() && canClose()
+                            && current?.id === correctingCard.id && current.updatedAt === correctingCard.updatedAt
+                            ? null : current);
                     }}
                 />
             ) : null}
 
-            <TimeCardHistory
+            {hasCurrentCards && canStartNewTimeCard ? <TimeCardHistory
                 cards={cards}
                 canManageTeam={canManageTeam}
                 canWriteTimeCards={canWriteTimeCards}
+                isSaving={isSaving}
+                isCorrectionOpen={isCorrectionOpen}
                 isMoreCardsLoading={isMoreCardsLoading}
                 nextCardsCursor={nextCardsCursor}
                 selectedStaffName={selectedStaffName}
                 onCorrect={(card) => {
+                    if (correctingCard?.id === card.id && correctingCard.updatedAt === card.updatedAt) return;
+                    correctionGeneration.current += 1;
                     setError(null);
                     setNotice(null);
                     setCorrectingCard(card);
                 }}
                 onLoadEarlier={() => void loadEarlierCards()}
-            />
+            /> : <p role="status">{isCardsLoading ? 'Loading time card history…' : 'Time card history is unavailable. Refresh to verify saved records.'}</p>}
         </div>
     );
 }

@@ -3,6 +3,10 @@
 ## Files
 
 - `README.md`: this runbooks folder guide.
+- `2.0-action-acceptance.json`: pending per-action acceptance contracts, source anchors, proposed scenarios and reviewed browser selections; not executed acceptance.
+- `2.0-action-acceptance.md`: full-surface acceptance evidence rules and source inventory limitations for isolated qualification.
+- `legacy-import-exact-replay.md`: prepared exact-export import identity, durable receipt, retry/recovery and read-only report contracts.
+- `mfa-durable-enrollment-rollout.md`: prepared durable MFA enrollment generation, expiry, migration and future rollout qualification contract.
 - `database-failover.md`: database outage, exact off-host restore, and cleanup-confirmed DR proof response.
 - `data-retention-delete-export.md`: privacy request, data export, account archive, and deletion runbook.
 - `deployment-rollback.md`: deployment rollback response.
@@ -29,3 +33,8 @@ Use `internal-beta-operations.md` to turn the intentionally offline VM107 beta i
 Use `production-readiness.md` before public SaaS production deploys. It is the preferred `operator_runbook_url` for the Terraform production readiness gate and the release-manifest deploy gate.
 
 Use `data-retention-delete-export.md` for account lifecycle, privacy export, tenant archive, and tenant deletion requests during beta.
+
+- `production-qualification-bridge.md`: scoped application repair or disposable qualification support.
+
+- `2.0-validation-plan.md` - defines isolated testing over months while production stays untouched.
+- `2.0-workflow-acceptance.md` - tracks all 84 current-candidate workflow acceptance dispositions.

@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { fetchWithSession } from '@/lib/client-api';
+import { fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
+import { acknowledgeCorruptInvitationRecovery, clearInvitationRecovery, invitationRecoveryStorageKey, prepareInvitationRecovery, readInvitationRecovery, type InvitationRecovery } from './invitation-recovery';
 import {
     continuationCursor,
     type UserDirectoryPageMetadata,
@@ -13,6 +14,8 @@ import { buildStaffActionConfirmation, type StaffAction } from './staff-action-c
 import { buildRoleDeletionConfirmation, canConfirmRoleDeletion } from './role-deletion-confirmation';
 import { AddTeamMemberForm, type AddTeamMemberResult } from './AddTeamMemberForm';
 import { InvitationDeliveryStatus } from './InvitationDeliveryStatus';
+import { StaffLifecyclePanel } from './StaffLifecyclePanel';
+import { StaffIdentityEditor } from './StaffIdentityEditor';
 import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
 import {
     resolveEmailInvitationAvailability,
@@ -24,6 +27,7 @@ import { useInvitationDelivery } from './use-invitation-delivery';
 
 type StaffWorkspaceProps = {
     currentUserPublicId: string;
+    creationRecoveryScope: string;
     canInvite: boolean;
     canAdminister: boolean;
     canReadRoles: boolean;
@@ -50,6 +54,7 @@ type ApiUser = {
     role: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
     pinEnabled?: boolean;
     pinResetRequired?: boolean;
+    suspendedAt?: string | null;
     assignedRoles: AssignedRole[];
 };
 
@@ -108,10 +113,10 @@ function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): Re
         method,
         credentials: 'include',
         headers: {
-            'Content-Type': 'application/json',
+            ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}),
             ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
         },
-        ...(payload ? { body: JSON.stringify(payload) } : {}),
+        ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
     };
 }
 
@@ -153,7 +158,7 @@ function toStaffUsers(users: ApiUser[]): StaffUser[] {
     return users.map((user) => ({
         ...user,
         assignedRoles: user.assignedRoles ?? [],
-        status: 'active' as const,
+        status: user.suspendedAt ? 'inactive' as const : 'active' as const,
     }));
 }
 
@@ -169,7 +174,7 @@ function parseDirectorySummary(value: unknown): UserDirectorySummary {
     return payload as UserDirectorySummary;
 }
 
-export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles, emailInvitationAvailable }: StaffWorkspaceProps) {
+export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, canInvite, canAdminister, canReadRoles, canAssignRoles, canManageRoles, canManageSchedulingProfiles, emailInvitationAvailable }: StaffWorkspaceProps) {
     const [users, setUsers] = useState<StaffUser[]>([]);
     const [directorySummary, setDirectorySummary] = useState<UserDirectorySummary | null>(null);
     const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -186,6 +191,12 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
+    const staffDrawerOpener = useRef<HTMLElement | null>(null);
+    const isStaffDrawerOpen = schedulingProfileUser !== null;
+    const openStaffDrawer = (user: StaffUser, opener: HTMLElement) => {
+        staffDrawerOpener.current = opener;
+        setSchedulingProfileUser(user);
+    };
     const [roleDrafts, setRoleDrafts] = useState<Record<string, string[]>>({});
     const [roleAssignmentMessages, setRoleAssignmentMessages] = useState<Record<string, { kind: 'error' | 'notice'; text: string }>>({});
     const canOpenStaffDrawer = canManageSchedulingProfiles || canAdminister || (canAssignRoles && canReadRoles);
@@ -217,6 +228,15 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             document.body.style.overflow = previousOverflow;
         };
     }, [schedulingProfileUser]);
+
+    useEffect(() => {
+        if (isStaffDrawerOpen) return;
+        const opener = staffDrawerOpener.current;
+        staffDrawerOpener.current = null;
+        // The drawer has unmounted, so its focus trap and autofocus cannot
+        // steal focus back from the exact row or button that opened it.
+        if (opener?.isConnected) opener.focus();
+    }, [isStaffDrawerOpen]);
 
     const loadWorkspace = useCallback(async () => {
         setIsLoading(true);
@@ -320,33 +340,113 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         setEditorPermissionKeys([]);
     }, []);
 
+    const [identityUserId, setIdentityUserId] = useState<string | null>(null);
+    const inviteInFlight = useRef(false);
+    const [invitationRecovery, setInvitationRecovery] = useState<InvitationRecovery | null>(null);
+    const [invitationRecoveryError, setInvitationRecoveryError] = useState<string | null>(null);
+    const [recoveryReview, setRecoveryReview] = useState<{ raw: string | null } | null>(null);
+    useEffect(() => {
+        setRecoveryReview(null);
+        try {
+            setInvitationRecovery(readInvitationRecovery(sessionStorage, creationRecoveryScope));
+            setInvitationRecoveryError(null);
+        } catch {
+            setInvitationRecoveryError('Staff creation recovery is unavailable. Review the directory before retrying; creation is blocked until recovery storage is available.');
+        }
+    }, [creationRecoveryScope]);
+
+    const repairInvitationRecovery = useCallback(async () => {
+        if (inviteInFlight.current) return;
+        if (!recoveryReview) {
+            const raw = sessionStorage.getItem(invitationRecoveryStorageKey(creationRecoveryScope));
+            const response = await fetchWithSession(userDirectoryPagePath()).catch(() => {
+                throw new Error('Directory refresh failed. Recovery storage is unchanged.');
+            });
+            if (!response.ok) throw new Error('Directory refresh failed. Recovery storage is unchanged.');
+            const payload = await response.json() as UserDirectoryPage;
+            if (!Array.isArray(payload.data)) throw new Error('Directory refresh could not be confirmed.');
+            const cursor = continuationCursor(payload.pagination);
+            setUsers(toStaffUsers(payload.data));
+            setDirectorySummary(parseDirectorySummary(payload.summary));
+            setNextCursor(cursor);
+            setHasMoreUsers(Boolean(cursor));
+            setUserPageIndex(0);
+            setUserPageCursors([null]);
+            setRecoveryReview({ raw });
+            return;
+        }
+        if (!window.confirm('Have you reviewed the refreshed staff directory, including additional pages, for an earlier employee creation? Clearing unreadable recovery details loses its retry key. Manage an existing employee rather than creating them again.')) return;
+        try {
+            acknowledgeCorruptInvitationRecovery(sessionStorage, creationRecoveryScope, recoveryReview.raw);
+            setInvitationRecovery(readInvitationRecovery(sessionStorage, creationRecoveryScope));
+            setInvitationRecoveryError(null);
+        } finally {
+            setRecoveryReview(null);
+        }
+    }, [creationRecoveryScope, recoveryReview]);
+
     const inviteUser = useCallback(async (
         invitation: StaffInvitationPayload,
         method: StaffOnboardingMethod,
     ): Promise<AddTeamMemberResult> => {
         setLastInvitationUserId(null);
+        if (inviteInFlight.current) throw new Error('Staff creation is already awaiting confirmation.');
+        inviteInFlight.current = true;
         try {
-            const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', invitation));
+            const previousAttempt = readInvitationRecovery(sessionStorage, creationRecoveryScope);
+            const attempt = prepareInvitationRecovery(sessionStorage, creationRecoveryScope, invitation);
+            setInvitationRecovery(attempt);
+            const res = await fetchWithSession('/users/invite', withIdempotencyKey(jsonWriteInit('POST', invitation), attempt.key));
             const payload = (await res.json().catch(() => ({}))) as {
                 id?: unknown;
                 temporaryPin?: string;
                 message?: string;
                 invitationDelivery?: unknown;
             };
-            if (!res.ok) throw new Error(payload.message ?? 'Failed to create staff member.');
+            if (!res.ok) {
+                // Retain conflicts: a recovered account may now have changed credentials.
+                if (!previousAttempt && res.status >= 400 && res.status < 500 && ![408, 409, 429].includes(res.status)) {
+                    clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+                    setInvitationRecovery(null);
+                }
+                throw new Error(payload.message ?? 'Staff creation was rejected.');
+            }
 
             const invitedUserId = typeof payload.id === 'string' && payload.id ? payload.id : null;
+            if (!invitedUserId) throw new Error('Creation outcome is unknown. Retry the original details to confirm the employee.');
             if (method === 'email' && invitedUserId) {
                 setLastInvitationUserId(invitedUserId);
                 recordInvitationResponse(invitedUserId, payload);
             }
 
             await loadWorkspace();
+            clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+            setInvitationRecovery(null);
             return { temporaryPin: payload.temporaryPin ?? null };
         } catch (err) {
             throw err instanceof Error ? err : new Error('Failed to create staff member.');
+        } finally {
+            inviteInFlight.current = false;
         }
-    }, [loadWorkspace, recordInvitationResponse]);
+    }, [creationRecoveryScope, loadWorkspace, recordInvitationResponse]);
+
+    const resolveInvitationRecovery = useCallback(async () => {
+        const attempt = readInvitationRecovery(sessionStorage, creationRecoveryScope);
+        if (!attempt || inviteInFlight.current) return;
+        const found = users.find(user => attempt.details.username
+            ? user.username === attempt.details.username : user.email === attempt.details.email);
+        if (!found) throw new Error('Find the employee in the directory first. If they are not present, retry the original creation details.');
+        const res = await fetchWithSession(`/users/${found.id}`);
+        if (!res.ok) throw new Error('The existing employee could not be confirmed. Recovery details are retained.');
+        const saved = await res.json() as { id?: string; username?: string; email?: string };
+        if (saved.id !== found.id || (attempt.details.username
+            ? saved.username !== attempt.details.username : saved.email !== attempt.details.email)) {
+            throw new Error('The employee login changed. Recovery details are retained.');
+        }
+        if (!window.confirm('The employee already exists. Clear this creation retry and manage their access from the directory? Reset an unavailable PIN before sharing credentials.')) return;
+        clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
+        setInvitationRecovery(null);
+    }, [creationRecoveryScope, users]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
@@ -413,15 +513,18 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         setLastTemporaryPin(null);
         setLastTemporaryPinUserId(null);
         try {
-            const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST'));
+            const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST', {}));
             const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; username?: string; message?: string };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to reset PIN.');
             setUsers((prev) => prev.map((u) => (
                 u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
             )));
-            setSchedulingProfileUser((current) => current?.id === id
-                ? { ...current, username: payload.username ?? current.username, pinEnabled: true, pinResetRequired: true }
-                : current);
+            setSchedulingProfileUser((current) => {
+                const target = current?.id === id ? current : users.find((user) => user.id === id);
+                return target
+                    ? { ...target, username: payload.username ?? target.username, pinEnabled: true, pinResetRequired: true }
+                    : current;
+            });
             setLastTemporaryPin(payload.temporaryPin ?? null);
             setLastTemporaryPinUserId(id);
         } catch (err) {
@@ -429,9 +532,9 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         } finally {
             setIsSaving(null);
         }
-    }, []);
+    }, [users]);
 
-    const deactivate = useCallback(async (id: string) => {
+    const removeStaff = useCallback(async (id: string) => {
         setIsSaving(id);
         setError(null);
         try {
@@ -455,8 +558,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             void resetPin(user.id);
             return;
         }
-        void deactivate(user.id);
-    }, [deactivate, pendingAction, resetPin]);
+        void removeStaff(user.id);
+    }, [removeStaff, pendingAction, resetPin]);
 
     const saveRole = useCallback(async () => {
         if (!editorName.trim()) {
@@ -549,6 +652,11 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                         emailInvitationAvailable={isEmailInvitationAvailable}
                         isLoading={isLoading}
                         onSubmit={inviteUser}
+                        recovery={invitationRecovery}
+                        recoveryError={invitationRecoveryError}
+                        recoveryRepairReady={Boolean(recoveryReview)}
+                        onRepairRecovery={repairInvitationRecovery}
+                        onResolveRecovery={resolveInvitationRecovery}
                         invitationDelivery={lastInvitationUserId && invitationDeliveries[lastInvitationUserId] ? (
                             <div style={{ borderTop: '1px solid var(--border)', paddingTop: '0.65rem', display: 'grid', gap: '0.35rem' }}>
                                 <div style={{ fontSize: '0.76rem', fontWeight: 800, color: 'var(--text-primary)' }}>
@@ -570,6 +678,19 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                 className="surface-card staff-table-scroll"
                 aria-label="Staff directory table"
                 tabIndex={0}
+                onFocus={(event) => {
+                    const target = event.target;
+                    if (target === event.currentTarget || !target.closest('td')) return;
+                    // Keep the control and its 4px focus ring inside the scroller.
+                    // Round outward: fractional scroll deltas can leave a clipped edge.
+                    const scroller = event.currentTarget;
+                    const viewport = scroller.getBoundingClientRect();
+                    const left = viewport.left + scroller.clientLeft + 4;
+                    const right = viewport.left + scroller.clientLeft + scroller.clientWidth - 4;
+                    const control = target.getBoundingClientRect();
+                    if (control.right > right) scroller.scrollLeft += Math.ceil(control.right - right);
+                    else if (control.left < left) scroller.scrollLeft -= Math.ceil(left - control.left);
+                }}
                 style={{ overflowX: 'auto' }}
             >
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 980 }}>
@@ -616,13 +737,13 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                     if (!canOpenStaffDrawer) return;
                                     const target = event.target as HTMLElement;
                                     if (target.closest('button, a, input, select, textarea, label')) return;
-                                    setSchedulingProfileUser(user);
+                                    openStaffDrawer(user, event.currentTarget);
                                 }}
                                 onKeyDown={(event) => {
                                     if (!canOpenStaffDrawer || event.target !== event.currentTarget) return;
                                     if (event.key === 'Enter' || event.key === ' ') {
                                         event.preventDefault();
-                                        setSchedulingProfileUser(user);
+                                        openStaffDrawer(user, event.currentTarget);
                                     }
                                 }}
                                 style={{ borderBottom: index < users.length - 1 ? '1px solid var(--border)' : 'none' }}
@@ -634,7 +755,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                         </div>
                                         <div>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{user.name}</div>
-                                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{user.role}</div>
+                                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{user.role} · {user.status === 'inactive' ? 'Inactive' : 'Active'}</div>
                                         </div>
                                     </div>
                                 </td>
@@ -727,8 +848,9 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                 {canAdminister || canManageSchedulingProfiles ? (
                                     <td style={{ padding: '0.86rem 1rem' }}>
                                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                            {canAdminister && user.id !== currentUserPublicId ? <Button size="sm" variant="outline" onClick={() => setIdentityUserId(user.id)}>Edit identity</Button> : null}
                                             {canManageSchedulingProfiles ? (
-                                                <Button size="sm" variant="outline" onClick={() => setSchedulingProfileUser(user)}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openStaffDrawer(user, event.currentTarget)}>
                                                     <CalendarClock aria-hidden="true" size={14} />
                                                     Edit schedule profile
                                                 </Button>
@@ -742,7 +864,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                             {canAdminister && user.id !== currentUserPublicId ? (
                                                 <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'remove', user })} disabled={isSaving === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
-                                                    {isSaving === user.id ? 'Removing...' : 'Remove'}
+                                                    {isSaving === user.id ? 'Removing...' : 'Remove permanently'}
                                                 </Button>
                                             ) : null}
                                         </div>
@@ -791,6 +913,20 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                         role="dialog"
                         aria-modal="true"
                         aria-label={`Manage ${schedulingProfileUser.name}`}
+                        onFocus={(event) => {
+                            const target = event.target;
+                            const scroller = event.currentTarget;
+                            if (target === scroller || target.closest('.staff-profile-drawer__header')) return;
+                            const viewport = scroller.getBoundingClientRect();
+                            const header = scroller.querySelector('.staff-profile-drawer__header');
+                            const top = Math.max(viewport.top + scroller.clientTop, header?.getBoundingClientRect().bottom ?? viewport.top) + 4;
+                            const bottom = viewport.top + scroller.clientTop + scroller.clientHeight - 4;
+                            const control = target.getBoundingClientRect();
+                            // Native focus can round a fractional edge against the viewport.
+                            // Reveal it and its focus ring, including below the sticky header.
+                            if (control.bottom > bottom) scroller.scrollTop += Math.ceil(control.bottom - bottom);
+                            else if (control.top < top) scroller.scrollTop -= Math.ceil(top - control.top);
+                        }}
                         onMouseDown={(event) => event.stopPropagation()}
                         onKeyDown={(event) => {
                             if (event.key === 'Escape') setSchedulingProfileUser(null);
@@ -898,6 +1034,14 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                             ) : null}
 
                             {canAdminister && schedulingProfileUser.id !== currentUserPublicId ? (
+                                <StaffLifecyclePanel key={schedulingProfileUser.id} userId={schedulingProfileUser.id} onChanged={(saved) => {
+                                    const updated = toStaffUsers([saved])[0];
+                                    setUsers(current => current.map(user => user.id === updated.id ? updated : user));
+                                    setSchedulingProfileUser(current => current?.id === updated.id ? updated : current);
+                                }} />
+                            ) : null}
+
+                            {canAdminister && schedulingProfileUser.id !== currentUserPublicId ? (
                                 <div className="staff-profile-drawer__account-actions">
                                     {!schedulingProfileUser.email ? (
                                         <Button
@@ -917,7 +1061,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                         disabled={isSaving === schedulingProfileUser.id}
                                     >
                                         <UserMinus aria-hidden="true" size={14} />
-                                        Remove
+                                        Remove permanently
                                     </Button>
                                 </div>
                             ) : null}
@@ -1069,6 +1213,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                 </section>
             ) : null}
 
+            {identityUserId ? <StaffIdentityEditor key={identityUserId} userId={identityUserId} onClose={() => setIdentityUserId(null)} onSaved={loadWorkspace} /> : null}
+
             {pendingAction ? (() => {
                 const confirmation = buildStaffActionConfirmation(pendingAction.action, pendingAction.user);
                 return (
@@ -1121,6 +1267,13 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                             aria-describedby="role-deletion-description"
                             onKeyDown={(event) => {
                                 if (event.key === 'Escape') setPendingRoleDeletion(null);
+                                if (event.key === 'Tab') {
+                                    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
+                                    const first = controls[0];
+                                    const last = controls[controls.length - 1];
+                                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                                    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+                                }
                             }}
                         >
                             <div>

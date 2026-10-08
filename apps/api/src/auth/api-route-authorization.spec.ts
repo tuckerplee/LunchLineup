@@ -4,6 +4,7 @@ import { APP_GUARD } from '@nestjs/core';
 import { readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { AccountDeletionReceiptController } from '../admin/account-deletion-receipt.controller';
 import { AdminController } from '../admin/admin.controller';
 import { AppController } from '../app.controller';
 import { AppModule } from '../app.module';
@@ -60,10 +61,12 @@ const AUDITED_CONTROLLERS = [
     WebhookEndpointsController,
     AuthController,
     AdminController,
+    AccountDeletionReceiptController,
 ] as unknown as ControllerType[];
 
 const EXPECTED_CONTROLLER_FILES = [
     'admin/admin.controller.ts',
+    'admin/account-deletion-receipt.controller.ts',
     'app.controller.ts',
     'auth/auth.controller.ts',
     'availability-imports/availability-imports.controller.ts',
@@ -87,7 +90,7 @@ const EXPECTED_ROUTE_COUNTS: Record<string, number> = {
     MetricsController: 1,
     BillingController: 11,
     EmailDeliveryFeedbackController: 1,
-    AvailabilityImportsController: 2,
+    AvailabilityImportsController: 3,
     SchedulesController: 11,
     ShiftsController: 7,
     LunchBreaksController: 6,
@@ -99,10 +102,12 @@ const EXPECTED_ROUTE_COUNTS: Record<string, number> = {
     PayrollController: 17,
     WebhookEndpointsController: 5,
     AuthController: 20,
-    AdminController: 35,
+    AdminController: 36,
+    AccountDeletionReceiptController: 2,
 };
 
 const EXPECTED_PUBLIC_ROUTES = [
+    'AccountDeletionReceiptController.receipt',
     'AppController.checkHealth',
     'AppController.checkLiveness',
     'AuthController.callback',
@@ -186,7 +191,7 @@ describe('externally reachable API authorization inventory', () => {
             routes.filter((route) => route.controller === controller).length,
         ]));
         expect(counts).toEqual(EXPECTED_ROUTE_COUNTS);
-        expect(routes).toHaveLength(155);
+        expect(routes).toHaveLength(159);
     });
 
     it('keeps authentication, authorization, and abuse controls registered globally', () => {

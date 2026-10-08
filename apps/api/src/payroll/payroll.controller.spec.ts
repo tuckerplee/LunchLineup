@@ -36,12 +36,12 @@ describe('PayrollController', () => {
         const controller = new PayrollController(
             {} as any, {} as any, {} as any, {} as any, {} as any, {} as any, exports as any, {} as any,
         );
-        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session-1' } };
 
         await controller.createExport(req, 'period-1', { expectedCreditCost: 3 }, 'export-key');
 
         expect(exports.create).toHaveBeenCalledWith(
-            { tenantId: 'tenant-1', userId: 'manager-1' },
+            { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'exact-session-1' },
             'period-1',
             { expectedCreditCost: 3 },
             'export-key',

@@ -25,7 +25,7 @@ import {
 } from '@/lib/location-timezone';
 import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection } from '@/components/scheduling/StaffScheduler';
 import { publishNotificationOutcome } from './publish-result';
-import { schedulePublishAttempt } from './publish-attempt';
+import { readSchedulePublishAttempt, schedulePublishAttempt, type SchedulePublishAttempt } from './publish-attempt';
 import {
   creditCount,
   parseSchedulePublishPreflight,
@@ -43,6 +43,7 @@ import {
 import {
   assertBreakGenerationResponseScope,
   locationShiftScopeMatches,
+  locationShiftVisitIsCurrent,
   shiftIdsForLocation,
   type LocationShiftScope,
 } from './location-shift-scope';
@@ -285,7 +286,7 @@ function solveStatusLabel(job: ScheduleSolveJobSnapshot): string {
     return `Solved${job.resultShiftCount === null || job.resultShiftCount === undefined ? '' : ` ${shiftCountLabel(job.resultShiftCount)}`}`;
   }
   if (status === 'FAILED' || status === 'DEAD_LETTERED') {
-    return job.statusReason ? `${status}: ${job.statusReason}` : status;
+    return 'Schedule generation did not complete. Review staffing demand, employee availability, required skills, and weekly hour limits, then retry. Reload the calendar to confirm saved shifts.';
   }
   if (status === 'RETRYING') return `Retrying${job.retryCount ? ` attempt ${job.retryCount}` : ''}`;
   return status;
@@ -356,6 +357,7 @@ function SchedulingContent() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTimeline, setShowTimeline] = useState(true);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
+  const [scopeLoadRevision, setScopeLoadRevision] = useState(0);
   const [selectedDate, setSelectedDate] = useState(initialDateValue);
   const [staff, setStaff] = useState<StaffRosterItem[]>([]);
   const [locations, setLocations] = useState<LocationItem[]>([]);
@@ -382,9 +384,11 @@ function SchedulingContent() {
   const demandWindowAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const scheduleCreateAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
   const reopenAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
-  const publishAttemptsRef = useRef<Record<string, IdempotentRequestAttempt>>({});
+  const publishAttemptsRef = useRef<Record<string, SchedulePublishAttempt>>({});
   const publishingScheduleIdRef = useRef<string | null>(null);
   const latestLoadRequestRef = useRef(0);
+  const calendarVisitGenerationRef = useRef(0);
+  const shiftEditorGenerationRef = useRef(0);
   const solveGenerationRef = useRef(0);
   const selectedLocationRef = useRef(initialLocationId);
   const selectedDateRef = useRef(initialDateValue);
@@ -394,6 +398,12 @@ function SchedulingContent() {
   const [loadedShiftScope, setLoadedShiftScope] = useState<LocationShiftScope | null>(null);
   const [permissions, setPermissions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const changeShiftDraft = (next: ShiftDraft | ((current: ShiftDraft) => ShiftDraft)) => {
+    // Invalidate pending editor completions before React applies the new input.
+    shiftEditorGenerationRef.current += 1;
+    setShiftDraft(next);
+    setScheduleStatus({ tone: 'ready', message: 'Shift draft changed. Review and save it.' });
+  };
   const discardShiftUpdateAttempt = (shiftId: string) => {
     const attempt = shiftUpdateAttemptsRef.current[shiftId];
     if (attempt) clearShiftUpdateAttempt(window.sessionStorage, shiftId, attempt.key);
@@ -401,6 +411,9 @@ function SchedulingContent() {
   };
   useEffect(() => {
     const browserDate = requestedDate ?? toDateInputValue(new Date());
+    if (browserDate !== selectedDateRef.current) {
+      calendarVisitGenerationRef.current += 1;
+    }
     selectedDateRef.current = browserDate;
     setSelectedDate(browserDate);
     setShiftDraft((current) => (
@@ -428,10 +441,14 @@ function SchedulingContent() {
     viewMode,
   }), [locations, selectedDate, shiftDraft.locationId, viewMode]);
   const locationDataCurrent = locationShiftScopeMatches(loadedShiftScope, desiredShiftScope) && !isLoading;
-  const scopeIsStillSelected = useCallback((scope: LocationShiftScope) => (
-    selectedLocationRef.current === scope.locationId &&
-    selectedDateRef.current === scope.dateValue &&
-    viewModeRef.current === scope.viewMode
+  const scopeIsStillSelected = useCallback((scope: LocationShiftScope) => locationShiftVisitIsCurrent(
+    scope,
+    {
+      locationId: selectedLocationRef.current,
+      dateValue: selectedDateRef.current,
+      viewMode: viewModeRef.current,
+    },
+    calendarVisitGenerationRef.current,
   ), []);
   const loadDemandWindows = useCallback(async (scheduleId: string) => {
     const payload = await apiV2.getDemandWindows(scheduleId);
@@ -479,6 +496,7 @@ function SchedulingContent() {
 
   const loadSchedule = useCallback(async (dateValue: string, mode: SchedulerViewMode, requestedLocationId?: string) => {
     const requestId = ++latestLoadRequestRef.current;
+    const visitGeneration = calendarVisitGenerationRef.current;
     setIsLoading(true);
     setLoadedShiftScope(null);
     setError(null);
@@ -535,7 +553,7 @@ function SchedulingContent() {
           : current
       ));
       setShifts(payload.data.shifts);
-      setLoadedShiftScope(primaryLocationId ? { locationId: primaryLocationId, dateValue, viewMode: mode } : null);
+      setLoadedShiftScope(primaryLocationId ? { locationId: primaryLocationId, dateValue, viewMode: mode, visitGeneration } : null);
       const shiftCount = payload.data.shifts.length;
       setScheduleStatus({
         tone: payload.data.locationsTruncated ? 'warning' : 'ready',
@@ -559,7 +577,7 @@ function SchedulingContent() {
   useEffect(() => {
     if (!isHydrated) return;
     void loadSchedule(selectedDate, viewMode, shiftDraft.locationId || initialLocationId || undefined);
-  }, [initialLocationId, isHydrated, loadSchedule, selectedDate, shiftDraft.locationId, viewMode]);
+  }, [initialLocationId, isHydrated, loadSchedule, scopeLoadRevision, selectedDate, shiftDraft.locationId, viewMode]);
 
   useEffect(() => {
     setShiftDraft((current) => {
@@ -578,6 +596,7 @@ function SchedulingContent() {
   }, [locations]);
 
   const invalidateLocationData = useCallback((locationId: string, dateValue: string, mode: SchedulerViewMode) => {
+    calendarVisitGenerationRef.current += 1;
     latestLoadRequestRef.current += 1;
     solveGenerationRef.current += 1;
     selectedLocationRef.current = locationId;
@@ -587,22 +606,24 @@ function SchedulingContent() {
     setShifts([]);
     setIsLoading(true);
     setSolvingScheduleId(null);
+    setScopeLoadRevision((current) => current + 1);
   }, []);
 
   const selectScheduleLocation = (locationId: string) => {
-    invalidateLocationData(locationId, selectedDate, viewMode);
+    invalidateLocationData(locationId, selectedDateRef.current, viewModeRef.current);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
     setShiftDraft((current) => ({ ...current, locationId }));
   };
 
   const selectScheduleDate = (dateValue: string) => {
-    invalidateLocationData(shiftDraft.locationId || locations[0]?.id || '', dateValue, viewMode);
+    invalidateLocationData(selectedLocationRef.current || locations[0]?.id || '', dateValue, viewModeRef.current);
     setSelectedDate(dateValue);
   };
 
   const selectScheduleViewMode = (mode: SchedulerViewMode) => {
-    invalidateLocationData(shiftDraft.locationId || locations[0]?.id || '', selectedDate, mode);
+    if (mode === viewModeRef.current) return;
+    invalidateLocationData(selectedLocationRef.current || locations[0]?.id || '', selectedDateRef.current, mode);
     setViewMode(mode);
   };
 
@@ -725,6 +746,7 @@ function SchedulingContent() {
     loadSchedule,
     onDeleteCommitted: (shiftId) => {
       if (editingShiftId === shiftId) {
+        shiftEditorGenerationRef.current += 1;
         setShowShiftForm(false);
         setEditingShiftId(null);
       }
@@ -755,7 +777,7 @@ function SchedulingContent() {
 
   const handleDraftStaffChange = (value: string) => {
     const selectedStaff = schedulableStaff.find((person) => person.id === value);
-    setShiftDraft((current) => ({
+    changeShiftDraft((current) => ({
       ...current,
       userId: value,
       role: selectedStaff ? toSchedulableShiftRole(selectedStaff.role) : current.role,
@@ -800,6 +822,8 @@ function SchedulingContent() {
     const range = shiftRange(shiftDraft.shiftDate, shiftDraft.startTime, shiftDraft.endTime, draftTimeZone);
     const containingDraft = containingDraftScheduleForShift(schedules, locationId, range.startTime, range.endTime);
     const nextRole = shiftRoleDraftValue(shiftDraft.role, selectedStaff.role);
+    const editorGeneration = shiftEditorGenerationRef.current;
+    let issuedAttempt: IdempotentRequestAttempt | null = null;
     setScheduleStatus({ tone: 'saving', message: editingShiftId ? 'Saving shift changes...' : 'Creating and saving shift...' });
     try {
       if (editingShiftId) {
@@ -840,6 +864,7 @@ function SchedulingContent() {
           { scheduleId: schedule.id, operation },
           shiftUpdateAttemptsRef.current[editingShiftId],
         );
+        issuedAttempt = updateAttempt;
         shiftUpdateAttemptsRef.current[editingShiftId] = updateAttempt;
         const updated = await apiV2.applyScheduleChangeSet(
           schedule.id,
@@ -868,6 +893,7 @@ function SchedulingContent() {
           ...range,
         };
         const createAttempt = idempotentRequestAttempt(createRequest, shiftCreateAttemptRef.current);
+        issuedAttempt = createAttempt;
         shiftCreateAttemptRef.current = createAttempt;
         let schedule = containingDraft;
         if (!schedule) {
@@ -907,26 +933,34 @@ function SchedulingContent() {
           ...current.filter((shift) => shift.scheduleId !== schedule.id),
           ...created.data.shifts,
         ]);
-        shiftCreateAttemptRef.current = null;
+        if (shiftCreateAttemptRef.current?.key === createAttempt.key) {
+          shiftCreateAttemptRef.current = null;
+        }
         setScheduleStatus({ tone: 'saved', message: `Shift created and saved at ${formatStatusTime(new Date())}.` });
       }
-      setShowShiftForm(false);
-      setEditingShiftId(null);
-      setConfirmDeleteShiftId(null);
-      setShiftDraft((current) => ({
+      // Saved board data belongs to the calendar visit; destructive editor cleanup
+      // belongs only to the submitted draft, including close/reopen and ABA edits.
+      if (shiftEditorGenerationRef.current !== editorGeneration) return;
+      const completionGeneration = ++shiftEditorGenerationRef.current;
+      // A new action can also arrive before these queued setters are applied.
+      setShowShiftForm((current) => shiftEditorGenerationRef.current === completionGeneration ? false : current);
+      setEditingShiftId((current) => shiftEditorGenerationRef.current === completionGeneration ? null : current);
+      setConfirmDeleteShiftId((current) => shiftEditorGenerationRef.current === completionGeneration ? null : current);
+      setShiftDraft((current) => shiftEditorGenerationRef.current !== completionGeneration ? current : ({
         ...current,
         userId: '',
         role: 'STAFF',
       }));
     } catch (err) {
       const rotateAttempt = requiresNewScheduleChangeSetKey(err);
-      if (rotateAttempt) {
-        if (editingShiftId) {
+      if (rotateAttempt && issuedAttempt) {
+        if (editingShiftId && shiftUpdateAttemptsRef.current[editingShiftId]?.key === issuedAttempt.key) {
           discardShiftUpdateAttempt(editingShiftId);
-        } else {
+        } else if (!editingShiftId && shiftCreateAttemptRef.current?.key === issuedAttempt.key) {
           shiftCreateAttemptRef.current = null;
         }
       }
+      if (!scopeIsStillSelected(writeScope) || shiftEditorGenerationRef.current !== editorGeneration) return;
       const reloadAuthoritativeState = rotateAttempt
         || (err instanceof ApiV2ClientError && err.status === 412);
       setError((err as Error).message);
@@ -946,7 +980,9 @@ function SchedulingContent() {
 
   const prepareShiftForStaff = (person: StaffRosterItem, shiftDate: string, startTime = '09:00', endTime = '17:00') => {
     if (!capabilities.canWriteShifts) return;
+    shiftEditorGenerationRef.current += 1;
     setError(null);
+    setScheduleStatus({ tone: 'ready', message: 'Review the shift details, then save.' });
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
     setShiftDraft((current) => ({
@@ -978,6 +1014,7 @@ function SchedulingContent() {
       return;
     }
     const firstStaff = schedulableStaff[0] ?? null;
+    shiftEditorGenerationRef.current += 1;
     setError(null);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1000,10 +1037,12 @@ function SchedulingContent() {
       role: toSchedulableShiftRole(firstStaff.role),
       shiftDate: selectedDate,
     }));
+    setScheduleStatus({ tone: 'ready', message: 'Review the shift details, then save.' });
     setShowShiftForm(true);
   };
 
   const closeShiftEditor = () => {
+    shiftEditorGenerationRef.current += 1;
     setShowShiftForm(false);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1014,6 +1053,7 @@ function SchedulingContent() {
     if (!capabilities.canWriteShifts) return;
     const shift = shifts.find((item) => item.id === event.id);
     if (!shift) return;
+    shiftEditorGenerationRef.current += 1;
     const person = shift.userId ? schedulableStaff.find((item) => item.id === shift.userId) : null;
     const window = localTimeWindowFromInstants(shift.startTime, shift.endTime, locationTimeZone(shift.locationId));
     const locked = isShiftLocked(shift);
@@ -1045,6 +1085,7 @@ function SchedulingContent() {
     const timeZone = locationTimeZone(editingShift.locationId);
     const window = localTimeWindowFromInstants(editingShift.startTime, editingShift.endTime, timeZone);
     const targetDate = addLocalDays(window.date, 1);
+    shiftEditorGenerationRef.current += 1;
     setError(null);
     setEditingShiftId(null);
     setConfirmDeleteShiftId(null);
@@ -1213,16 +1254,24 @@ function SchedulingContent() {
         }
       }
 
-      const publishAttempt = schedulePublishAttempt(
-        scheduleId,
-        publishReview!.acceptedContract,
-        publishAttemptsRef.current[scheduleId],
-      );
+      const publishAttempt = replayingOriginalAttempt
+        ? readSchedulePublishAttempt(scheduleId, publishAttemptsRef.current[scheduleId])
+        : schedulePublishAttempt(
+          scheduleId,
+          publishReview!.acceptedContract,
+          publishAttemptsRef.current[scheduleId],
+        );
+      if (!publishAttempt) {
+        const message = 'The original publish outcome remains unconfirmed, and its saved retry request is unavailable. Check the saved schedule status before retrying.';
+        setError(message);
+        setScheduleStatus({ tone: 'warning', message });
+        return;
+      }
       publishAttemptsRef.current[scheduleId] = publishAttempt;
       publishRequestStarted = true;
       const publishedPayload = await apiV2.publishSchedule(
         scheduleId,
-        { acceptedContract: publishReview!.acceptedContract },
+        publishAttempt.payload.body,
         publishAttempt.key,
       );
       const published = parseSchedulePublishResponse(scheduleId, publishedPayload);
@@ -1238,6 +1287,7 @@ function SchedulingContent() {
       setPublishReview((current) => current?.scheduleId === scheduleId ? null : current);
       setConfirmPublishScheduleId(null);
       setConfirmReopenScheduleId(null);
+      shiftEditorGenerationRef.current += 1;
       setShowShiftForm(false);
       setEditingShiftId(null);
       setConfirmDeleteShiftId(null);
@@ -1330,6 +1380,7 @@ function SchedulingContent() {
       setConfirmReopenScheduleId(null);
       setConfirmPublishScheduleId(null);
       if (editingShift?.scheduleId !== scheduleId) {
+        shiftEditorGenerationRef.current += 1;
         setShowShiftForm(false);
         setEditingShiftId(null);
         setConfirmDeleteShiftId(null);
@@ -1402,6 +1453,7 @@ function SchedulingContent() {
       locationId: selectedLocationRef.current || shiftDraft.locationId,
       dateValue: selectedDateRef.current,
       viewMode: viewModeRef.current,
+      visitGeneration: calendarVisitGenerationRef.current,
     };
     const solveGeneration = ++solveGenerationRef.current;
     const solveIsCurrent = () => (
@@ -1952,7 +2004,7 @@ function SchedulingContent() {
                 </label>
                 <label>
                   <span>Shift role</span>
-                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => setShiftDraft((current) => ({ ...current, role: event.target.value }))}>
+                  <select value={shiftDraft.role} disabled={editingShiftLocked} onChange={(event) => changeShiftDraft((current) => ({ ...current, role: event.target.value }))}>
                     {shiftDraft.role && !SCHEDULABLE_SHIFT_ROLES.some((role) => role.value === shiftDraft.role) ? (
                       <option value={shiftDraft.role}>{shiftDraft.role}</option>
                     ) : null}
@@ -1967,7 +2019,7 @@ function SchedulingContent() {
                     type="date"
                     value={shiftDraft.shiftDate}
                     disabled={editingShiftLocked}
-                    onChange={(event) => setShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
+                    onChange={(event) => changeShiftDraft((current) => ({ ...current, shiftDate: event.target.value }))}
                   />
                 </label>
                 <div className="shift-form__time-grid">
@@ -1977,7 +2029,7 @@ function SchedulingContent() {
                       type="time"
                       value={shiftDraft.startTime}
                       disabled={editingShiftLocked}
-                      onChange={(event) => setShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
+                      onChange={(event) => changeShiftDraft((current) => ({ ...current, startTime: event.target.value }))}
                     />
                   </label>
                   <label>
@@ -1986,7 +2038,7 @@ function SchedulingContent() {
                       type="time"
                       value={shiftDraft.endTime}
                       disabled={editingShiftLocked}
-                      onChange={(event) => setShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
+                      onChange={(event) => changeShiftDraft((current) => ({ ...current, endTime: event.target.value }))}
                     />
                   </label>
                 </div>

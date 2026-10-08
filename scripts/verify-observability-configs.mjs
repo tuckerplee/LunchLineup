@@ -14,6 +14,8 @@ export const OBSERVABILITY_FILES = Object.freeze({
   webLayout: 'apps/web/app/layout.tsx',
   prometheus: 'infrastructure/prometheus/prometheus.yml',
   prometheusAlerts: 'infrastructure/prometheus/alerts/lunchlineup.yml',
+  nativeRuleFixture: 'infrastructure/prometheus/alerts/tests/native-api.test.yml',
+  platformDashboard: 'infrastructure/grafana/dashboards/platform-overview.json',
   alertmanager: 'infrastructure/alertmanager/alertmanager.yml',
   otelCollector: 'infrastructure/otel-collector/otel-collector-config.yml',
   logCollector: 'infrastructure/promtail/promtail-config.yml',
@@ -36,6 +38,7 @@ export const PROMETHEUS_VALIDATION_CREDENTIALS_FILE =
 export const PROMETHEUS_RULE_TEST_FILES = Object.freeze([
   'infrastructure/prometheus/alerts/tests/lunchlineup.test.yml',
   'infrastructure/prometheus/alerts/tests/tenant-deletion-billing.test.yml',
+  'infrastructure/prometheus/alerts/tests/native-api.test.yml',
 ]);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -69,6 +72,10 @@ const expectedScrapeJobs = Object.freeze({
     interval: '10s',
     bearerTokenFile: '/run/secrets/metrics_token',
   },
+  'api-v2': {
+    targets: ['api-v2:3002'], metricsPath: '/metrics', interval: '10s',
+    bearerTokenFile: '/run/secrets/metrics_token',
+  },
   engine: {
     targets: ['engine:8000'],
     metricsPath: '/metrics',
@@ -97,6 +104,10 @@ const expectedScrapeJobs = Object.freeze({
 });
 const expectedAlerts = Object.freeze([
   'ServiceDown',
+  'NativeApiMetricsMissing',
+  'NativeApiHttpInstrumentationUnavailable',
+  'HighNativeApiErrorRate',
+  'HighNativeApiLatency',
   'PublicWebUnavailable',
   'PublicWebProbeStale',
   'HighApiErrorRate',
@@ -1247,7 +1258,7 @@ function validateAlertRules(root, alertRules, prometheus, errors) {
   const serviceDown = ruleEntries.find(({ rule }) => rule.alert === 'ServiceDown')?.rule;
   if (serviceDown) {
     const coveredJobs = extractJobLabelValues(serviceDown.expr);
-    for (const expectedJob of ['api', 'engine', 'worker', 'webhook-replay', 'control', 'node']) {
+    for (const expectedJob of ['api', 'api-v2', 'engine', 'worker', 'webhook-replay', 'control', 'node']) {
       expect(errors, coveredJobs.includes(expectedJob), `lunchlineup.yml: ServiceDown must cover ${expectedJob}`);
     }
   }
@@ -1296,6 +1307,209 @@ function validateAlertRules(root, alertRules, prometheus, errors) {
     expect(errors, expression.includes('stage="application_data"'), 'lunchlineup.yml: application-data execution stale alert must require the application_data stage');
     expect(errors, expression.includes('> 93600'), 'lunchlineup.yml: application-data execution stale alert must use the 26-hour boundary');
   }
+}
+
+
+// Closed source contracts deliberately reject unreviewed query rewrites.
+// Whitespace normalization is not a PromQL parser or runtime qualification.
+const NATIVE_ALERT_CONTRACTS = Object.freeze({
+  "NativeApiMetricsMissing": {
+    "expr": "absent(up{job=\"api-v2\"})",
+    "for": "2m",
+    "severity": "critical",
+    "team": "ops"
+  },
+  "NativeApiHttpInstrumentationUnavailable": {
+    "expr": "(up{job=\"api-v2\"} == 1) unless on (job, instance) (lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"} == 1)",
+    "for": "2m",
+    "severity": "critical",
+    "team": "ops"
+  },
+  "HighNativeApiErrorRate": {
+    "expr": "(((sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or on (job, route) (0 * sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))) / sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > 0.05)\nand on (job, route) (sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0)",
+    "for": "2m",
+    "severity": "critical",
+    "team": "engineering"
+  },
+  "HighNativeApiLatency": {
+    "expr": "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m]))) > 2",
+    "for": "5m",
+    "severity": "warning",
+    "team": "engineering"
+  },
+  "ApiAvailabilityBudgetFastBurn": {
+    "expr": "((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0))\nand\n((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[1h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h])) > 0))",
+    "for": "2m",
+    "severity": "critical",
+    "team": "engineering"
+  },
+  "ApiAvailabilityBudgetSlowBurn": {
+    "expr": "((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m])) > 0))\nand\n((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h])) > 0))",
+    "for": "15m",
+    "severity": "warning",
+    "team": "engineering"
+  }
+});
+const NATIVE_DASHBOARD_CONTRACTS = Object.freeze({
+  "1": {
+    "targets": {
+      "A": "sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))"
+    },
+    "unit": "reqps"
+  },
+  "2": {
+    "targets": {
+      "A": "histogram_quantile(0.99, sum by (le) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
+    },
+    "unit": "s"
+  },
+  "5": {
+    "targets": {
+      "A": "sum by (method, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))"
+    },
+    "unit": "reqps"
+  },
+  "6": {
+    "targets": {
+      "A": "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0)"
+    },
+    "unit": "percentunit"
+  },
+  "10": {
+    "targets": {
+      "A": "up{job=~\"api|api-v2|engine|worker|webhook-replay|control|node\"}"
+    }
+  },
+  "13": {
+    "targets": {
+      "A": "(100 * (1 - ((sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30d])) or vector(0)) / sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d]))))) and (sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d])) > 0)"
+    },
+    "unit": "percent"
+  },
+  "22": {
+    "targets": {
+      "A": "sum(rate(http_requests_total{job=\"api\"}[1m]))"
+    }
+  },
+  "23": {
+    "targets": {
+      "A": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))"
+    }
+  },
+  "24": {
+    "targets": {
+      "A": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))"
+    }
+  },
+  "25": {
+    "targets": {
+      "A": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)"
+    }
+  },
+  "26": {
+    "targets": {
+      "A": "up{job=\"api-v2\"}",
+      "B": "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"}",
+      "C": "absent(up{job=\"api-v2\"})",
+      "D": "(up{job=\"api-v2\"} == 1) unless on (job, instance) (lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"} == 1)"
+    },
+    "unit": "short"
+  },
+  "27": {
+    "targets": {
+      "A": "sum by (reason) (rate(lunchlineup_api_v2_http_requests_aborted_total{job=\"api-v2\",scope=\"application\"}[5m]))"
+    },
+    "unit": "reqps"
+  },
+  "28": {
+    "targets": {
+      "A": "min by (dependency) (lunchlineup_dependency_up{job=\"api\",dependency=~\"database|redis|rabbitmq\"})"
+    },
+    "unit": "short"
+  }
+});
+function normalizedPromqlContract(value) {
+  const text = String(value ?? '');
+  let quoted = false, escaped = false, normalized = '';
+  for (const char of text) {
+    if (escaped) { normalized += char; escaped = false; continue; }
+    if (quoted && char === '\\') { normalized += char; escaped = true; continue; }
+    if (char === '"') { quoted = !quoted; normalized += char; continue; }
+    if (quoted || !/\s/.test(char)) normalized += char;
+  }
+  return normalized;
+}
+function validateNativeCompose(compose, errors) {
+  const services = asMap(compose?.services), api = services['api-v2'];
+  expect(errors, api, 'docker-compose.yml: missing api-v2 service');
+  if (!api) return;
+  const environment = environmentMap(api.environment);
+  expect(errors, environment.METRICS_TOKEN_FILE === '/run/secrets/metrics_token', 'docker-compose.yml: api-v2 must read the mounted metrics token file');
+  expect(errors, !Object.hasOwn(environment, 'METRICS_TOKEN'), 'docker-compose.yml: api-v2 must not configure an inline or conflicting METRICS_TOKEN');
+  if (Array.isArray(api.environment)) {
+    expect(errors, api.environment.filter(value => String(value).split('=')[0] === 'METRICS_TOKEN_FILE').length === 1, 'docker-compose.yml: api-v2 must have one metrics token file binding');
+  }
+  expect(errors, api.env_file === undefined, 'docker-compose.yml: api-v2 must not add unreviewed env_file token sources');
+  const mounts = asArray(api.secrets).filter(secret => secret === 'metrics_token' || (isObject(secret) && secret.source === 'metrics_token' && (secret.target === undefined || secret.target === 'metrics_token')));
+  expect(errors, mounts.length === 1, 'docker-compose.yml: api-v2 must mount metrics_token once at its standard secret target');
+  expect(errors, api.ports === undefined || (Array.isArray(api.ports) && api.ports.length === 0), 'docker-compose.yml: api-v2 must not publish metrics or application ports');
+  expect(errors, api.network_mode === undefined, 'docker-compose.yml: api-v2 must use scoped Compose networks');
+  const networks = listValue(api.networks);
+  expect(errors, networks.includes('app') && listValue(services.prometheus?.networks).includes('app'), 'docker-compose.yml: api-v2 and prometheus must share app network');
+  expect(errors, networks.every(name => ['app', 'data', 'telemetry'].includes(name)), 'docker-compose.yml: api-v2 must keep its existing internal networks');
+  expect(errors, api.read_only === true && api.privileged !== true && listValue(api.cap_drop).includes('ALL') && asArray(api.cap_add).length === 0, 'docker-compose.yml: api-v2 must retain locked runtime privileges');
+  expect(errors, listValue(api.security_opt).includes('no-new-privileges:true'), 'docker-compose.yml: api-v2 must retain no-new-privileges');
+  const shadowTargets = new Set(['/', '/run', '/run/secrets', '/run/secrets/metrics_token']);
+  expect(errors, !asArray(api.volumes).some(volume => shadowTargets.has(parseVolume(volume).target)), 'docker-compose.yml: api-v2 volumes must not shadow the metrics secret');
+}
+function validateNativeScrape(prometheus, errors) {
+  const job = asArray(prometheus?.scrape_configs).find(value => value?.job_name === 'api-v2');
+  if (!job) return; // Existing required-job guard reports absence.
+  const keys = ['job_name', 'static_configs', 'metrics_path', 'authorization', 'scrape_interval', 'scrape_timeout', 'sample_limit', 'body_size_limit'];
+  expect(errors, Object.keys(job).every(key => keys.includes(key)), 'prometheus.yml: api-v2 scrape must not add unreviewed relabel, proxy or authentication overrides');
+  expect(errors, job.scrape_timeout === '5s' && job.sample_limit === 12000 && job.body_size_limit === '8MB', 'prometheus.yml: api-v2 must retain bounded 5s/12000/8MB scrape limits');
+  const auth = asMap(job.authorization);
+  expect(errors, Object.keys(auth).length === 2 && Object.keys(auth).every(key => ['type', 'credentials_file'].includes(key)), 'prometheus.yml: api-v2 must use only file-backed Bearer authorization');
+  const configs = asArray(job.static_configs);
+  expect(errors, configs.length === 1 && isObject(configs[0]) && Object.keys(configs[0]).length === 1 && Array.isArray(configs[0].targets), 'prometheus.yml: api-v2 must use one static target block without label overrides');
+}
+function validateNativeAlertContracts(alertRules, errors) {
+  const rules = asArray(alertRules?.groups).flatMap(group => asArray(group.rules));
+  for (const [name, contract] of Object.entries(NATIVE_ALERT_CONTRACTS)) {
+    const rule = rules.find(value => value?.alert === name);
+    expect(errors, rule, 'lunchlineup.yml: missing native alert ' + name);
+    if (!rule) continue;
+    expect(errors, normalizedPromqlContract(rule.expr) === normalizedPromqlContract(contract.expr), 'lunchlineup.yml: ' + name + ' must retain the reviewed native selector/window/unit contract');
+    expect(errors, rule.for === contract.for && rule.labels?.severity === contract.severity && rule.labels?.team === contract.team, 'lunchlineup.yml: ' + name + ' must retain reviewed duration/severity/team');
+  }
+  const missing = rules.find(rule => rule.alert === 'NativeApiMetricsMissing');
+  if (missing) expect(errors, missing.labels?.job === 'api-v2', 'lunchlineup.yml: NativeApiMetricsMissing must carry fixed job api-v2');
+}
+function validateNativeDashboard(root, errors, checked) {
+  const text = readText(root, OBSERVABILITY_FILES.platformDashboard, errors, checked);
+  let dashboard;
+  try { dashboard = JSON.parse(text); } catch { addError(errors, 'platform-overview.json: dashboard must be valid JSON'); return; }
+  const panels = asArray(dashboard?.panels), ids = panels.map(panel => panel.id);
+  expect(errors, ids.length === unique(ids).length && ids.every(id => Number.isSafeInteger(id) && id > 0), 'platform-overview.json: panel IDs must be unique positive integers');
+  expect(errors, dashboard?.uid === 'lunchlineup-platform', 'platform-overview.json: retain provisioned dashboard UID');
+  for (const [id, contract] of Object.entries(NATIVE_DASHBOARD_CONTRACTS)) {
+    const panel = panels.find(value => value.id === Number(id));
+    expect(errors, panel, 'platform-overview.json: missing monitored panel ' + id);
+    if (!panel) continue;
+    expect(errors, panel.datasource?.uid === 'prometheus', 'platform-overview.json: panel ' + id + ' must use provisioned prometheus');
+    const targets = asArray(panel.targets), refs = targets.map(target => target.refId);
+    expect(errors, refs.length === unique(refs).length && JSON.stringify([...refs].sort()) === JSON.stringify(Object.keys(contract.targets).sort()), 'platform-overview.json: panel ' + id + ' must retain owned target references');
+    for (const [ref, expr] of Object.entries(contract.targets)) {
+      const actual = targets.find(target => target.refId === ref)?.expr;
+      expect(errors, validateBalancedExpression(String(actual ?? '')) && normalizedPromqlContract(actual) === normalizedPromqlContract(expr), 'platform-overview.json: panel ' + id + '/' + ref + ' must retain reviewed query ownership');
+    }
+    if (contract.unit) expect(errors, panel.fieldConfig?.defaults?.unit === contract.unit, 'platform-overview.json: panel ' + id + ' must retain reviewed units');
+    if ([1, 2, 10, 13].includes(Number(id))) {
+      expect(errors, panel.type === 'stat' && targets.every(target => target.instant === true) && JSON.stringify(panel.options?.reduceOptions?.calcs) === '["last"]' && panel.fieldConfig?.defaults?.noValue === 'Unknown', 'platform-overview.json: native stat ' + id + ' must use instant/last/Unknown without stale successful fallback');
+    }
+  }
+  const availability = panels.find(panel => panel.id === 13);
+  if (availability) expect(errors, String(availability.title).includes('provisional') && String(availability.description).includes('complete 30-day SLO'), 'platform-overview.json: native availability must retain provisional history qualification');
 }
 
 function validateAlertmanagerConfig(alertmanager, errors) {
@@ -1350,15 +1564,21 @@ export function validateObservabilityConfigs(options = {}) {
   validateCaddyfile(root, OBSERVABILITY_FILES.caddyTemplate, errors, checked);
   validateWebContentSecurityPolicy(root, errors, checked);
   validatePublicWebProbe(root, errors, checked);
+  validateNativeDashboard(root, errors, checked);
+  const nativeRuleFixture = readYaml(root, OBSERVABILITY_FILES.nativeRuleFixture, errors, checked);
+  expect(errors, asArray(nativeRuleFixture?.tests).length > 0 && JSON.stringify(nativeRuleFixture?.rule_files) === '["../lunchlineup.yml"]', 'native-api.test.yml: native rule controls must load the owned production rules');
 
   if (compose) {
     validateComposeObservability(compose, errors);
+    validateNativeCompose(compose, errors);
   }
   if (prometheus && compose) {
     validatePrometheusConfig(root, prometheus, compose, errors);
+    validateNativeScrape(prometheus, errors);
   }
   if (alertRules && prometheus) {
     validateAlertRules(root, alertRules, prometheus, errors);
+    validateNativeAlertContracts(alertRules, errors);
   }
   if (alertmanager) {
     validateAlertmanagerConfig(alertmanager, errors);

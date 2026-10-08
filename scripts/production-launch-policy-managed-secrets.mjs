@@ -118,6 +118,7 @@ export function createManagedSecretPolicy(context, {
       'JWT_SECRET',
       'JWT_REFRESH_SECRET',
       'SESSION_SECRET',
+      'OTP_HMAC_SECRET',
       'CSRF_SECRET',
       'MFA_SECRET_ENCRYPTION_KEY_CURRENT',
     ]) {

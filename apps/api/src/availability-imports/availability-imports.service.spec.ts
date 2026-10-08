@@ -5,6 +5,8 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
+
 import {
     AVAILABILITY_IMPORT_TERMINAL_RETENTION_MS,
     AvailabilityImportsService,
@@ -21,6 +23,8 @@ describe('AvailabilityImportsService', () => {
     let featureAccess: any;
     let publisher: any;
     let tx: any;
+    let rbac: any;
+    const auth: any = {};
     let previousRoot: string | undefined;
     let previousEncryptionKey: string | undefined;
     const encryptionKey = Buffer.alloc(32, 0x7a);
@@ -47,6 +51,12 @@ describe('AvailabilityImportsService', () => {
         tenantDb = {
             withTenant: vi.fn(async (_tenantId: string, operation: (client: any) => Promise<unknown>) => operation(tx)),
         };
+        // These existing cases exercise import/settlement/encryption behavior.
+        // The separate current-authority suite uses the actual RBAC owner.
+        rbac = { runCurrentMutation: (options: any, _authorize: unknown, operation: any) =>
+            runSerializableMutationWithRetry(() => tenantDb.withTenant(options.actor.tenantId,
+                (client: any) => operation(client, undefined, () => {}, options.actor),
+                { isolationLevel: 'Serializable' }), { conflictMessage: options.conflictMessage }) };
         featureAccess = {
             assertFeatureEnabledInTransaction: vi.fn().mockResolvedValue({ code: 'scheduling' }),
             recordFeatureUsageInTransaction: vi.fn().mockResolvedValue({ consumedCredits: 1 }),
@@ -63,6 +73,31 @@ describe('AvailabilityImportsService', () => {
         if (previousEncryptionKey === undefined) delete process.env.AVAILABILITY_IMPORT_ENCRYPTION_KEY;
         else process.env.AVAILABILITY_IMPORT_ENCRYPTION_KEY = previousEncryptionKey;
         vi.restoreAllMocks();
+    });
+
+    it('cancels an unfinished import and refunds once; repeated cancellation does not settle again', async () => {
+        const row = { id: 'import-1', userId: 'user-1', status: 'PENDING', createdAt: new Date(), storageKey: null };
+        tx.availabilityImportJob.findFirst.mockImplementation(async () => row);
+        tx.availabilityImportJob.updateMany = vi.fn(async ({ data }: { data: { status: string; failureCode?: string; completedAt?: Date } }) => { Object.assign(row, data); return { count: 1 }; });
+        tx.creditTransaction.findFirst = vi.fn(async ({ where }: { where: { id: string } }) => where.id.startsWith('feature-usage') ? { amount: -1 } : null);
+        tx.creditTransaction.findMany.mockResolvedValue([{ id: 'feature-usage-availability-import:import-1', amount: -1 }, { id: 'feature-refund-availability-import:import-1', amount: 0, debtAmount: -1 }]);
+        tx.$queryRaw = vi.fn(async (query: TemplateStringsArray) => String(query).includes('settle_positive') ? [{ creditedValue: 1, replayed: false }] : []);
+        tx.auditLog = { create: vi.fn() };
+        featureAccess.lockTenantInTransaction = vi.fn();
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
+        await expect(service.cancelImport('tenant-1', 'actor', 'import-1', 'session-1')).resolves.toMatchObject({ status: 'CANCELLED', settlement: { chargedCredits: 1, refundedCredits: 1, pending: false } });
+        await service.cancelImport('tenant-1', 'actor', 'import-1', 'session-1');
+        expect(tx.availabilityImportJob.updateMany).toHaveBeenCalledOnce();
+        expect(tx.auditLog.create).toHaveBeenCalledOnce();
+        expect(tx.$queryRaw.mock.calls.filter(([query]: [TemplateStringsArray]) => String(query).includes('settle_positive'))).toHaveLength(1);
+    });
+
+    it('does not cancel an import that completed first', async () => {
+        tx.$queryRaw = vi.fn().mockResolvedValue([]);
+        tx.availabilityImportJob.findFirst.mockResolvedValue({ id: 'import-1', status: 'SUCCEEDED' });
+        featureAccess.lockTenantInTransaction = vi.fn();
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
+        await expect(service.cancelImport('tenant-1', 'actor', 'import-1', 'session-1')).rejects.toThrow('already completed');
     });
 
     it('validates MIME, extension, signature, size, and printable idempotency keys', () => {
@@ -89,7 +124,7 @@ describe('AvailabilityImportsService', () => {
         const root = await mkdtemp(join(tmpdir(), 'availability-import-api-'));
         process.env.AVAILABILITY_UPLOAD_ROOT = root;
         tx.user.findFirst.mockResolvedValue({ id: 'user-1', username: null });
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
         const createdAt = new Date('2026-07-14T12:00:00.000Z');
         let durable: any = null;
         tx.availabilityImportJob.findUnique.mockImplementation(async () => durable);
@@ -120,6 +155,7 @@ describe('AvailabilityImportsService', () => {
         const args = {
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'request-1',
             staffIdentity: ' EMP-10492 ',
@@ -200,12 +236,13 @@ describe('AvailabilityImportsService', () => {
     });
 
     it('requires managers to explicitly supply the visible identity even when a username exists', async () => {
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
         tx.availabilityImportJob.findUnique.mockResolvedValue(null);
 
         await expect(service.createImport({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'username-default',
             file: {
@@ -222,11 +259,12 @@ describe('AvailabilityImportsService', () => {
 
     it('rejects email-only targets without a visible identity before entitlement or debit', async () => {
         tx.user.findFirst.mockResolvedValue({ id: 'user-1', username: null });
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
 
         await expect(service.createImport({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'missing-visible-identity',
             file: {
@@ -243,11 +281,12 @@ describe('AvailabilityImportsService', () => {
     });
 
     it('rejects an invalid supplied identity before opening a tenant transaction', async () => {
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
 
         await expect(service.createImport({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'invalid-visible-identity',
             staffIdentity: 'employee id 1',
@@ -265,11 +304,12 @@ describe('AvailabilityImportsService', () => {
 
     it('rejects new imports before validation or debit while the publisher is draining', async () => {
         publisher.isReady.mockReturnValue(false);
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
 
         await expect(service.createImport({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'draining-import',
         })).rejects.toThrow('publishing is draining');
@@ -307,25 +347,27 @@ describe('AvailabilityImportsService', () => {
         tenantDb.withTenant
             .mockRejectedValueOnce({ code: 'P2010', meta: { code: '40001' } })
             .mockImplementation(async (_tenantId: string, operation: (client: any) => Promise<unknown>) => operation(tx));
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
 
         await expect(service.createImport({
             tenantId: 'tenant-1',
             requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
             userId: 'user-1',
             idempotencyKey: 'concurrent-request',
             staffIdentity: 'staff-1',
             file,
         })).resolves.toMatchObject({ id: 'import-existing', status: 'PENDING' });
 
-        expect(tenantDb.withTenant).toHaveBeenCalledTimes(3);
+        // Receipt is read within the successful authorized callback.
+        expect(tenantDb.withTenant).toHaveBeenCalledTimes(2);
         expect(featureAccess.recordFeatureUsageInTransaction).not.toHaveBeenCalled();
         expect(tx.availabilityImportJob.create).not.toHaveBeenCalled();
         expect(publisher.kick).toHaveBeenCalledOnce();
     });
 
     it('withholds a succeeded result after completion-based retention erases its payload', async () => {
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
         const completedAt = new Date('2026-07-14T12:00:00.000Z');
         tx.availabilityImportJob.findFirst.mockResolvedValue({
             id: 'import-1',
@@ -359,7 +401,7 @@ describe('AvailabilityImportsService', () => {
         refundAmount,
         expectedSettlement,
     ) => {
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
         tx.availabilityImportJob.findFirst.mockResolvedValue({
             id: 'import-1',
             userId: 'user-1',
@@ -390,14 +432,14 @@ describe('AvailabilityImportsService', () => {
                     ],
                 },
             },
-            select: { id: true, amount: true },
+            select: { id: true, amount: true, debtAmount: true },
         });
     });
 
     it('binds the normalized visible identity into idempotency and removes only the replay source', async () => {
         const root = await mkdtemp(join(tmpdir(), 'availability-import-api-'));
         process.env.AVAILABILITY_UPLOAD_ROOT = root;
-        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher);
+        const service = new AvailabilityImportsService(tenantDb, featureAccess, publisher, rbac, auth);
         const file = {
             buffer: Buffer.from('%PDF-1.7\n'),
             mimetype: 'application/pdf',
@@ -418,6 +460,7 @@ describe('AvailabilityImportsService', () => {
             await expect(service.createImport({
                 tenantId: 'tenant-1',
                 requestedByUserId: 'manager-1',
+            requestedBySessionId: 'session-1',
                 userId: 'user-1',
                 idempotencyKey: 'request-1',
                 staffIdentity: 'employee-2',

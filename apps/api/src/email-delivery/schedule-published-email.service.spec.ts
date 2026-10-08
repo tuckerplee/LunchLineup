@@ -155,6 +155,57 @@ describe('SchedulePublishedEmailService', () => {
         await vi.advanceTimersByTimeAsync(1000);
         await rejection;
     });
+    it('never starts a NEW handoff when suppression resolves after the one provider deadline', async () => {
+        vi.useFakeTimers();
+        let resolve!: (value: boolean) => void;
+        const feedback = { isSuppressed: vi.fn(() => new Promise<boolean>(yes => { resolve = yes; })) };
+        const service = enabledService(feedback, { SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS: '1000' });
+        const send = vi.fn().mockResolvedValue({ data: { id: 'late' }, error: null });
+        (service as any).resend = { emails: { send } };
+        const delivery = service.send(input()); const rejection = expect(delivery).rejects.toThrow('provider deadline exceeded');
+        await vi.advanceTimersByTimeAsync(1000); await rejection;
+        resolve(false); await vi.advanceTimersByTimeAsync(0);
+        expect(send).not.toHaveBeenCalled(); expect(feedback.isSuppressed).toHaveBeenCalledOnce();
+    });
+
+    it('prepares global suppression outside the locked handoff and binds the original recipient and payload', async () => {
+        const feedback = activeFeedback(); const service = enabledService(feedback);
+        const send = vi.fn().mockResolvedValue({ data: { id: 'prepared' }, error: null });
+        (service as any).resend = { emails: { send } };
+        const controller = new AbortController(); const window = { signal: controller.signal, assertNewHandoff: vi.fn() };
+        const selected = input(); const prepared = await service.prepare(selected, window);
+        expect(Object.isFrozen(prepared)).toBe(true); expect(send).not.toHaveBeenCalled();
+        selected.recipientEmail = 'changed@example.test'; selected.title = 'Changed title';
+        await expect(prepared.send(selected.recipientEmail, window)).rejects.toThrow('prepared recipient changed');
+        expect(send).not.toHaveBeenCalled();
+        await expect(prepared.send('staff@example.test', window)).resolves.toBe('accepted');
+        expect(feedback.isSuppressed).toHaveBeenCalledOnce();
+        expect(send.mock.calls[0][0]).toMatchObject({ to: 'staff@example.test', subject: 'Schedule published' });
+        expect(send.mock.calls[0][1]).toMatchObject({ signal: controller.signal, idempotencyKey: 'schedule-published/outbox-1' });
+    });
+
+    it('refuses an aborted prepared handoff even when the injected deadline assertion returns', async () => {
+        const service = enabledService(); const send = vi.fn(); (service as any).resend = { emails: { send } };
+        const controller = new AbortController(); const window = { signal: controller.signal, assertNewHandoff: vi.fn() };
+        const prepared = await service.prepare(input(), window);
+        controller.abort(new Error('Controlled deadline'));
+        await expect(prepared.send('staff@example.test', window)).rejects.toThrow('Controlled deadline');
+        expect(send).not.toHaveBeenCalled();
+    });
+
+    it('retains one in-flight handoff identity and propagates abort when provider acknowledgement stalls', async () => {
+        vi.useFakeTimers(); let resolve!: (value: any) => void;
+        const service = enabledService(undefined, { SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS: '1000' });
+        const send = vi.fn((_payload: unknown, _options: any) => new Promise<any>(yes => { resolve = yes; }));
+        (service as any).resend = { emails: { send } };
+        const delivery = service.send(input()); const rejection = expect(delivery).rejects.toThrow('provider deadline exceeded');
+        await vi.advanceTimersByTimeAsync(0); expect(send).toHaveBeenCalledOnce();
+        await vi.advanceTimersByTimeAsync(1000); await rejection;
+        expect(send.mock.calls[0][1].signal.aborted).toBe(true);
+        resolve({ data: { id: 'late-ack' }, error: null }); await vi.advanceTimersByTimeAsync(0);
+        expect(send).toHaveBeenCalledOnce(); // No assertion that an already handed-off provider operation was physically undone.
+    });
+
 });
 
 function enabledService(

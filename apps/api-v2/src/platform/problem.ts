@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { errorCodes } from 'fastify';
 import type { FastifyError, FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import type { ProblemDetails } from '@lunchlineup/api-contract';
 
@@ -89,6 +90,24 @@ function mappedDatabaseProblem(error: unknown): ProblemError | null {
   return null;
 }
 
+function mappedClientParserProblem(error: unknown): ProblemError | null {
+  if (error instanceof errorCodes.FST_ERR_CTP_BODY_TOO_LARGE) {
+    return new ProblemError(413, 'request_body_too_large',
+      'The request body exceeds the size allowed for this operation.', 'Payload too large');
+  }
+  if (error instanceof errorCodes.FST_ERR_CTP_INVALID_MEDIA_TYPE) {
+    return new ProblemError(415, 'unsupported_media_type',
+      'The request content type is not supported.', 'Unsupported media type');
+  }
+  if (error instanceof errorCodes.FST_ERR_CTP_INVALID_JSON_BODY
+    || error instanceof errorCodes.FST_ERR_CTP_EMPTY_JSON_BODY
+    || error instanceof errorCodes.FST_ERR_CTP_INVALID_CONTENT_LENGTH) {
+    return new ProblemError(400, 'invalid_request_body',
+      'The request body is not valid for its declared content type and length.', 'Invalid request body');
+  }
+  return null;
+}
+
 function toProblem(error: FastifyError | Error | unknown, request: FastifyRequest): ProblemDetails {
   if (error instanceof ProblemError) {
     return {
@@ -127,6 +146,8 @@ function toProblem(error: FastifyError | Error | unknown, request: FastifyReques
 
   const databaseProblem = mappedDatabaseProblem(error);
   if (databaseProblem) return toProblem(databaseProblem, request);
+  const parserProblem = mappedClientParserProblem(error);
+  if (parserProblem) return toProblem(parserProblem, request);
 
   return {
     type: problemType('internal_error'),

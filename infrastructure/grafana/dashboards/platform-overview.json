@@ -1,724 +1,1009 @@
 {
-    "__inputs": [],
-    "__requires": [
-        {
-            "type": "grafana",
-            "id": "grafana",
-            "name": "Grafana",
-            "version": "10.0.0"
-        },
-        {
-            "type": "datasource",
-            "id": "prometheus",
-            "name": "Prometheus",
-            "version": "1.0.0"
-        },
-        {
-            "type": "datasource",
-            "id": "loki",
-            "name": "Loki",
-            "version": "1.0.0"
-        },
-        {
-            "type": "datasource",
-            "id": "tempo",
-            "name": "Tempo",
-            "version": "1.0.0"
-        }
-    ],
-    "annotations": {
-        "list": []
+  "__inputs": [],
+  "__requires": [
+    {
+      "type": "grafana",
+      "id": "grafana",
+      "name": "Grafana",
+      "version": "10.0.0"
     },
-    "editable": true,
-    "fiscalYearStartMonth": 0,
-    "graphTooltip": 1,
-    "id": null,
-    "links": [],
-    "panels": [
-        {
-            "id": 1,
-            "type": "stat",
-            "title": "API Request Rate (req/s)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(rate(http_requests_total{job=\"api\"}[1m]))",
-                    "legendFormat": "requests"
-                }
-            ],
-            "gridPos": {
-                "h": 4,
-                "w": 6,
-                "x": 0,
-                "y": 0
-            }
-        },
-        {
-            "id": 2,
-            "type": "stat",
-            "title": "API p99 Latency (ms)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))",
-                    "legendFormat": "p99"
-                }
-            ],
-            "gridPos": {
-                "h": 4,
-                "w": 6,
-                "x": 6,
-                "y": 0
-            }
-        },
-        {
-            "id": 3,
-            "type": "stat",
-            "title": "Active Tenants",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "lunchlineup_active_tenants_total",
-                    "legendFormat": "Tenants"
-                }
-            ],
-            "gridPos": {
-                "h": 4,
-                "w": 6,
-                "x": 12,
-                "y": 0
-            }
-        },
-        {
-            "id": 4,
-            "type": "stat",
-            "title": "Solve Queue Depth",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "lunchlineup_solver_queue_depth",
-                    "legendFormat": "Queue"
-                }
-            ],
-            "gridPos": {
-                "h": 4,
-                "w": 6,
-                "x": 18,
-                "y": 0
-            }
-        },
-        {
-            "id": 5,
-            "type": "timeseries",
-            "title": "HTTP Request Rate by Route",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))",
-                    "legendFormat": "{{method}} {{route}}"
-                }
-            ],
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 4
-            }
-        },
-        {
-            "id": 6,
-            "type": "timeseries",
-            "title": "API Error Rate (5xx)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)",
-                    "legendFormat": "5xx ratio"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "color": {
-                        "mode": "fixed",
-                        "fixedColor": "red"
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 4
-            }
-        },
-        {
-            "id": 7,
-            "type": "timeseries",
-            "title": "Solver Job Duration (seconds)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "histogram_quantile(0.95, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
-                    "legendFormat": "p95"
-                },
-                {
-                    "refId": "B",
-                    "expr": "histogram_quantile(0.50, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
-                    "legendFormat": "p50"
-                }
-            ],
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 12
-            }
-        },
-        {
-            "id": 8,
-            "type": "logs",
-            "title": "Application Logs",
-            "datasource": {
-                "type": "loki",
-                "uid": "loki"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "{job=\"lunchlineup\"} |= ``",
-                    "legendFormat": ""
-                }
-            ],
-            "options": {
-                "dedupStrategy": "none",
-                "enableLogDetails": true,
-                "showLabels": true,
-                "showTime": true,
-                "wrapLogMessage": false
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 12
-            }
-        },
-        {
-            "id": 9,
-            "type": "timeseries",
-            "title": "Worker Job Failures",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum by (type, status) (rate(lunchlineup_worker_jobs_total{status=~\"failed|non_retryable\"}[5m]))",
-                    "legendFormat": "{{type}} {{status}}"
-                }
-            ],
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 20
-            }
-        },
-        {
-            "id": 10,
-            "type": "stat",
-            "title": "Service Scrape Health",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "up{job=~\"api|engine|worker|control|node\"}",
-                    "legendFormat": "{{job}}"
-                }
-            ],
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 20
-            }
-        },
-        {
-            "id": 11,
-            "type": "stat",
-            "title": "Backup Age (hours)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "(time() - lunchlineup_backup_last_success_timestamp_seconds) / 3600",
-                    "legendFormat": "hours since backup"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "yellow",
-                                "value": 12
-                            },
-                            {
-                                "color": "red",
-                                "value": 24
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 0,
-                "y": 28
-            }
-        },
-        {
-            "id": 12,
-            "type": "timeseries",
-            "title": "Host Filesystem Free",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "100 * node_filesystem_avail_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
-                    "legendFormat": "{{mountpoint}}"
-                }
-            ],
-            "gridPos": {
-                "h": 8,
-                "w": 12,
-                "x": 12,
-                "y": 28
-            }
-        },
-        {
-            "id": 13,
-            "type": "stat",
-            "title": "API Availability SLO (30d)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "100 * (1 - sum(increase(http_requests_total{job=\"api\",status=~\"5..\",route!~\"/(health|live|metrics)\"}[30d])) / clamp_min(sum(increase(http_requests_total{job=\"api\",route!~\"/(health|live|metrics)\"}[30d])), 1))",
-                    "legendFormat": "availability"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "unit": "percent",
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "red",
-                                "value": null
-                            },
-                            {
-                                "color": "yellow",
-                                "value": 99.5
-                            },
-                            {
-                                "color": "green",
-                                "value": 99.9
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 0,
-                "y": 36
-            }
-        },
-        {
-            "id": 14,
-            "type": "stat",
-            "title": "Public Web Availability SLO (30d)",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "100 * avg_over_time(lunchlineup_public_web_probe_success{job=\"node\"}[30d])",
-                    "legendFormat": "availability"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "unit": "percent",
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "red",
-                                "value": null
-                            },
-                            {
-                                "color": "yellow",
-                                "value": 99.5
-                            },
-                            {
-                                "color": "green",
-                                "value": 99.9
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 12,
-                "y": 36
-            }
-        },
-        {
-            "id": 15,
-            "type": "stat",
-            "title": "Availability PDF Parser Readiness",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "min(lunchlineup_pdf_parser_ready{job=\"worker\"})",
-                    "legendFormat": "ready"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "min": 0,
-                    "max": 1,
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "red",
-                                "value": null
-                            },
-                            {
-                                "color": "green",
-                                "value": 1
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 0,
-                "y": 41
-            }
-        },
-        {
-            "id": 16,
-            "type": "stat",
-            "title": "Staff Invitation Dead Letters",
-            "description": "Terminal rows require cause triage and a fresh business invitation; encrypted payloads are intentionally erased.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "sum(increase(lunchlineup_staff_invitation_outbox_total{job=\"worker\",status=\"dead_lettered\"}[15m]))",
-                    "legendFormat": "recent dead letters"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "min": 0,
-                    "max": 1,
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 1
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 12,
-                "y": 41
-            }
-        },
-        {
-            "id": 17,
-            "type": "stat",
-            "title": "Staff Invitation Provider Failure",
-            "description": "A value of 1 fails worker readiness; verify provider status, credentials, and egress.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "max(lunchlineup_staff_invitation_systemic_provider_failure{job=\"worker\"})",
-                    "legendFormat": "systemic failure"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "min": 0,
-                    "max": 1,
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 1
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 0,
-                "y": 46
-            }
-        },
-        {
-            "id": 18,
-            "type": "stat",
-            "title": "Staff Invitation Sweep Age",
-            "description": "Compare the last healthy sweep age with the configured maximum freshness bound.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})",
-                    "legendFormat": "seconds"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "unit": "s",
-                    "min": 0
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 12,
-                "x": 12,
-                "y": 46
-            }
-        },
-        {
-            "id": 19,
-            "type": "stat",
-            "title": "Staff Invitation Sweep Ready",
-            "description": "A value of 0 means the enabled sweep's latest cycle failed or detected systemic provider failure.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "min(lunchlineup_staff_invitation_sweep_ready{job=\"worker\"}) * ((time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})) <= bool max(lunchlineup_staff_invitation_sweep_max_staleness_seconds{job=\"worker\"}))",
-                    "legendFormat": "ready"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "min": 0,
-                    "max": 1,
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "red",
-                                "value": null
-                            },
-                            {
-                                "color": "green",
-                                "value": 1
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 6,
-                "w": 12,
-                "x": 0,
-                "y": 51
-            }
-        },
-        {
-            "id": 20,
-            "type": "timeseries",
-            "title": "Staff Invitation Backlog",
-            "description": "Due work should drain, expired leases should remain zero, and recent provider failures should stay below the configured outage threshold.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "max(lunchlineup_staff_invitation_due{job=\"worker\"})",
-                    "legendFormat": "due"
-                },
-                {
-                    "refId": "B",
-                    "expr": "max(lunchlineup_staff_invitation_expired_leases{job=\"worker\"})",
-                    "legendFormat": "expired leases"
-                },
-                {
-                    "refId": "C",
-                    "expr": "max(lunchlineup_staff_invitation_recent_provider_failures{job=\"worker\"})",
-                    "legendFormat": "recent provider failures"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "min": 0,
-                    "unit": "short"
-                }
-            },
-            "gridPos": {
-                "h": 6,
-                "w": 12,
-                "x": 12,
-                "y": 51
-            }
-        },
-        {
-            "id": 21,
-            "type": "stat",
-            "title": "Application Data Retention Execution Age",
-            "description": "Age of the automatic confirmed application_data execution. Retained-record dry runs are intentionally excluded.",
-            "datasource": {
-                "type": "prometheus",
-                "uid": "prometheus"
-            },
-            "targets": [
-                {
-                    "refId": "A",
-                    "expr": "time() - max(lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode=\"execute\",stage=\"application_data\"})",
-                    "legendFormat": "seconds"
-                }
-            ],
-            "fieldConfig": {
-                "defaults": {
-                    "unit": "s",
-                    "min": 0,
-                    "thresholds": {
-                        "mode": "absolute",
-                        "steps": [
-                            {
-                                "color": "green",
-                                "value": null
-                            },
-                            {
-                                "color": "red",
-                                "value": 93600
-                            }
-                        ]
-                    }
-                }
-            },
-            "gridPos": {
-                "h": 5,
-                "w": 24,
-                "x": 0,
-                "y": 57
-            }
-        }
-    ],
-    "refresh": "30s",
-    "schemaVersion": 38,
-    "tags": [
-        "lunchlineup",
-        "platform"
-    ],
-    "time": {
-        "from": "now-1h",
-        "to": "now"
+    {
+      "type": "datasource",
+      "id": "prometheus",
+      "name": "Prometheus",
+      "version": "1.0.0"
     },
-    "timepicker": {},
-    "timezone": "browser",
-    "title": "LunchLineup Platform Overview",
-    "uid": "lunchlineup-platform",
-    "version": 1
+    {
+      "type": "datasource",
+      "id": "loki",
+      "name": "Loki",
+      "version": "1.0.0"
+    },
+    {
+      "type": "datasource",
+      "id": "tempo",
+      "name": "Tempo",
+      "version": "1.0.0"
+    }
+  ],
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Native API Request Rate (req/s)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))",
+          "legendFormat": "requests",
+          "instant": true
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Unknown"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Native API p99 Latency (seconds)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))",
+          "legendFormat": "p99",
+          "instant": true
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Unknown"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Active Tenants",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "lunchlineup_active_tenants_total",
+          "legendFormat": "Tenants"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      }
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Solve Queue Depth",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "lunchlineup_solver_queue_depth",
+          "legendFormat": "Queue"
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Native API Request Rate by Route",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (method, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))",
+          "legendFormat": "{{method}} {{route}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Unknown"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Native API Eligible Response Error Ratio",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0)",
+          "legendFormat": "5xx ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "unit": "percentunit",
+          "noValue": "Unknown"
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      }
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Solver Job Duration (seconds)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
+          "legendFormat": "p95"
+        },
+        {
+          "refId": "B",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(lunchlineup_solver_duration_seconds_bucket[5m])))",
+          "legendFormat": "p50"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 12
+      }
+    },
+    {
+      "id": 8,
+      "type": "logs",
+      "title": "Application Logs",
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "{job=\"lunchlineup\"} |= ``",
+          "legendFormat": ""
+        }
+      ],
+      "options": {
+        "dedupStrategy": "none",
+        "enableLogDetails": true,
+        "showLabels": true,
+        "showTime": true,
+        "wrapLogMessage": false
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 12
+      }
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Worker Job Failures",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (type, status) (rate(lunchlineup_worker_jobs_total{status=~\"failed|non_retryable\"}[5m]))",
+          "legendFormat": "{{type}} {{status}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 20
+      }
+    },
+    {
+      "id": 10,
+      "type": "stat",
+      "title": "Service Scrape Health",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=~\"api|api-v2|engine|worker|webhook-replay|control|node\"}",
+          "legendFormat": "{{job}} {{instance}}",
+          "instant": true
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 20
+      },
+      "fieldConfig": {
+        "defaults": {
+          "noValue": "Unknown"
+        }
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "id": 11,
+      "type": "stat",
+      "title": "Backup Age (hours)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(time() - lunchlineup_backup_last_success_timestamp_seconds) / 3600",
+          "legendFormat": "hours since backup"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 12
+              },
+              {
+                "color": "red",
+                "value": 24
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Host Filesystem Free",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * node_filesystem_avail_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
+          "legendFormat": "{{mountpoint}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      }
+    },
+    {
+      "id": 13,
+      "type": "stat",
+      "title": "Native API Availability (30d, provisional)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(100 * (1 - ((sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30d])) or vector(0)) / sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d]))))) and (sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d])) > 0)",
+          "legendFormat": "availability",
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 99.5
+              },
+              {
+                "color": "green",
+                "value": 99.9
+              }
+            ]
+          },
+          "noValue": "Unknown"
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 36
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "last"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "description": "Completed native front-door application responses only: 2xx, 3xx, 5xx are eligible; 5xx are failures. No traffic yields no data. This response-window estimate is provisional until complete historical collection and independent launch evidence exist. Current scrape health cannot certify a complete 30-day SLO or months of private testing. Aborts, process death and readiness are separate gates."
+    },
+    {
+      "id": 14,
+      "type": "stat",
+      "title": "Public Web Availability SLO (30d)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "100 * avg_over_time(lunchlineup_public_web_probe_success{job=\"node\"}[30d])",
+          "legendFormat": "availability"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 99.5
+              },
+              {
+                "color": "green",
+                "value": 99.9
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 36
+      }
+    },
+    {
+      "id": 15,
+      "type": "stat",
+      "title": "Availability PDF Parser Readiness",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(lunchlineup_pdf_parser_ready{job=\"worker\"})",
+          "legendFormat": "ready"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      }
+    },
+    {
+      "id": 16,
+      "type": "stat",
+      "title": "Staff Invitation Dead Letters",
+      "description": "Terminal rows require cause triage and a fresh business invitation; encrypted payloads are intentionally erased.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(lunchlineup_staff_invitation_outbox_total{job=\"worker\",status=\"dead_lettered\"}[15m]))",
+          "legendFormat": "recent dead letters"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      }
+    },
+    {
+      "id": 17,
+      "type": "stat",
+      "title": "Staff Invitation Provider Failure",
+      "description": "A value of 1 fails worker readiness; verify provider status, credentials, and egress.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(lunchlineup_staff_invitation_systemic_provider_failure{job=\"worker\"})",
+          "legendFormat": "systemic failure"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      }
+    },
+    {
+      "id": 18,
+      "type": "stat",
+      "title": "Staff Invitation Sweep Age",
+      "description": "Compare the last healthy sweep age with the configured maximum freshness bound.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})",
+          "legendFormat": "seconds"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      }
+    },
+    {
+      "id": 19,
+      "type": "stat",
+      "title": "Staff Invitation Sweep Ready",
+      "description": "A value of 0 means the enabled sweep's latest cycle failed or detected systemic provider failure.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min(lunchlineup_staff_invitation_sweep_ready{job=\"worker\"}) * ((time() - max(lunchlineup_staff_invitation_sweep_last_success_unixtime{job=\"worker\"})) <= bool max(lunchlineup_staff_invitation_sweep_max_staleness_seconds{job=\"worker\"}))",
+          "legendFormat": "ready"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 0,
+        "y": 51
+      }
+    },
+    {
+      "id": 20,
+      "type": "timeseries",
+      "title": "Staff Invitation Backlog",
+      "description": "Due work should drain, expired leases should remain zero, and recent provider failures should stay below the configured outage threshold.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "max(lunchlineup_staff_invitation_due{job=\"worker\"})",
+          "legendFormat": "due"
+        },
+        {
+          "refId": "B",
+          "expr": "max(lunchlineup_staff_invitation_expired_leases{job=\"worker\"})",
+          "legendFormat": "expired leases"
+        },
+        {
+          "refId": "C",
+          "expr": "max(lunchlineup_staff_invitation_recent_provider_failures{job=\"worker\"})",
+          "legendFormat": "recent provider failures"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "min": 0,
+          "unit": "short"
+        }
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 12,
+        "x": 12,
+        "y": 51
+      }
+    },
+    {
+      "id": 21,
+      "type": "stat",
+      "title": "Application Data Retention Execution Age",
+      "description": "Age of the automatic confirmed application_data execution. Retained-record dry runs are intentionally excluded.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "time() - max(lunchlineup_retention_purge_last_attempt_timestamp_seconds{mode=\"execute\",stage=\"application_data\"})",
+          "legendFormat": "seconds"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 93600
+              }
+            ]
+          }
+        }
+      },
+      "gridPos": {
+        "h": 5,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      }
+    },
+    {
+      "id": 22,
+      "type": "stat",
+      "title": "Retained API Request Rate (diagnostic)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_requests_total{job=\"api\"}[1m]))",
+          "legendFormat": "requests"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 62,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "description": "Retained API diagnostics include downstream delegation and direct provider ingress; excluded from the native browser front-door availability budget."
+    },
+    {
+      "id": 23,
+      "type": "stat",
+      "title": "Retained API p99 Latency (ms, diagnostic)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))",
+          "legendFormat": "p99"
+        }
+      ],
+      "gridPos": {
+        "x": 12,
+        "y": 62,
+        "w": 12,
+        "h": 4
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        }
+      },
+      "description": "Retained API diagnostics include downstream delegation and direct provider ingress; excluded from the native browser front-door availability budget."
+    },
+    {
+      "id": 24,
+      "type": "timeseries",
+      "title": "Retained API Request Rate by Route",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))",
+          "legendFormat": "{{method}} {{route}}"
+        }
+      ],
+      "gridPos": {
+        "x": 0,
+        "y": 66,
+        "w": 12,
+        "h": 8
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps"
+        }
+      },
+      "description": "Retained API diagnostics include downstream delegation and direct provider ingress; excluded from the native browser front-door availability budget."
+    },
+    {
+      "id": 25,
+      "type": "timeseries",
+      "title": "Retained API Error Ratio (diagnostic)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)",
+          "legendFormat": "5xx ratio"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "red"
+          },
+          "unit": "percentunit"
+        }
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 66,
+        "w": 12,
+        "h": 8
+      },
+      "description": "Retained API diagnostics include downstream delegation and direct provider ingress; excluded from the native browser front-door availability budget."
+    },
+    {
+      "id": 26,
+      "type": "timeseries",
+      "title": "Native API Telemetry (scrape, not readiness)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"api-v2\"}",
+          "legendFormat": "scrape {{instance}}"
+        },
+        {
+          "refId": "B",
+          "expr": "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"}",
+          "legendFormat": "instrumentation {{instance}}"
+        },
+        {
+          "refId": "C",
+          "expr": "absent(up{job=\"api-v2\"})",
+          "legendFormat": "missing job"
+        },
+        {
+          "refId": "D",
+          "expr": "(up{job=\"api-v2\"} == 1) unless on (job, instance) (lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"} == 1)",
+          "legendFormat": "instrumentation fault {{instance}}"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 74
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown"
+        }
+      },
+      "description": "Separate scrape and marker diagnostics. A failed or absent target must not be mistaken for healthy readiness. Scaling requires an owned expected-target inventory; absent(up) detects a missing entire job."
+    },
+    {
+      "id": 27,
+      "type": "timeseries",
+      "title": "Native API Aborted Requests (diagnostic)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (reason) (rate(lunchlineup_api_v2_http_requests_aborted_total{job=\"api-v2\",scope=\"application\"}[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Unknown"
+        }
+      },
+      "description": "Uncompleted application requests are tracked separately by fixed reason. They do not receive fabricated response statuses or certify the completed-response SLI."
+    },
+    {
+      "id": 28,
+      "type": "timeseries",
+      "title": "Retained API Required Dependencies",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "min by (dependency) (lunchlineup_dependency_up{job=\"api\",dependency=~\"database|redis|rabbitmq\"})",
+          "legendFormat": "{{dependency}}"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Unknown"
+        }
+      },
+      "description": "Retained database/Redis/RabbitMQ health is separate from native scrape health. Missing telemetry is unknown and has its own dependency alert; this panel is not native readiness."
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": [
+    "lunchlineup",
+    "platform"
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "LunchLineup Platform Overview",
+  "uid": "lunchlineup-platform",
+  "version": 1
 }

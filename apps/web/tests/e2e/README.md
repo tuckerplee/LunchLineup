@@ -3,6 +3,12 @@
 ## Files
 
 - `README.md`: this E2E test folder guide.
+- `access-home-acceptance.spec.ts`: prepared real-backend access, Home and notification scenarios with role/session denials and independent readbacks.
+- `location-lifecycle-acceptance.spec.ts`: prepared real-backend location create/edit/deactivation, timezone validation and staff-denial scenarios.
+- `logout-surfaces-acceptance.spec.ts`: prepared native desktop/mobile logout and mandatory-PIN-reset session revocation scenarios.
+- `qa-context-cleanup.ts`: settles owned documents before guarded browser-context closure and retains primary and cleanup failures.
+- `staff-lifecycle-acceptance.spec.ts`: prepared native staff identity, role, availability, PIN, suspension and removal scenarios with saved-state readbacks.
+- `staff-native-response-capture.ts`: bounded original native-response capture for exact mutation contracts, with body ownership and privacy cleanup.
 - `authenticated-mobile-layout.spec.ts`: 375px/768px authenticated regression covering document width, all dashboard routes, permission-aware Home/Schedule/Breaks/Team/More navigation, keyboard access, and manager task links.
 - `authenticated-readiness.spec.ts`: default authenticated readiness gate with bounded/exact location fixtures, scoped scheduling, editor and modifier-drag shift duplication, resumable solve polling, shift-update response-loss replay, lunch/break idempotency, time cards, paid-subscription plus separate-credit billing, settings recovery, deletion receipts, and MFA coverage.
 - `core-flows.spec.ts`: public entrypoint, onboarding, login, and unauthenticated redirect smoke tests.
@@ -34,7 +40,7 @@
 
 The full-stack specs are skipped unless `E2E_FULL_STACK=1`, `E2E_COMPOSE_PROJECT_NAME`, and an absolute `E2E_COMPOSE_ENV_FILE` are set. The fixed Compose seed invocation runs `scripts/seed-e2e.mjs` for both a tenant admin (`E2E_ADMIN_USERNAME` / `E2E_ADMIN_PIN`) and a super admin (`E2E_SUPER_ADMIN_USERNAME` / `E2E_SUPER_ADMIN_PIN`) so tests can prove normal tenant dashboard access and platform-admin-only routes separately without executing an environment-supplied shell command.
 
-The internal-beta interaction files use the `.proof.ts` suffix and are intentionally undiscoverable by ordinary Playwright configuration. The release-image lane runs them through `playwright.interaction-proof.config.ts`; no critical case contains a runtime skip. Current carrier dependencies are the schedule-gesture contract (dead-zone/cancel/outside-drop safety, exact proposal, touch handle, keyboard fallback and optional Saved/Undo), a scheduling-page recovery change that restores only the rejected shift without issuing a whole-board `GET /api/v2/schedule-board`, the Lunch contract (overnight identity, disabled schedule-backed values, no inert toggles, confirmation plus exact separately purchased-credit cost), and the Time Cards contract (Team Time starts with an empty employee and disabled location/action until both targets are explicit). Compile/list can pass before those sibling carriers integrate, but the launch workflow cannot.
+The internal-beta interaction files use the `.proof.ts` suffix and are intentionally undiscoverable by ordinary Playwright configuration. The release-image lane runs them through `playwright.interaction-proof.config.ts`; no critical case contains a runtime skip. Current carrier dependencies are the schedule-gesture contract (dead-zone/cancel/outside-drop safety, exact proposal, touch handle, keyboard fallback and object-local Saved and backend-confirmed Undo), a scheduling-page recovery change that restores only the rejected shift without issuing a whole-board `GET /api/v2/schedule-board`, the Lunch contract (overnight identity, disabled schedule-backed values, no inert toggles, confirmation plus exact separately purchased-credit cost), and the Time Cards contract (Team Time starts with an empty employee and disabled location/action until both targets are explicit). Compile/list can pass before those sibling carriers integrate, but the launch workflow cannot.
 
 Normal local and CI E2E runs start `mock-api.mjs` unless `BASE_URL`, `E2E_FULL_STACK=1`, or `E2E_MOCK_API=0` is set. That default mock layer keeps the Playwright gate from passing with only public smoke: the Chromium readiness spec logs in with the seeded PIN user, opens scheduling, creates a shift, generates breaks, writes a time card, and proves credit-pack Checkout initiation/return without contacting Stripe or changing the server-reported balance. Mock billable access always requires both an active paid subscription and a positive separately purchased or granted credit balance; plans and trials grant no credits. Use `E2E_PUBLIC_SMOKE_ONLY=1` only when intentionally running unauthenticated public smoke.
 
@@ -57,3 +63,12 @@ $env:PLAYWRIGHT_PORT='4310'
 $env:PLAYWRIGHT_API_PORT='4311'
 npm.cmd run test:e2e --workspace @lunchlineup/web -- --project=chromium authenticated-readiness.spec.ts
 ```
+
+- `settings-recovery-acceptance.spec.ts`: recovery and acceptance regression checks.
+
+- `staff-repair-acceptance.spec.ts`: recovery and acceptance regression checks.
+
+- `qa-isolation-policy.ts`: disposable QA isolation and evidence checks.
+- `qa-isolation-controls.ts`: disposable QA isolation and evidence checks.
+- `qa-isolation-fixture.ts`: disposable QA isolation and evidence checks.
+- `qa-loopback-proxy.ts`: disposable QA isolation and evidence checks.

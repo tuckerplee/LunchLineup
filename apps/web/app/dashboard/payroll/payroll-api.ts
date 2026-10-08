@@ -64,7 +64,9 @@ export async function createPayrollPeriod(localStartDate: string, idempotencyKey
 }
 
 export async function fetchPayrollPeriod(periodId: string, cardCursor?: string | null): Promise<PayrollPeriodDetail> {
-  return normalizePayrollPeriodDetail(await fetchJsonWithSession<unknown>(payrollPeriodDetailPath(periodId, cardCursor)));
+  const detail = normalizePayrollPeriodDetail(await fetchJsonWithSession<unknown>(payrollPeriodDetailPath(periodId, cardCursor)));
+  if (detail.period.id !== periodId) throw new Error('The payroll period response does not match the requested period. Refresh payroll.');
+  return detail;
 }
 
 export type VersionBoundRows = {
@@ -139,11 +141,40 @@ export async function decidePayrollAmendment(
   );
 }
 
+function payrollResponseRecord(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function requirePayrollExportAcknowledgement(value: unknown, periodId: string): void {
+  const root = payrollResponseRecord(value);
+  const source = root && Object.prototype.hasOwnProperty.call(root, 'exportBatch')
+    ? payrollResponseRecord(root.exportBatch) : root;
+  const settlement = payrollResponseRecord(source?.settlement);
+  const nonnegativeInteger = (value: unknown) => Number.isSafeInteger(value) && Number(value) >= 0;
+  // Validate acknowledgement evidence before normalization can invent defaults.
+  // Opaque legacy IDs and native public UUIDs are both supported; period binding
+  // is exact. A valid but unexpected charge is still a confirmed export, so the
+  // caller retains its existing charge-warning behavior rather than replaying it.
+  if (!source || typeof source.id !== 'string' || source.id.trim().length === 0
+    || source.periodId !== periodId
+    || !Number.isSafeInteger(source.formatVersion) || Number(source.formatVersion) < 1
+    || typeof source.status !== 'string' || !['GENERATED', 'DOWNLOADED', 'RECONCILING', 'RECONCILED'].includes(source.status)
+    || typeof source.contentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(source.contentSha256)
+    || !nonnegativeInteger(source.rowCount) || !Number.isSafeInteger(source.totalPayableMinutes)
+    || !settlement || !nonnegativeInteger(settlement.consumedCredits) || !nonnegativeInteger(settlement.newBalance)
+    || typeof source.createdAt !== 'string' || !Number.isFinite(Date.parse(source.createdAt))) {
+    // No HTTP rejection is inferred: the server may already have committed.
+    throw new Error('The payroll export acknowledgement could not be verified. Refresh payroll before trying again.');
+  }
+}
+
 export async function createPayrollExport(periodId: string, expectedCreditCost: number, idempotencyKey: string): Promise<PayrollExportBatch> {
-  return normalizePayrollExport(await fetchJsonWithSession<unknown>(
+  const response = await fetchJsonWithSession<unknown>(
     `/payroll/periods/${encodeURIComponent(periodId)}/exports`,
     jsonRequest('POST', { expectedCreditCost }, idempotencyKey),
-  ));
+  );
+  requirePayrollExportAcknowledgement(response, periodId);
+  return normalizePayrollExport(response);
 }
 
 export async function fetchPayrollExport(exportId: string, lineCursor?: string | null): Promise<PayrollExportBatch> {

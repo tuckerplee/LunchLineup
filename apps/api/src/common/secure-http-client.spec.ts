@@ -1,4 +1,5 @@
 import { EventEmitter } from 'events';
+import { PassThrough } from 'stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import * as dns from 'dns/promises';
@@ -117,7 +118,99 @@ describe('secureHttpRequest', () => {
             .rejects
             .toThrow('Outbound response exceeded size limit');
     });
+
+    it.each([
+        [302, { location: 'https://example.com/next' }, 'Outbound redirects are disabled'],
+        [200, { 'content-length': 'invalid' }, 'Outbound response content length is invalid'],
+        [200, { 'content-length': '9007199254740992' }, 'Outbound response content length is invalid'],
+        [200, { 'content-length': '5' }, 'Outbound response exceeded size limit'],
+    ])('closes the response and request immediately after rejecting headers: %s %j', async (status, headers, message) => {
+        vi.useFakeTimers();
+        lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+        const transport = mockOpenHttpsResponse(status, headers);
+
+        // This receiver never finishes its body. Rejection must close transport,
+        // rather than leave an unbounded drain after the deadline is cleared.
+        await expect(secureHttpRequest('https://hooks.example.com/webhook', {
+            maxResponseBytes: 4, timeoutMs: 25,
+        })).rejects.toThrow(message);
+
+        expect(transport.response.destroyed).toBe(true);
+        expect(transport.request.destroyed).toBe(true);
+        expect(transport.resume).not.toHaveBeenCalled();
+        expect(vi.getTimerCount()).toBe(0);
+        expect(transport.response.write('still streaming')).toBe(false);
+    });
+
+    it('closes both sides when an undeclared streaming body exceeds the byte limit', async () => {
+        lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+        const transport = mockOpenHttpsResponse(200);
+        const result = secureHttpRequest('https://hooks.example.com/webhook', { maxResponseBytes: 4 });
+        const rejected = expect(result).rejects.toThrow('Outbound response exceeded size limit');
+        await vi.waitFor(() => expect(httpsRequestMock).toHaveBeenCalledOnce());
+        transport.response.write('12345');
+        await rejected;
+        expect(transport.response.destroyed).toBe(true);
+        expect(transport.request.destroyed).toBe(true);
+    });
+
+    it('preserves a bounded manual redirect response without following its Location', async () => {
+        lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+        const transport = mockOpenHttpsResponse(302, { location: 'https://example.com/next' });
+        const result = secureHttpRequest('https://hooks.example.com/webhook', { redirect: 'manual' });
+        await vi.waitFor(() => expect(httpsRequestMock).toHaveBeenCalledOnce());
+        expect(transport.request.destroyed).toBe(false);
+        transport.response.end('moved');
+        const response = await result;
+        expect(response.status).toBe(302);
+        expect(response.headers.get('location')).toBe('https://example.com/next');
+        expect(await response.text()).toBe('moved');
+        expect(httpsRequestMock).toHaveBeenCalledOnce();
+    });
+
+    it('rejects and closes an incomplete response instead of leaving the caller pending', async () => {
+        lookupMock.mockResolvedValue([{ address: '93.184.216.34', family: 4 }]);
+        const transport = mockOpenHttpsResponse(200);
+        const result = secureHttpRequest('https://hooks.example.com/webhook');
+        const rejected = expect(result).rejects.toThrow('Outbound response aborted');
+        await vi.waitFor(() => expect(httpsRequestMock).toHaveBeenCalledOnce());
+        transport.response.emit('aborted');
+        await rejected;
+        expect(transport.response.destroyed).toBe(true);
+        expect(transport.request.destroyed).toBe(true);
+    });
 });
+
+function mockOpenHttpsResponse(statusCode: number, headers: Record<string, string> = {}) {
+    const response = new PassThrough() as PassThrough & {
+        statusCode: number; statusMessage: string; headers: Record<string, string>;
+    };
+    response.statusCode = statusCode;
+    response.statusMessage = 'Test response';
+    response.headers = headers;
+    const resume = vi.spyOn(response, 'resume');
+    const request = new EventEmitter() as EventEmitter & {
+        destroyed: boolean; write: ReturnType<typeof vi.fn>; end: ReturnType<typeof vi.fn>;
+        destroy: Mock<(error?: Error) => EventEmitter>;
+    };
+    request.destroyed = false;
+    request.write = vi.fn();
+    request.destroy = vi.fn((error?: Error) => {
+        if (request.destroyed) return request;
+        request.destroyed = true;
+        if (error) request.emit('error', error);
+        return request;
+    });
+    httpsRequestMock.mockImplementation((options, callback) => {
+        request.end = vi.fn(() => callback(response));
+        options.signal.addEventListener('abort', () => {
+            response.destroy();
+            request.destroy(new Error('Outbound request timed out'));
+        }, { once: true });
+        return request;
+    });
+    return { request, response, resume };
+}
 
 function mockHttpsResponse(statusCode: number, headers: Record<string, string> = {}, body = '') {
     httpsRequestMock.mockImplementation((_options: unknown, callback: (res: any) => void) => {
@@ -130,6 +223,7 @@ function mockHttpsResponse(statusCode: number, headers: Record<string, string> =
             response.statusMessage = statusCode === 204 ? 'No Content' : 'Found';
             response.headers = headers;
             response.resume = vi.fn(() => response.emit('end'));
+            response.destroy = vi.fn();
             callback(response);
             if (body) {
                 response.emit('data', Buffer.from(body));

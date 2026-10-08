@@ -3,6 +3,12 @@
 ## Files
 
 - `README.md`: this migration test folder guide.
+- `database-role-timeout.test.mjs`: mocked child-process credential timeout propagation and ordinary credential-result provisioning regressions.
+- `legacy-import-receipt-schema.test.mjs`: static private receipt ABI, immutability, ownership, permission and planner-bound regressions; does not execute SQL.
+- `legacy-import-retry.test.mjs`: actual pure legacy planner/executor and report regressions over a closed staged adapter, including replay, lost acknowledgment and cleanup.
+- `native-billing-ledger-window.test.mjs`: injected-client grant/read/revoke window, target identity, settlement, error precedence and unknown-commit regressions without a database.
+- `native-billing-source-binding.test.mjs`: canonical native source/target receipt and bounded private-file snapshot regressions; metadata never grants admission.
+- `notification-failure-budget.test.mjs`: closed source-derived pre/schema/post transition regressions for notification retry budgets and preserved terminal privacy.
 - `api-v2-browser-cutover.test.mjs`: verifies API-01 removed browser and web-server v1 application targets, uses one exact shared 121-operation catalog without wildcard forwarding, keeps row-at-a-time shift mutations absent, defaults release builds to API v2, and keeps consumer-facing compliance/runbook application paths on v2 while the API-03 retention ingress remains explicit.
 - `billing-exact-once.test.mjs`: verifies authoritative paid-through plus non-`FREE` schema/API/worker threading, admin exact-session Serializable grant ownership, immutable `balanceAfter` storage/replay with retained nullable-writer rollout compatibility, attributed audit replay, and fail-closed legacy settlement handling.
 - `bounded-child-process.test.mjs`: proves migration subprocess deadlines terminate a TERM-ignoring descendant tree before it can perform delayed output.

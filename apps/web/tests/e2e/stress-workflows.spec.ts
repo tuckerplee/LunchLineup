@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { expect, test, type Page } from '@playwright/test';
+import { expect, test, type Page, type Route } from './qa-isolation-fixture';
 import type { ScheduleChangeSetResponse } from '@lunchlineup/api-contract';
 
 import {
@@ -81,17 +81,33 @@ async function shiftRowById(page: Page, scheduleId: string, shiftId: string) {
 }
 
 async function captureSuccessfulChangeSet(page: Page, action: () => Promise<void>) {
-  const responsePromise = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return response.request().method() === 'POST'
-      && /^\/api\/v2\/schedules\/[^/]+\/change-sets$/.test(url.pathname);
-  });
-  await action();
-  const response = await responsePromise;
-  expect(response.status(), `change-set response for ${response.url()}`).toBe(200);
-  const payload = await response.json() as ScheduleChangeSetResponse;
-  expect(payload.data.scheduleId, 'authoritative change-set schedule id').toBeTruthy();
-  return payload;
+  const endpoint = /\/api\/v2\/schedules\/[^/]+\/change-sets$/;
+  let resolve!: (payload: ScheduleChangeSetResponse) => void;
+  let reject!: (error: unknown) => void;
+  const captured = new Promise<ScheduleChangeSetResponse>((ok, fail) => { resolve = ok; reject = fail; });
+  const handler = async (route: Route) => {
+    if (route.request().method() !== 'POST') return route.continue();
+    try {
+      // Forward exactly one real mutation. Capture its body before the browser
+      // releases the protocol resource, then deliver the unchanged response.
+      const response = await route.fetch({ maxRetries: 0 });
+      const payload = await response.json() as ScheduleChangeSetResponse;
+      await route.fulfill({ response });
+      expect(response.status(), 'real change-set response').toBe(200);
+      expect(payload.data.scheduleId, 'authoritative change-set schedule id').toBeTruthy();
+      resolve(payload);
+    } catch (error) {
+      reject(error);
+      await route.abort().catch(() => undefined);
+    }
+  };
+  await page.route(endpoint, handler);
+  try {
+    const [payload] = await Promise.all([captured, action()]);
+    return payload;
+  } finally {
+    await page.unroute(endpoint, handler);
+  }
 }
 
 async function submitCreatedShift(page: Page, form: ReturnType<Page['locator']>) {
@@ -215,6 +231,15 @@ async function submitConfirmedLunchSetup(page: Page) {
   await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
 }
 
+async function submitConfirmedLunchGeneration(page: Page, persisted: boolean, click: () => Promise<void>) {
+  const confirmation = page.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toBe(`Generate a lunch and break plan for 1 shift? This uses exactly 1 usage credit.${persisted ? ' Existing break assignments for these shifts will be replaced.' : ' This creates a preview.'} Unchanged retries recover the same request.`);
+    await dialog.accept();
+  });
+  await Promise.all([confirmation, click()]);
+}
+
 test.describe('Lunch setup editor safety', () => {
   test.skip(runFullStack, 'The focused editor contract uses the local deterministic API fixture.');
 
@@ -225,6 +250,14 @@ test.describe('Lunch setup editor safety', () => {
     let setupRequests = 0;
     let shiftBreakRequests = 0;
     let dayReadRequests = 0;
+    let releaseThirdShiftBreakResponse!: () => void;
+    const thirdShiftBreakResponseGate = new Promise<void>((resolve) => {
+      releaseThirdShiftBreakResponse = resolve;
+    });
+    let observeThirdShiftBreakRequest!: () => void;
+    const thirdShiftBreakRequest = new Promise<void>((resolve) => {
+      observeThirdShiftBreakRequest = resolve;
+    });
     await page.route(/\/api\/v2\/lunch-breaks\?.+/, async (route) => {
       dayReadRequests += 1;
       await route.fulfill({
@@ -269,6 +302,21 @@ test.describe('Lunch setup editor safety', () => {
       shiftBreakRequests += 1;
       shiftBreakKeys.push(route.request().headers()['idempotency-key'] ?? '');
       shiftBreakBodies.push(route.request().postDataJSON());
+      if (shiftBreakRequests === 3) {
+        observeThirdShiftBreakRequest();
+        await thirdShiftBreakResponseGate;
+        await route.fulfill({
+          status: 403,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            statusCode: 403,
+            code: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED',
+            message: 'Manual lunch/break replacement requires an active paid subscription and enough usage credits.',
+            remediation: 'Add the configured credits, then retry the unchanged save.',
+          }),
+        });
+        return;
+      }
       if (shiftBreakRequests === 1) {
         await route.fulfill({
           status: 403,
@@ -403,6 +451,57 @@ test.describe('Lunch setup editor safety', () => {
       Object.keys(window.localStorage).some((key) => key.startsWith(prefix))
     ), SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX)).toBe(false);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+
+    // A later control focus owns the UI while this new save is still pending.
+    const mealTime = page.getByLabel('Meal time for Mock Staff');
+    const newerFocusedControl = page.getByRole('combobox', { name: 'Location America/Los_Angeles', exact: true });
+    await expect(newerFocusedControl).toBeVisible();
+    await expect(newerFocusedControl).toBeEnabled();
+    try {
+      await mealTime.fill('12:30');
+      await saveShiftButton.click();
+      await thirdShiftBreakRequest;
+      const savingShiftButton = page.locator('button[aria-describedby="shift-break-save-cost-shift-1"]');
+      await expect(savingShiftButton).toHaveAccessibleName('Saving...');
+      await expect(savingShiftButton).toBeDisabled();
+      await newerFocusedControl.focus();
+      await expect(newerFocusedControl).toBeFocused();
+    } finally {
+      releaseThirdShiftBreakResponse();
+    }
+    await expect(page.getByRole('alert').filter({ hasText: 'SHIFT_BREAKS_ENTITLEMENT_REQUIRED' })).toBeVisible();
+    await expect(saveShiftButton).toBeEnabled();
+    // Let any obsolete rAF handoff run before checking that newer focus survives.
+    await page.evaluate(() => new Promise<void>((resolve) => {
+      window.requestAnimationFrame(() => window.requestAnimationFrame(() => resolve()));
+    }));
+    await expect(newerFocusedControl).toBeFocused();
+    await expect(mealTime).toHaveValue('12:30');
+    expect(shiftBreakKeys).toHaveLength(3);
+    expect(shiftBreakKeys[2]).toBeTruthy();
+    expect(shiftBreakKeys[2]).not.toBe(shiftBreakKeys[1]);
+    expect(shiftBreakBodies[2]).toMatchObject({
+      locationId: DOWNTOWN_LOCATION_ID,
+      breaks: expect.arrayContaining([{
+        type: 'lunch',
+        startTime: '2026-07-16T19:30:00.000Z',
+        durationMinutes: 30,
+        skip: false,
+      }]),
+    });
+    const retainedNewShiftBreak = await page.evaluate((prefix) => {
+      const key = Object.keys(window.localStorage).find((candidate) => candidate.startsWith(prefix));
+      return key ? JSON.parse(window.localStorage.getItem(key) ?? 'null') as Record<string, unknown> : null;
+    }, SHIFT_BREAK_UPDATE_RECOVERY_KEY_PREFIX);
+    expect(retainedNewShiftBreak).toMatchObject({
+      attempt: { key: shiftBreakKeys[2] },
+      identity: {
+        shiftId: 'shift-1',
+        locationId: DOWNTOWN_LOCATION_ID,
+        userId: ADMIN_USER_ID,
+      },
+    });
+    expect(JSON.stringify(retainedNewShiftBreak)).not.toMatch(/tenant-e2e|user-admin|session-admin|loc-downtown/);
   });
 
   test('retains A through B after A commits and loses its response, then replays A exactly once', async ({ page }) => {
@@ -448,7 +547,9 @@ test.describe('Lunch setup editor safety', () => {
 
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
     await submitVisibleSetup('Scope A Staff');
-    await expect(page.getByRole('alert').filter({ hasText: 'Setup shifts were not saved' })).toBeVisible();
+    const uncertainSetup = page.getByRole('alert').filter({ hasText: 'Setup save could not be confirmed' });
+    await expect(uncertainSetup).toBeVisible();
+    await expect(uncertainSetup).toContainText('Retry with the same entries to recover this request without creating duplicate shifts or charging again.');
     await expect.poll(() => setupCalls.filter((call) => call.locationId === 'loc-downtown').length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -639,7 +740,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await submitConfirmedLunchGeneration(page, true, () => page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click());
     await expect.poll(() => generationCalls.length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -649,7 +750,7 @@ test.describe('Lunch setup editor safety', () => {
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     const generateB = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first();
-    await generateB.click();
+    await submitConfirmedLunchGeneration(page, true, () => generateB.click());
     await expect.poll(() => generationCalls.filter((call) => call.locationId === 'loc-uptown').length).toBe(1);
 
     releaseGenerationA?.();
@@ -713,7 +814,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: 'Manual fallback' }).first().click();
     await expect(page.getByText('Manual mode', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Add shift' }).click();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await submitConfirmedLunchGeneration(page, false, () => page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click());
     await expect.poll(() => generationCalls.length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
@@ -721,7 +822,7 @@ test.describe('Lunch setup editor safety', () => {
     await page.getByRole('button', { name: 'Manual fallback' }).first().click();
     await expect(page.getByText('Manual mode', { exact: true })).toBeVisible();
     const generateB = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first();
-    await generateB.click();
+    await submitConfirmedLunchGeneration(page, false, () => generateB.click());
     await expect.poll(() => generationCalls.length).toBe(2);
 
     releaseGenerationA?.();
@@ -729,7 +830,15 @@ test.describe('Lunch setup editor safety', () => {
     await expect(page.getByRole('button', { name: 'Generating plan...' })).toBeDisabled();
     releaseGenerationB?.();
     await expect(page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first()).toBeEnabled();
-    await expect(page.getByText('Scope B Manual', { exact: true }).first()).toBeVisible();
+    const actionPane = page.getByRole('complementary').filter({
+      has: page.getByRole('heading', { name: 'Action pane', exact: true }),
+    });
+    await expect(actionPane).toHaveCount(1);
+    await expect(actionPane.getByText('Standalone preview', { exact: true })).toBeVisible();
+    const resultB = actionPane.getByText('Scope B Manual', { exact: true });
+    await expect(resultB).toHaveCount(1);
+    await expect(resultB).toBeVisible();
+    await expect(resultB.locator('..')).toContainText('1 planned break(s)');
     await expect(page.getByText('Scope A Manual', { exact: true })).toHaveCount(0);
 
     const bCall = generationCalls[1];
@@ -931,7 +1040,13 @@ test.describe.serial('Stress operations workflows', { tag: '@full-stack' }, () =
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
+    const confirmationPromise = page.waitForEvent('dialog');
+    const generationClick = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
+    const confirmation = await confirmationPromise;
+    expect(confirmation.type()).toBe('confirm');
+    expect(confirmation.message()).toMatch(/Generate a lunch and break plan for 1 shift\? This uses exactly \d+ usage credits?/);
+    await confirmation.accept();
+    await generationClick;
     await expect(page.getByText('Meals assigned: 1')).toBeVisible();
     await expect(page.getByText('Breaks assigned: 2')).toBeVisible();
 

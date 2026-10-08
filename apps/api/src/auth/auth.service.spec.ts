@@ -1,5 +1,7 @@
 import { afterEach, describe, it, expect, vi, beforeEach } from 'vitest';
 import { BadRequestException, ConflictException, ForbiddenException, ServiceUnavailableException, UnauthorizedException } from '@nestjs/common';
+import { runSerializableMutationWithRetry } from './serializable-mutation';
+import { freezeMutationActor } from './current-mutation';
 import { AuthService } from './auth.service';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
@@ -77,7 +79,20 @@ const mockJwtService = {
 };
 
 const mockRbacService = {
+    // Existing PIN-domain cases model the final authorized operation only;
+    // they are not a current-policy/MFA proof for the shared two-pass wrapper.
+    runCurrentMutation: vi.fn(async (options: any, authorize: any, operation: any) => {
+        const actor = freezeMutationActor(options.actor);
+        return runSerializableMutationWithRetry(() => mockPrisma.$transaction(async (tx: any) =>
+            operation(tx, await authorize(tx, actor), () => {}, actor),
+        { isolationLevel: 'Serializable' }), {
+            conflictMessage: options.conflictMessage ?? 'Authorization or access state changed concurrently; retry the request',
+            isConflict: options.isConflict,
+        });
+    }),
     getEffectiveAccess: vi.fn(),
+    getEffectiveAccessInTransaction: vi.fn((_tx: unknown, userId: string, tenantId: string) =>
+        mockRbacService.getEffectiveAccess(userId, tenantId)),
     assignLegacySystemRole: vi.fn(),
     provisionLegacySystemRole: vi.fn(),
     authorizeUserAdministrationInTransaction: vi.fn(),
@@ -212,6 +227,17 @@ function resetPrismaMocks() {
     mockPrisma.onboardingSignupAttempt.update.mockReset();
 }
 
+// These three legacy reset tests model a current locked account and a
+// successful SQL-clock claim. The separate current-authority suite exercises
+// stale reads, advancing expiry, selectors and transaction-private effects.
+function installCurrentPasswordResetStatementMocks() {
+    mockPrisma.user.findFirst.mockResolvedValue({ id:'u-reset', tenantId:'t-1', email:'reset@example.com',
+        deletedAt:null, suspendedAt:null, passwordHash:'existing-password-hash' });
+    mockPrisma.$queryRaw.mockImplementation(async (sql: TemplateStringsArray, ...values: unknown[]) =>
+        sql.join('').includes('UPDATE "PasswordResetToken"')
+            ? [{ id:values[0], consumedAt:new Date() }] : [{ id:'locked-current-row' }]);
+}
+
 function installAuditFailureRollbackHarness(
     account: Record<string, any>,
     sessions: Array<{ id: string; userId: string; revokedAt: Date | null }>,
@@ -239,6 +265,10 @@ function installAuditFailureRollbackHarness(
             },
             session: {
                 ...mockPrisma.session,
+                findFirst: vi.fn().mockImplementation(async ({ where }: any) => {
+                    const selected = draftSessions.find(session => session.id === where.id && session.userId === where.userId);
+                    return selected ? { ...selected } : null;
+                }),
                 findMany: vi.fn().mockImplementation(async () => draftSessions
                     .filter((session) => session.revokedAt === null)
                     .map(({ id }) => ({ id }))),
@@ -738,16 +768,23 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
 describe('AuthService - OIDC state', () => {
     let service: AuthService;
     let redis: any;
+    let states: Map<string, string>;
 
     beforeEach(() => {
         vi.clearAllMocks();
         resetPrismaMocks();
         service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
         (service as any).prisma = mockPrisma;
+        states = new Map();
         redis = {
-            set: vi.fn(),
-            get: vi.fn(),
-            del: vi.fn(),
+            set: vi.fn(async (key: string, payload: string) => { states.set(key, payload); return 'OK'; }),
+            get: vi.fn(async (key: string) => states.get(key) ?? null),
+            getdel: vi.fn(async (key: string) => {
+                const payload = states.get(key) ?? null;
+                states.delete(key);
+                return payload;
+            }),
+            del: vi.fn(async (key: string) => states.delete(key) ? 1 : 0),
             on: vi.fn(),
         };
         (service as any).redis = redis;
@@ -771,17 +808,16 @@ describe('AuthService - OIDC state', () => {
 
     it('consumes OIDC state once and rejects missing state', async () => {
         const oidcState = await service.createOidcState('/dashboard', 'demo');
-        const storedPayload = redis.set.mock.calls[0][1];
-        redis.get.mockResolvedValue(storedPayload);
 
         await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce)).resolves.toEqual({
             nextPath: '/dashboard',
             tenantSlug: 'demo',
             createdAt: expect.any(Number),
         });
-        expect(redis.del).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.getdel).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
 
-        redis.get.mockResolvedValue(null);
         await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce))
             .rejects
             .toBeInstanceOf(UnauthorizedException);
@@ -789,17 +825,70 @@ describe('AuthService - OIDC state', () => {
 
     it('rejects state redemption from a browser without the initiating correlation nonce', async () => {
         const oidcState = await service.createOidcState('/dashboard', 'demo');
-        const storedPayload = redis.set.mock.calls[0][1];
         const otherBrowserNonce = oidcState.correlationNonce === 'b'.repeat(64)
             ? 'c'.repeat(64)
             : 'b'.repeat(64);
-        redis.get.mockResolvedValue(storedPayload);
 
         await expect(service.consumeOidcState(oidcState.state, otherBrowserNonce))
             .rejects
             .toBeInstanceOf(UnauthorizedException);
 
-        expect(redis.del).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        expect(redis.getdel).toHaveBeenCalledWith(`oidc_state:${oidcState.state}`);
+        await expect(service.consumeOidcState(oidcState.state, oidcState.correlationNonce))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('allows exactly one simultaneous OIDC state claim and refuses replay', async () => {
+        const first = await service.createOidcState('/dashboard/staff', 'demo');
+        const second = await service.createOidcState('/dashboard/schedules', 'other');
+        const pending = [
+            service.consumeOidcState(first.state, first.correlationNonce),
+            service.consumeOidcState(first.state, first.correlationNonce),
+        ];
+        const results = await Promise.allSettled(pending);
+        expect(results.filter(result => result.status === 'fulfilled')).toEqual([{
+            status: 'fulfilled', value: { nextPath: '/dashboard/staff', tenantSlug: 'demo', createdAt: expect.any(Number) },
+        }]);
+        const rejected = results.filter(result => result.status === 'rejected');
+        expect(rejected).toHaveLength(1);
+        expect(rejected[0].reason).toBeInstanceOf(UnauthorizedException);
+        expect(states.has(`oidc_state:${first.state}`)).toBe(false);
+        expect(states.has(`oidc_state:${second.state}`)).toBe(true);
+        await expect(service.consumeOidcState(first.state, first.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        await expect(service.consumeOidcState(second.state, second.correlationNonce)).resolves.toEqual({
+            nextPath: '/dashboard/schedules', tenantSlug: 'other', createdAt: expect.any(Number),
+        });
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
+    });
+
+    it('refuses malformed OIDC state before any Redis claim', async () => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        for (const invalid of ['', 'a'.repeat(63), 'a'.repeat(65), 'g'.repeat(64)]) {
+            await expect(service.consumeOidcState(invalid, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        }
+        expect(redis.getdel).not.toHaveBeenCalled();
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
+        expect(states.has(`oidc_state:${state.state}`)).toBe(true);
+    });
+
+    it.each(['', '{}', 'null', '{', '{"correlationHash":7}'])('burns invalid claimed OIDC payload %s and refuses retry', async payload => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        const key = `oidc_state:${state.state}`;
+        states.set(key, payload);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(states.has(key)).toBe(false);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBeInstanceOf(UnauthorizedException);
+    });
+
+    it('propagates an atomic OIDC claim failure without split-command fallback', async () => {
+        const state = await service.createOidcState('/dashboard', 'demo');
+        const failure = new Error('GETDEL unavailable');
+        redis.getdel.mockRejectedValueOnce(failure);
+        await expect(service.consumeOidcState(state.state, state.correlationNonce)).rejects.toBe(failure);
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
     });
 });
 
@@ -1837,6 +1926,118 @@ describe('AuthService – mixed auth flow', () => {
         expect((service as any).getRedis().set).not.toHaveBeenCalled();
     });
 
+    it.each(['changed', 'removed'] as const)(
+        'rejects a verified password when its hash is %s before locked session issuance',
+        async (change) => {
+            const passwordHash = bcrypt.hashSync('correct-horse', 10);
+            const verifiedUser = {
+                id: 'u-password-reset-race',
+                tenantId: 't-1',
+                role: 'STAFF',
+                email: null,
+                username: 'legacyuser',
+                mfaEnabled: false,
+                passwordHash,
+                loginAttempts: 0,
+                lockedUntil: null,
+            };
+            const changedUser = {
+                ...verifiedUser,
+                passwordHash: change === 'changed' ? bcrypt.hashSync('replacement-password', 10) : null,
+            };
+            // Lookup and locked verification see the old credential. The issuer's
+            // separate locked reread sees the reset/deletion that committed next.
+            mockPrisma.user.findFirst
+                .mockResolvedValueOnce(verifiedUser)
+                .mockResolvedValueOnce(verifiedUser)
+                .mockResolvedValueOnce(changedUser);
+            mockRbacService.getEffectiveAccess.mockResolvedValue({
+                primaryRole: 'STAFF', roles: [], permissions: ['auth:login_password'],
+            });
+
+            await expect(service.loginWithUsernamePassword('LegacyUser', 'correct-horse', 'demo'))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+
+            expect(mockPrisma.user.findFirst).toHaveBeenCalledTimes(3);
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        },
+    );
+
+    it('rejects password session issuance after the password login permission is revoked', async () => {
+        const passwordHash = bcrypt.hashSync('correct-horse', 10);
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'u-password-permission-race',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash,
+            loginAttempts: 0,
+            lockedUntil: null,
+        });
+        mockRbacService.getEffectiveAccess
+            .mockResolvedValueOnce({
+                primaryRole: 'STAFF', roles: [], permissions: ['auth:login_password', 'dashboard:access'],
+            })
+            .mockResolvedValueOnce({
+                primaryRole: 'STAFF', roles: [], permissions: ['dashboard:access'],
+            });
+
+        await expect(service.loginWithUsernamePassword('LegacyUser', 'correct-horse', 'demo'))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+
+        expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledTimes(2);
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it('rejects direct password session issuance without a verified credential proof', async () => {
+        const user = {
+            id: 'u-password-missing-proof',
+            tenantId: 't-1',
+            role: 'STAFF',
+            email: null,
+            username: 'legacyuser',
+            mfaEnabled: false,
+            passwordHash: bcrypt.hashSync('correct-horse', 10),
+        };
+        mockPrisma.user.findFirst.mockResolvedValue(user);
+
+        await expect((service as any).createSessionTokens(user, { loginMethod: 'USERNAME_PASSWORD' }))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+
+        expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it.each(['changed', 'removed', 'missing-proof'] as const)(
+        'rejects email session issuance after a %s verified identity',
+        async (change) => {
+            const verified = {
+                id: 'u-email-identity-race', tenantId: 't-1', role: 'STAFF',
+                email: 'former@example.com', username: null, mfaEnabled: false,
+            };
+            mockPrisma.user.findFirst.mockResolvedValue({
+                ...verified,
+                email: change === 'changed' ? 'replacement@example.com' : change === 'removed' ? null : verified.email,
+            });
+            const proof = change === 'missing-proof' ? undefined : { email: verified.email };
+            await expect((service as any).createSessionTokens(
+                verified, { loginMethod: 'EMAIL_OTP' }, true, null, undefined, undefined, proof,
+            )).rejects.toBeInstanceOf(UnauthorizedException);
+            expect(mockRbacService.getEffectiveAccess).not.toHaveBeenCalled();
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        },
+    );
+
     it('records failed password attempt on invalid migrated password', async () => {
         const passwordHash = bcrypt.hashSync('right-password', 10);
         mockPrisma.user.findFirst.mockResolvedValue({
@@ -1931,6 +2132,7 @@ describe('AuthService – mixed auth flow', () => {
             id: 'u-reset',
             tenantId: 't-1',
             email: 'legacy@example.com',
+            passwordHash: 'existing-password-hash',
         });
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'STAFF',
@@ -2004,6 +2206,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('consumes a password reset token, updates the hash, and revokes sessions', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_123456789012345678901234';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         mockPrisma.passwordResetToken.findFirst.mockResolvedValue({
@@ -2044,14 +2247,9 @@ describe('AuthService – mixed auth flow', () => {
             },
             data: { revokedAt: expect.any(Date) },
         });
-        expect(mockPrisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
-            where: {
-                id: 'prt-1',
-                consumedAt: null,
-                expiresAt: { gt: expect.any(Date) },
-            },
-            data: { consumedAt: expect.any(Date) },
-        });
+        const claim = mockPrisma.$queryRaw.mock.calls.find(([sql]) => sql.join('').includes('UPDATE "PasswordResetToken"'));
+        expect(claim?.slice(1)).toEqual(['prt-1','t-1','u-reset',tokenHash]);
+        expect(claim?.[0].join('')).toContain('clock_timestamp()');
         expect(mockPrisma.auditLog.create).toHaveBeenCalledWith({
             data: {
                 tenantId: 't-1',
@@ -2069,6 +2267,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('keeps Redis cleanup provider details out of password-reset warning logs', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_123456789012345678901234';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         const secret = 'redis://default:cleanup-secret@private-cache.internal:6379';
@@ -2112,6 +2311,7 @@ describe('AuthService – mixed auth flow', () => {
     });
 
     it('fails closed inside the password-reset transaction when its audit event cannot be persisted', async () => {
+        installCurrentPasswordResetStatementMocks();
         const token = 'reset_token_audit_failure_123456789012345';
         const tokenHash = (service as any).hashPasswordResetToken(token);
         mockPrisma.passwordResetToken.findFirst.mockResolvedValue({
@@ -2288,9 +2488,15 @@ describe('AuthService – mixed auth flow', () => {
         (service as any).redis = redis;
         mockPrisma.user.findFirst.mockResolvedValue({
             id: 'u-3',
+            tenantId: 't-1',
+            pinResetRequired: true,
             username: 'nightlead',
             pinHash,
         });
+        mockPrisma.session.findFirst.mockImplementation(async ({ where }: any) =>
+            where.id === 'session-current' && where.userId === 'u-3'
+                ? { id: 'session-current', userId: 'u-3', revokedAt: null,
+                    createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) } : null);
         mockPrisma.user.updateMany.mockResolvedValue({ count: 1 });
         mockPrisma.session.findMany.mockResolvedValue([{ id: 'session-1' }]);
 
@@ -2627,7 +2833,8 @@ describe('AuthService – mixed auth flow', () => {
             deletedAt: null,
             suspendedAt: null,
         };
-        const sessions = [{ id: 'session-rollback', userId: account.id, revokedAt: null }];
+        const sessions = [{ id: 'session-rollback', userId: account.id, revokedAt: null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) }];
         const redis = { del: vi.fn(), on: vi.fn() };
         (service as any).redis = redis;
         installAuditFailureRollbackHarness(account, sessions, new Error('audit unavailable'));
@@ -2906,9 +3113,13 @@ describe('AuthService - MFA and refresh state', () => {
             role: 'STAFF',
             email: null,
             username: 'staff',
+            pinHash: (service as any).hashPin('123456'),
             mfaEnabled: false,
         };
         mockPrisma.user.findFirst.mockResolvedValue(user);
+        mockRbacService.getEffectiveAccess.mockResolvedValue({
+            primaryRole: 'STAFF', roles: [], permissions: ['auth:login_pin'],
+        });
         mockPrisma.session.create.mockResolvedValue({ id: 's-session', refreshToken: 'refresh-session' });
         mockPrisma.session.findMany.mockResolvedValue([
             { id: 'old-session-1' },
@@ -2920,7 +3131,7 @@ describe('AuthService - MFA and refresh state', () => {
             loginMethod: 'USERNAME_PIN',
             ipAddress: '203.0.113.44',
             userAgent: 'Vitest Browser',
-        });
+        }, true, null, { username: user.username, pinHash: user.pinHash });
 
         expect(mockPrisma.$transaction).toHaveBeenCalledWith(
             expect.any(Function),
@@ -2991,6 +3202,7 @@ describe('AuthService - MFA and refresh state', () => {
                 role: 'STAFF',
                 email: 'staff@example.com',
                 username: 'staff',
+            pinHash: (service as any).hashPin('123456'),
                 mfaEnabled: false,
             }, { loginMethod })).rejects.toBeInstanceOf(UnauthorizedException);
 
@@ -3150,8 +3362,9 @@ describe('AuthService - MFA and refresh state', () => {
     it('requires MFA for privileged tenant operations even without platform admin access', async () => {
         mockRbacService.getEffectiveAccess.mockResolvedValue({
             primaryRole: 'Admin',
-            roles: [],
-            permissions: ['dashboard:access', 'settings:write'],
+            roles: [{ id: 'role-settings-admin', name: 'Admin', isSystem: true,
+                permissions: ['auth:login_email', 'dashboard:access', 'settings:write'] }],
+            permissions: ['auth:login_email', 'dashboard:access', 'settings:write'],
         });
         mockPrisma.user.findFirst.mockResolvedValue({
             id: 'u-settings-admin',
@@ -3171,7 +3384,7 @@ describe('AuthService - MFA and refresh state', () => {
             email: 'admin@example.com',
             username: null,
             mfaEnabled: false,
-        }, { loginMethod: 'EMAIL_OTP' });
+        }, { loginMethod: 'EMAIL_OTP' }, true, null, undefined, undefined, { email: 'admin@example.com' });
 
         expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
             sessionId: 's-settings-admin',
@@ -3235,18 +3448,7 @@ describe('AuthService - MFA and refresh state', () => {
             include: { user: true },
         });
         expect(mockPrisma.session.findFirst).toHaveBeenNthCalledWith(2, {
-            where: {
-                refreshToken: {
-                    in: [
-                        (service as any).hashRefreshToken(rawRefreshToken),
-                        rawRefreshToken,
-                    ],
-                },
-            },
-            select: { id: true },
-        });
-        expect(mockPrisma.session.findFirst).toHaveBeenNthCalledWith(3, {
-            where: { id: 's-refresh' },
+            where: { id: 's-refresh', userId: 'u-refresh' },
             include: { user: true },
         });
         expect(mockPrisma.refreshTokenReplay.create).toHaveBeenCalledWith({
@@ -3584,6 +3786,65 @@ describe('AuthService - MFA and refresh state', () => {
 
         expect(mockPrisma.session.updateMany).not.toHaveBeenCalled();
     });
+
+    it.each(['revoked', 'already_invalid'] as const)('preserves authoritative logout %s when MFA marker cleanup fails', async status => {
+        const session = { id: 's-logout-cleanup', userId: 'u-logout-cleanup',
+            user: { id: 'u-logout-cleanup', tenantId: 't-1', role: 'STAFF', deletedAt: null, suspendedAt: null, mfaEnabled: false },
+            revokedAt: status === 'already_invalid' ? new Date() : null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) };
+        mockPrisma.session.findFirst.mockImplementation(async () => ({ ...session }));
+        mockPrisma.session.updateMany.mockImplementation(async ({ data }: any) => {
+            session.revokedAt = data.revokedAt;
+            return { count: 1 };
+        });
+        const cleanupFailure = Object.assign(new Error('secret-refresh-token and Redis endpoint must not be logged'), { code: 'ECONNRESET' });
+        (service as any).redis.del.mockRejectedValueOnce(cleanupFailure);
+        const warning = vi.spyOn((service as any).logger, 'warn').mockImplementation(() => undefined);
+        try {
+            await expect(service.revokeSessionByRefreshToken('synthetic-logout-bearer')).resolves.toEqual({ status });
+            expect(session.revokedAt).toBeInstanceOf(Date);
+            expect(mockPrisma.session.updateMany).toHaveBeenCalledTimes(status === 'revoked' ? 1 : 0);
+            expect((service as any).redis.del).toHaveBeenCalledWith('session_mfa:s-logout-cleanup');
+            expect(warning).toHaveBeenCalledOnce();
+            const diagnostic = JSON.parse(String(warning.mock.calls[0]![0]));
+            expect(diagnostic).toEqual({ event: 'auth.logout_mfa_cleanup_failed', errorClass: 'Error',
+                category: 'connectivity', code: 'ECONNRESET' });
+            await expect(service.validateAccessSession({ sub: session.userId, tenantId: 't-1', sessionId: session.id } as any))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+        } finally { warning.mockRestore(); }
+    });
+
+    it('does not classify logout as complete or clear markers when durable revocation fails', async () => {
+        mockPrisma.session.findFirst.mockResolvedValue({ id: 's-logout-db-failure', revokedAt: null,
+            expiresAt: new Date(Date.now() + 15 * 60_000) });
+        const failure = new Error('owned database failure');
+        mockPrisma.session.updateMany.mockRejectedValueOnce(failure);
+        await expect(service.revokeSessionByRefreshToken('synthetic-logout-bearer')).rejects.toBe(failure);
+        expect((service as any).redis.del).not.toHaveBeenCalled();
+    });
+    function installDurableEnrollmentStatements(session: { id: string; userId: string }, initialSecret?: string) {
+        let encrypted = initialSecret ? (service as any).encryptMfaSecret(initialSecret) : null;
+        let deadline = new Date(Date.now() + 600_000);
+        mockPrisma.$queryRaw.mockImplementation(async (parts: TemplateStringsArray, ...values: unknown[]) => {
+            const sql = parts.join('');
+            if (sql.includes('AS "now"')) return [{ now: new Date() }];
+            if (sql.includes('UPDATE "Session"') && sql.includes('interval')) {
+                expect(values.slice(1)).toEqual([600, session.id, session.userId]);
+                encrypted = values[0] as string; deadline = new Date(Date.now() + 600_000);
+                return [{ id: session.id, mfaEnrollmentExpiresAt: deadline }];
+            }
+            if (sql.includes('SELECT "id", "mfaEnrollmentSecret"')) {
+                expect(values).toEqual([session.id, session.userId]);
+                return [{ id: session.id, mfaEnrollmentSecret: encrypted, mfaEnrollmentExpiresAt: deadline }];
+            }
+            if (sql.includes('UPDATE "Session"') && sql.includes('"mfaEnrollmentSecret" = NULL')) {
+                expect(values).toEqual([session.id, session.userId, encrypted, deadline.toISOString()]);
+                encrypted = null; return [{ id: session.id }];
+            }
+            return [];
+        });
+    }
+
     it('enrolls MFA for an authenticated session and returns one-time backup codes', async () => {
         const session = {
             id: 's-enroll',
@@ -3605,11 +3866,11 @@ describe('AuthService - MFA and refresh state', () => {
         mockPrisma.session.findFirst.mockResolvedValue(session);
         mockPrisma.user.update.mockResolvedValue({});
 
+        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
+        installDurableEnrollmentStatements(session);
         const enrollment = await service.beginMfaEnrollment('u-enroll', { tenantId: 't-1', sessionId: 's-enroll' });
         const secretBuffer = (service as any).secretToBuffer(enrollment.secret);
         const code = (service as any).generateTotpCode(secretBuffer, Math.floor(Date.now() / 30_000));
-        redis.get.mockResolvedValue(enrollment.secret);
-        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
 
         const result = await service.confirmMfaEnrollment(
             'u-enroll',
@@ -3652,14 +3913,15 @@ describe('AuthService - MFA and refresh state', () => {
                 userAgent: 'Vitest MFA Enrollment',
             },
         });
-        expect(redis.del).toHaveBeenCalledWith('mfa_enrollment:s-enroll:u-enroll');
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
         expect(redis.set).toHaveBeenCalledWith('session_mfa:s-enroll', '1', 'EX', expect.any(Number));
         expect(result.backupCodes).toHaveLength(10);
         expect(result).toEqual(expect.objectContaining({ success: true, mfaVerified: true, accessToken: 'test-access-token' }));
     });
 
-    it('returns committed backup codes once when both post-commit Redis writes fail', async () => {
-        const secret = 'JBSWY3DPEHPK3PXP';
+    it('returns committed backup codes once when post-commit Redis marker publication fails', async () => {
+        const secret = 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP';
         const session = {
             id: 's-enroll-redis-failure',
             userId: 'u-enroll-redis-failure',
@@ -3680,7 +3942,8 @@ describe('AuthService - MFA and refresh state', () => {
         });
         mockPrisma.session.findFirst.mockResolvedValue(session);
         mockPrisma.user.update.mockResolvedValue({});
-        redis.get.mockResolvedValue(secret);
+        process.env.MFA_SECRET_ENCRYPTION_KEY = 'mfa-test-key-with-enough-entropy';
+        installDurableEnrollmentStatements(session, secret);
         const providerSecret = 'redis://default:plaintext-backup-code-risk@private-cache.internal:6379';
         redis.del.mockRejectedValue(Object.assign(
             new Error(`DEL failed against ${providerSecret}`),
@@ -3710,18 +3973,19 @@ describe('AuthService - MFA and refresh state', () => {
             accessToken: 'test-access-token',
         }));
         expect(result.backupCodes).toHaveLength(10);
-        expect(mockPrisma.$transaction).toHaveBeenCalledTimes(4);
+        expect(mockPrisma.$transaction).toHaveBeenCalledOnce();
         expect(mockRbacService.authorizeSelfSecurityMutationInTransaction).toHaveBeenCalledOnce();
         expect(mockPrisma.user.update).toHaveBeenCalledOnce();
         expect(mockPrisma.auditLog.create).toHaveBeenCalledOnce();
         expect(mockJwtService.generateAccessToken).toHaveBeenCalledOnce();
-        expect(redis.del).toHaveBeenCalledOnce();
+        expect(redis.get).not.toHaveBeenCalled();
+        expect(redis.del).not.toHaveBeenCalled();
         expect(redis.set).toHaveBeenCalledOnce();
-        expect(warning).toHaveBeenCalledTimes(2);
+        expect(warning).toHaveBeenCalledOnce();
         const diagnostics = JSON.stringify(warning.mock.calls);
-        expect(diagnostics).toContain('auth.mfa_enrollment_cleanup_failed');
+        expect(diagnostics).not.toContain('auth.mfa_enrollment_cleanup_failed');
         expect(diagnostics).toContain('auth.mfa_enrollment_session_marker_failed');
-        expect(diagnostics).toContain('ECONNRESET');
+        expect(diagnostics).not.toContain('ECONNRESET');
         expect(diagnostics).toContain('ETIMEDOUT');
         expect(diagnostics).not.toContain(providerSecret);
         expect(diagnostics).not.toContain('plaintext-backup-code-risk');
@@ -3979,7 +4243,8 @@ describe('AuthService - MFA and refresh state', () => {
             deletedAt: null,
             suspendedAt: null,
         };
-        const sessions = [{ id: 's-disable-rollback', userId: account.id, revokedAt: null }];
+        const sessions = [{ id: 's-disable-rollback', userId: account.id, revokedAt: null,
+            createdAt: new Date(), expiresAt: new Date(Date.now() + 15 * 60_000) }];
         mockPrisma.user.findFirst.mockResolvedValue({ ...account });
         mockPrisma.session.findFirst.mockResolvedValue({
             ...sessions[0],
@@ -4086,5 +4351,397 @@ describe('AuthService - managed MFA encryption keys', () => {
         process.env.MFA_SECRET_ENCRYPTION_KEY_PREVIOUS = duplicate;
         expect(() => (service as any).encryptMfaSecret('JBSWY3DPEHPK3PXP'))
             .toThrow(/must differ/);
+    });
+});
+
+
+describe('AuthService - policy commit at session issuance', () => {
+    let service: AuthService;
+    let policy: { requireMfaForAll: boolean; sessionTimeoutMinutes: number; ssoOidcOnly: boolean };
+    let account: Record<string, any>;
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        resetPrismaMocks();
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
+        (service as any).prisma = mockPrisma;
+        policy = { requireMfaForAll: false, sessionTimeoutMinutes: 480, ssoOidcOnly: false };
+        account = { id: 'u-policy', tenantId: 't-1', role: 'STAFF', email: 'policy@example.test',
+            username: 'policy.user', passwordHash: 'verified-password-hash', pinHash: 'verified-pin-hash',
+            mfaEnabled: false, pinResetRequired: false, pinLockedUntil: null, deletedAt: null, suspendedAt: null };
+        mockPrisma.tenantSetting.findUnique.mockImplementation(async () => ({ value: { security: { ...policy } } }));
+        mockPrisma.user.findFirst.mockImplementation(async () => ({ ...account }));
+        mockPrisma.session.create.mockImplementation(async ({ data }) => ({ id: 's-policy', ...data }));
+        mockRbacService.getEffectiveAccess.mockReset().mockResolvedValue({ primaryRole: 'STAFF', roles: [],
+            permissions: ['auth:login_pin', 'auth:login_password', 'auth:login_email', 'dashboard:access'] });
+    });
+
+    function pauseTenantLock() {
+        let enter!: () => void, release!: () => void;
+        const entered = new Promise<void>(resolve => { enter = resolve; });
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "Tenant"')) { enter(); await gate; }
+            return [{ id: 't-1' }];
+        });
+        return { entered, release };
+    }
+
+    function issue(method: 'USERNAME_PIN' | 'USERNAME_PASSWORD' | 'EMAIL_OTP' | 'OIDC') {
+        return (service as any).createSessionTokens(account, { loginMethod: method }, true, null,
+            { username: account.username, pinHash: account.pinHash },
+            { passwordHash: account.passwordHash }, { email: account.email });
+    }
+
+    it.each([
+        ['EMAIL_OTP', 'auth:login_email'],
+        ['USERNAME_PASSWORD', 'auth:login_password'],
+        ['USERNAME_PIN', 'auth:login_pin'],
+    ] as const)('rejects %s when its login grant is revoked while issuance waits', async (method, permission) => {
+        const lock = pauseTenantLock();
+        const pending = issue(method).then((value: unknown) => ({ value, error: undefined }),
+            (error: unknown) => ({ error, value: undefined }));
+        try {
+            await lock.entered;
+            mockRbacService.getEffectiveAccess.mockResolvedValue({ primaryRole: 'STAFF',
+                roles: [{ id: 'staff-role', name: 'Staff', isSystem: true, legacyRole: 'STAFF' }],
+                permissions: ['auth:login_pin', 'auth:login_password', 'auth:login_email', 'dashboard:access']
+                    .filter(value => value !== permission) });
+            lock.release();
+            const result = await pending;
+            expect(result.error).toBeInstanceOf(UnauthorizedException);
+            expect(result.value).toBeUndefined();
+            expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledWith(account.id, account.tenantId);
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+            expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+        } finally { lock.release(); await pending; }
+    });
+
+    it('issues an email session when its current login grant remains present', async () => {
+        const lock = pauseTenantLock(), pending = issue('EMAIL_OTP');
+        await lock.entered;
+        lock.release();
+        await expect(pending).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
+
+    it.each(['USERNAME_PIN', 'USERNAME_PASSWORD', 'EMAIL_OTP'] as const)(
+        'rejects %s when SSO-only policy commits while issuance waits for Tenant', async method => {
+            const lock = pauseTenantLock();
+            const pending = issue(method).then((value: unknown) => ({ value, error: undefined }),
+                (error: unknown) => ({ error, value: undefined }));
+            await lock.entered;
+            policy.ssoOidcOnly = true;
+            lock.release();
+            const result = await pending;
+            expect(result.error).toBeInstanceOf(method === 'USERNAME_PIN' ? UnauthorizedException : ForbiddenException);
+            expect(result.value).toBeUndefined();
+            expect(mockPrisma.session.create).not.toHaveBeenCalled();
+            expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+            expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+            expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+        },
+    );
+
+    it('uses committed MFA and session timeout after waiting for Tenant', async () => {
+        let now = Date.now();
+        const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+        const lock = pauseTenantLock(), pending = issue('USERNAME_PIN');
+        try {
+            await lock.entered;
+            policy.requireMfaForAll = true;
+            policy.sessionTimeoutMinutes = 5;
+            now += 60_000;
+            lock.release();
+            const result = await pending;
+            expect(result.requiresMfa).toBe(true);
+            expect(result.sessionMaxAgeMs).toBe(5 * 60_000);
+            expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({ mfaVerified: false }));
+            const expiry = mockPrisma.session.create.mock.calls[0][0].data.expiresAt.getTime();
+            expect(expiry).toBe(now + 5 * 60_000);
+        } finally { lock.release(); await Promise.allSettled([pending]); clock.mockRestore(); }
+    });
+
+    it('uses a relaxed committed MFA policy and longer timeout after waiting for Tenant', async () => {
+        policy.requireMfaForAll = true;
+        policy.sessionTimeoutMinutes = 5;
+        const lock = pauseTenantLock(), pending = issue('USERNAME_PIN');
+        try {
+            await lock.entered;
+            policy.requireMfaForAll = false;
+            policy.sessionTimeoutMinutes = 480;
+            lock.release();
+            const result = await pending;
+            expect(result.requiresMfa).toBe(false);
+            expect(result.sessionMaxAgeMs).toBe(480 * 60_000);
+            expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({ mfaVerified: true }));
+        } finally { lock.release(); await Promise.allSettled([pending]); }
+    });
+
+    it.each(['Tenant lock', 'locked policy read'] as const)('fails before issuance writes when %s fails', async boundary => {
+        const failure = new Error('owned policy boundary failure');
+        if (boundary === 'Tenant lock') {
+            mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+                const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+                if (strings.join('').includes('FROM "Tenant"')) throw failure;
+                return [{ id: 't-1' }];
+            });
+        } else mockPrisma.tenantSetting.findUnique.mockRejectedValue(failure);
+        await expect(issue('USERNAME_PIN')).rejects.toBe(failure);
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+    });
+
+    it('allows OIDC under the newly committed SSO-only policy', async () => {
+        const lock = pauseTenantLock(), pending = issue('OIDC');
+        await lock.entered;
+        policy.ssoOidcOnly = true;
+        lock.release();
+        await expect(pending).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.session.create).toHaveBeenCalledOnce();
+    });
+});
+
+describe('AuthService - PIN proof transaction boundaries', () => {
+    let service: AuthService;
+    let account: {
+        id: string; tenantId: string; role: string; email: null; username: string;
+        pinHash: string | null; pinLoginAttempts: number; pinLockedUntil: Date | null;
+        deletedAt: Date | null; suspendedAt: Date | null;
+        mfaEnabled: boolean; pinResetRequired: boolean;
+    };
+    const access = { primaryRole: 'STAFF', roles: [], permissions: ['auth:login_pin', 'dashboard:access'] };
+
+    beforeEach(() => {
+        vi.clearAllMocks();
+        resetPrismaMocks();
+        mockRbacService.getEffectiveAccess.mockReset().mockResolvedValue(access);
+        service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
+        (service as any).prisma = mockPrisma;
+        account = {
+            id: 'u-pin-proof', tenantId: 't-1', role: 'STAFF', email: null, username: 'proof.user',
+            pinHash: (service as any).hashPin('123456'), pinLoginAttempts: 0, pinLockedUntil: null,
+            deletedAt: null, suspendedAt: null, mfaEnabled: false, pinResetRequired: false,
+        };
+        mockPrisma.user.findFirst.mockImplementation(async () => account.deletedAt || account.suspendedAt
+            ? null : { ...account });
+        mockPrisma.user.update.mockImplementation(async ({ data }: { data: Partial<typeof account> }) => {
+            Object.assign(account, data);
+            return { ...account };
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 's-pin-proof' });
+    });
+
+    function deferVerification() {
+        let release!: (valid: boolean) => void;
+        let started!: () => void;
+        const entered = new Promise<void>(resolve => { started = resolve; });
+        const result = new Promise<boolean>(resolve => { release = resolve; });
+        vi.spyOn(service as any, 'verifyLoginPin').mockImplementation(() => { started(); return result; });
+        return { entered, release };
+    }
+
+    function expectNoIssuanceWrites() {
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.session.deleteMany).not.toHaveBeenCalled();
+        expect(mockPrisma.auditLog.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        expect(mockJwtService.generateCsrfToken).not.toHaveBeenCalled();
+    }
+
+    it('verifies asynchronous PIN hashes compatibly and rejects malformed hashes', async () => {
+        await expect((service as any).verifyLoginPin('123456', account.pinHash)).resolves.toBe(true);
+        await expect((service as any).verifyLoginPin('654321', account.pinHash)).resolves.toBe(false);
+        await expect((service as any).verifyLoginPin('123456', 'missing-separator')).resolves.toBe(false);
+        await expect((service as any).verifyLoginPin('123456', 'salt:not-hex')).resolves.toBe(false);
+    });
+
+    it('rejects PIN session issuance without a verified credential proof before any writes', async () => {
+        await expect((service as any).createSessionTokens(account, { loginMethod: 'USERNAME_PIN' }))
+            .rejects.toBeInstanceOf(UnauthorizedException);
+        expectNoIssuanceWrites();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+    });
+
+    it('holds no tenant transaction or User lock while deferred verification is running', async () => {
+        let activeTransactions = 0;
+        mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+            activeTransactions++;
+            try { return await operation(mockPrisma); }
+            finally { activeTransactions--; }
+        });
+        const pending = deferVerification();
+        const login = service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        await pending.entered;
+        expect(activeTransactions).toBe(0);
+        expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+        pending.release(true);
+        await expect(login).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.$queryRaw).toHaveBeenCalled();
+    });
+
+    for (const valid of [false, true]) {
+        it.each([
+            ['rotated hash', () => { account.pinHash = 'new-salt:' + 'a'.repeat(128); }],
+            ['removed hash', () => { account.pinHash = null; }],
+            ['renamed username', () => { account.username = 'renamed.user'; }],
+            ['deleted user', () => { account.deletedAt = new Date(); }],
+            ['suspended user', () => { account.suspendedAt = new Date(); }],
+        ] as const)(`rejects a %s during KDF after ${valid ? 'successful' : 'failed'} verification without charging replacement counters`, async (_name, mutate) => {
+            account.pinLoginAttempts = 3;
+            const pending = deferVerification();
+            const login = service.loginWithUsernamePin('proof.user', valid ? '123456' : '0000', 'demo');
+            await pending.entered;
+            mutate();
+            pending.release(valid);
+            await expect(login).rejects.toBeInstanceOf(UnauthorizedException);
+            expect(account.pinLoginAttempts).toBe(3);
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expectNoIssuanceWrites();
+        });
+    }
+
+    it('rejects a lockout imposed during verification without clearing counters', async () => {
+        const pending = deferVerification();
+        const login = service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        await pending.entered;
+        account.pinLoginAttempts = 5;
+        account.pinLockedUntil = new Date(Date.now() + 15 * 60_000);
+        pending.release(true);
+        await expect(login).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(account.pinLoginAttempts).toBe(5);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it.each(['invalid format', 'missing user', 'missing hash', 'locked user'] as const)(
+        'performs %s verification outside transactions and writes no session', async scenario => {
+            if (scenario === 'missing user') account.deletedAt = new Date();
+            if (scenario === 'missing hash') account.pinHash = null;
+            if (scenario === 'locked user') account.pinLockedUntil = new Date(Date.now() + 60_000);
+            let activeTransactions = 0;
+            mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+                activeTransactions++;
+                try { return await operation(mockPrisma); }
+                finally { activeTransactions--; }
+            });
+            const verify = vi.spyOn(service as any, 'verifyLoginPin').mockImplementation(async () => {
+                expect(activeTransactions).toBe(0);
+                return true;
+            });
+            const syncVerify = vi.spyOn(service as any, 'verifyPin');
+            await expect(service.loginWithUsernamePin('proof.user', scenario === 'invalid format' ? 'x' : '123456', 'demo'))
+                .rejects.toBeInstanceOf(UnauthorizedException);
+            expect(verify).toHaveBeenCalledOnce();
+            expect(syncVerify).not.toHaveBeenCalled();
+            expect(mockPrisma.user.update).not.toHaveBeenCalled();
+            expectNoIssuanceWrites();
+        },
+    );
+
+    it('clears only expired PIN lockout and current counters after same-proof verification', async () => {
+        account.pinLoginAttempts = 4;
+        account.pinLockedUntil = new Date(Date.now() - 1_000);
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).resolves.toHaveProperty('accessToken');
+        expect(mockPrisma.user.update).toHaveBeenCalledWith({
+            where: { id: account.id }, data: { pinLoginAttempts: 0, pinLockedUntil: null },
+        });
+        expect(account.pinLoginAttempts).toBe(0);
+        expect(account.pinLockedUntil).toBeNull();
+    });
+
+    it.each([
+        ['rotated hash', () => { account.pinHash = 'replacement:' + 'b'.repeat(128); }],
+        ['removed hash', () => { account.pinHash = null; }],
+        ['renamed username', () => { account.username = 'renamed.user'; }],
+        ['new PIN lockout', () => { account.pinLockedUntil = new Date(Date.now() + 60_000); }],
+        ['deleted user', () => { account.deletedAt = new Date(); }],
+        ['suspended user', () => { account.suspendedAt = new Date(); }],
+    ] as const)('rejects a %s after credential commit before any issuance writes', async (_name, mutate) => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => { mutate(); return access; });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('rejects freshly revoked PIN permission while the issuance User lock is held', async () => {
+        let userLocked = false;
+        mockPrisma.$transaction.mockImplementation(async (operation: (tx: typeof mockPrisma) => Promise<unknown>) => {
+            userLocked = false;
+            try { return await operation(mockPrisma); }
+            finally { userLocked = false; }
+        });
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "User"')) userLocked = true;
+            return [{ id: account.id }];
+        });
+        mockRbacService.getEffectiveAccess.mockResolvedValueOnce(access)
+            .mockImplementationOnce(async () => {
+                expect(userLocked).toBe(true);
+                return { ...access, permissions: ['dashboard:access'] };
+            });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockRbacService.getEffectiveAccess).toHaveBeenCalledTimes(2);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('rejects PIN issuance when current security settings switch to OIDC-only', async () => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => {
+            mockPrisma.tenantSetting.findUnique.mockResolvedValue({ value: { security: { ssoOidcOnly: true } } });
+            return access;
+        });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
+    });
+
+    it('uses latest PIN-reset and MFA state at issuance without changing the verified credential', async () => {
+        mockRbacService.getEffectiveAccess.mockImplementationOnce(async () => {
+            account.pinResetRequired = true;
+            account.mfaEnabled = true;
+            return access;
+        });
+        const result = await service.loginWithUsernamePin('proof.user', '123456', 'demo');
+        expect(result.pinResetRequired).toBe(true);
+        expect(result.requiresMfa).toBe(true);
+        expect(mockJwtService.generateAccessToken).toHaveBeenCalledWith(expect.objectContaining({
+            pinResetRequired: true, mfaVerified: false,
+        }));
+    });
+
+    it.each([1, 2])('surfaces transaction failure at User lock %i without issuing tokens', async failingLock => {
+        let userLocks = 0;
+        const failure = new Error('owned transaction failure');
+        mockPrisma.$queryRaw.mockImplementation(async (sql: unknown) => {
+            const strings = Array.isArray(sql) ? sql : (sql as { strings?: string[] }).strings ?? [];
+            if (strings.join('').includes('FROM "User"') && ++userLocks === failingLock) throw failure;
+            return [{ id: account.id }];
+        });
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBe(failure);
+        expectNoIssuanceWrites();
+    });
+
+    it('surfaces asynchronous KDF failure before taking a credential lock or changing counters', async () => {
+        const failure = new Error('owned KDF failure');
+        vi.spyOn(service as any, 'verifyLoginPin').mockRejectedValue(failure);
+        await expect(service.loginWithUsernamePin('proof.user', '123456', 'demo')).rejects.toBe(failure);
+        expect(mockPrisma.$queryRaw).not.toHaveBeenCalled();
+        expect(mockPrisma.user.update).not.toHaveBeenCalled();
+        expectNoIssuanceWrites();
     });
 });

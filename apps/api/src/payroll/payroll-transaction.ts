@@ -1,5 +1,7 @@
 import { Prisma } from '@prisma/client';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
 
+import { RbacService } from '../auth/rbac.service';
 import type { TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
 export const PAYROLL_TRANSACTION_OPTIONS = {
@@ -17,7 +19,54 @@ export const PAYROLL_INTEGRITY_FAILURE = 'Payroll evidence failed integrity veri
 export type PayrollActor = {
     tenantId: string;
     userId: string;
+    sessionId?: string;
 };
+
+type PayrollCurrentOperation<T> = (
+    tx: TenantPrismaTransaction,
+    assertCurrent: () => void,
+    actor: PayrollActor,
+) => Promise<T>;
+
+/** One current-authority scope for domain attempts and receipt-only recovery.
+ * Session is deliberately excluded from existing payroll request digests.
+ */
+export function runCurrentPayrollMutation<T>(
+    rbac: RbacService,
+    observer: MfaSessionObserver,
+    actor: PayrollActor,
+    requiredPermission: string,
+    operation: PayrollCurrentOperation<T>,
+    recovery?: {
+        isRecoverable: (error: unknown) => boolean;
+        operation: (tx: TenantPrismaTransaction, assertCurrent: () => void,
+            actor: PayrollActor, error: unknown) => Promise<T>;
+    },
+): Promise<T> {
+    const recoveryOperation = recovery?.operation;
+    return rbac.runCurrentMutation({
+        actor: { userId: actor.userId, tenantId: actor.tenantId, sessionId: actor.sessionId ?? '' },
+        requiredPermission,
+        mfaObserver: observer,
+        conflictMessage: PAYROLL_CONCURRENT_CHANGE,
+        isConflict: isPayrollSerializationConflict,
+        transactionOptions: PAYROLL_TRANSACTION_OPTIONS,
+    }, (tx, selected) => rbac.authorizeActorMutationInTransaction(tx, selected, requiredPermission),
+    async (tx, _authority, assertCurrent, selected) => {
+        assertCurrent();
+        await applyPayrollTransactionTimeouts(tx);
+        assertCurrent();
+        return operation(tx, assertCurrent, selected);
+    }, recovery && recoveryOperation ? {
+        isRecoverable: recovery.isRecoverable,
+        operation: async (tx, _authority, assertCurrent, selected, error) => {
+            assertCurrent();
+            await applyPayrollTransactionTimeouts(tx);
+            assertCurrent();
+            return recoveryOperation(tx, assertCurrent, selected, error);
+        },
+    } : undefined);
+}
 
 export async function applyPayrollTransactionTimeouts(tx: TenantPrismaTransaction): Promise<void> {
     await tx.$queryRaw`
@@ -53,7 +102,9 @@ export async function writePayrollAudit(
         oldValue?: Record<string, unknown> | null;
         newValue?: Record<string, unknown> | null;
     },
+    assertCurrent: () => void = () => {},
 ): Promise<void> {
+    assertCurrent();
     await tx.auditLog.create({
         data: {
             tenantId: actor.tenantId,
@@ -71,6 +122,7 @@ export async function writePayrollAudit(
                 : {}),
         },
     });
+    assertCurrent();
 }
 
 export function isPrismaUniqueConflict(error: unknown): boolean {

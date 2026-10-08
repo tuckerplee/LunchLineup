@@ -2365,9 +2365,20 @@ textarea.form-input {
     text-overflow: ellipsis;
   }
 
+  .workspace-sidebar .workspace-name {
+    min-width: 0;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.25;
+  }
+
   .workspace-sidebar .workspace-nav-link {
     padding: 8px 10px;
   }
+}
+
+@media (max-width: 359px) {
+  .workspace-sidebar .workspace-name { font-size: 0.75rem; }
 }
 
 @media (max-width: 768px) {
@@ -2522,6 +2533,18 @@ textarea.form-input {
   .staff-table-scroll {
     width: 100%;
   }
+
+  .staff-table-scroll td:last-child button,
+  .staff-profile-drawer__header > button,
+  .staff-profile-drawer__scheduling footer > button {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .staff-profile-drawer #staff-skill {
+    min-height: 44px;
+  }
+
   .staff-role-layout {
     grid-template-columns: minmax(0, 1fr);
   }

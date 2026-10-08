@@ -26,8 +26,8 @@ export function buildStaffActionConfirmation(
     }
 
     return {
-        title: `Remove ${user.name}?`,
-        description: `${identity} will immediately lose access to this workspace.`,
-        confirmLabel: 'Remove staff member',
+        title: `Permanently remove ${user.name}?`,
+        description: `${identity} will immediately lose access. Removal anonymizes identity and clears editable assignments; it cannot be undone. Use Deactivate employee to preserve identity and history.`,
+        confirmLabel: 'Remove permanently',
     };
 }

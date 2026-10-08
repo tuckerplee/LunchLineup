@@ -3,6 +3,23 @@
 ## Files
 
 - `README.md`: this unit test folder guide.
+- `client-component-harness.ts`: controlled hook ledger for actual client handlers; does not model DOM, React scheduling or browser acceptance.
+- `dashboard-notification-handler.test.ts`: actual notification header handler regressions for authoritative counts, stale polls, readback and recovery.
+- `login-intent.test.ts`: actual login handler regressions for stale attempts, cancellation and safe malformed errors.
+- `lunch-break-policy-pending.test.ts`: actual policy-save pending controls, acknowledgment/readback and location/date ownership regressions.
+- `lunch-break-policy-row-custody.test.ts`: actual policy and populated row reciprocal availability, dirty drafts, scoped readback and autosave regressions.
+- `payroll-export-handler.test.ts`: actual export intent, exact request/key custody, acknowledgment and stale-selection readback regressions.
+- `qa-context-cleanup.test.ts`: owned document/context cleanup ordering and primary, timeout and closure failure regressions.
+- `qa-loopback-proxy.test.ts`: owned QA proxy destination denial, socket closure and bounded teardown regressions.
+- `reset-password-contract.test.ts`: actual reset confirmation handler, pending input ownership and UTF-8 password-bound regressions.
+- `scheduling-editor-custody.test.ts`: actual create/update editor lifetime, newer draft, issued-key, stale failure and queued cleanup regressions.
+- `scheduling-publish-handler.test.ts`: actual publication confirmation and original request/key replay across schedule selections.
+- `time-card-clock-out-handler.test.ts`: actual clock-out handler validation, explicit break minutes, target ownership and scoped readback regressions.
+- `time-card-correction-overlap.test.ts`: actual correction-panel availability controls that preserve open drafts against conflicting workspace actions.
+- `time-card-correction-precision.test.ts`: actual correction initialization/submission precision, unchanged punches, breaks and DST occurrence regressions.
+- `time-card-pending-draft.test.ts`: actual pending clock-out draft availability, acknowledgment, recovery and rejection regressions.
+- `server-app-origin.test.ts`: exact disposable loopback origin and server marker validation, malformed-origin rejection, and preservation of production HTTPS requirements.
+- `seeded-mfa-helper.test.ts`: real current-step TOTP allocation, replay prevention across repeated logins, bounded boundary waits, and independent seeded identities.
 - `account-deletion-receipt.test.ts`: finalized and pending DELETE receipt normalization, identifier/provider-error exclusion, versioned tab-storage round-trip, and malformed-storage coverage.
 - `account-lifecycle-panel.test.ts`: source-contract coverage for requester-visible export recovery, uncapped active polling, retry cleanup, server-expiring downloads, API-to-UI scheduled-cancellation/effective-date reload projection with duplicate-action prevention, and no authenticated status reload after deletion.
 - `admin-credit-grant-submission.test.ts`: stable payload-bound grant keys across ambiguous failure and deliberate retry, payload-change and success rotation, opaque reason handling, and concurrent-submit rejection.
@@ -74,3 +91,17 @@
 - `time-card-request.test.ts`: selected-employee active-card ownership, stable request keys, fail-closed explicit target policy, signed-in-user binding, and target-aware mutation-label coverage.
 - `user-directory-pagination.test.ts`: fixed-size user pages, cursor validation, bounded Previous/Next staff navigation, and aggregate dashboard count contracts.
 - `workspace-slug.test.ts`: unit coverage for canonical generated-workspace slug persistence and login fallback reads.
+
+- `break-timing-validation.test.ts`: recovery and acceptance regression checks.
+
+- `invitation-recovery.test.ts`: recovery and acceptance regression checks.
+
+- `profile-save-state.test.ts`: recovery and acceptance regression checks.
+
+- `settings-request.test.ts`: recovery and acceptance regression checks.
+
+- `settings-save-state.test.ts`: recovery and acceptance regression checks.
+
+- `time-card-mutation-result.test.ts`: recovery and acceptance regression checks.
+
+- `qa-isolation-policy.test.ts`: disposable QA isolation and evidence checks.

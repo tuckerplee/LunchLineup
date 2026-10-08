@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import { PayrollExportService } from './payroll-export.service';
 import { payrollContentSha256 } from './payroll-csv';
 import { materializeLockedSnapshots } from './payroll-lock-snapshot';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'session-1' };
 
 function exportHarness(options: { zero?: boolean; tamperedAggregate?: boolean; initialCost?: number } = {}) {
     const sources = options.zero ? [] : [{
@@ -126,7 +127,7 @@ function exportHarness(options: { zero?: boolean; tamperedAggregate?: boolean; i
         }),
     } as any;
     return {
-        service: new PayrollExportService(tenantDb, featureAccess),
+        service: new PayrollExportService(tenantDb, featureAccess, ...payrollDomainAuthority(tenantDb, tx, actor)),
         state,
         tx,
         tenantDb,

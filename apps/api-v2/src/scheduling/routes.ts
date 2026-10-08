@@ -1,3 +1,5 @@
+import { authorizeScheduleChangeSet, authorizeScheduleDemand, authorizeScheduleReopen } from './authorization';
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   BreakGenerationRequestSchema,
   BreakGenerationResponseSchema,
@@ -91,6 +93,7 @@ const commonResponses = {
 export type SchedulingRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   board: Pick<ScheduleBoardService, 'get'>;
   scheduleCreate: Pick<ScheduleCreateService, 'create'>;
   changeSets: Pick<ScheduleChangeSetService, 'apply'>;
@@ -154,6 +157,7 @@ export async function registerSchedulingRoutes(
   }, async (request, reply): Promise<ScheduleBoardResponse> => {
     const identity = await authenticate(request, reply, dependencies.identity);
     requirePermissions(identity, ['locations:read', 'schedules:read', 'shifts:read']);
+    await dependencies.quota.consume('getScheduleBoard', identity, reply);
     const response = await dependencies.board.get(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -178,6 +182,7 @@ export async function registerSchedulingRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
     requireAnyPermission(identity, ['schedules:write', 'shifts:write']);
+    await dependencies.quota.consume('createDraftSchedule', identity, reply);
     const response = await dependencies.scheduleCreate.create(
       identity,
       request.params.locationId,
@@ -212,6 +217,8 @@ export async function registerSchedulingRoutes(
   }, async (request, reply): Promise<ScheduleChangeSetResponse> => {
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
+    authorizeScheduleChangeSet(identity, request.body);
+    await dependencies.quota.consume('applyScheduleChangeSet', identity, reply);
     const response = await dependencies.changeSets.apply(
       identity,
       request.params.scheduleId,
@@ -245,6 +252,8 @@ export async function registerSchedulingRoutes(
     },
   }, async (request, reply): Promise<DemandWindowListResponse> => {
     const identity = await authenticate(request, reply, dependencies.identity);
+    authorizeScheduleDemand(identity);
+    await dependencies.quota.consume('getScheduleDemandWindows', identity, reply);
     const response = await dependencies.demandWindows.list(identity, request.params.scheduleId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -268,6 +277,8 @@ export async function registerSchedulingRoutes(
   }, async (request, reply): Promise<DemandWindowReplaceResponse> => {
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
+    authorizeScheduleDemand(identity);
+    await dependencies.quota.consume('replaceScheduleDemandWindows', identity, reply);
     const response = await dependencies.demandWindows.replace(
       identity,
       request.params.scheduleId,
@@ -359,6 +370,8 @@ export async function registerSchedulingRoutes(
   }, async (request, reply): Promise<ScheduleReopenResponse> => {
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
+    authorizeScheduleReopen(identity);
+    await dependencies.quota.consume('reopenSchedule', identity, reply);
     const response = await dependencies.lifecycle.reopen(
       identity,
       request.params.scheduleId,
@@ -452,6 +465,7 @@ export async function registerSchedulingRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies.identity);
     requirePermissions(identity, ['lunch_breaks:write']);
+    await dependencies.quota.consume('generateScheduleBreaks', identity, reply);
     const generated = await dependencies.lunchBreaks.generate(
       identity,
       {

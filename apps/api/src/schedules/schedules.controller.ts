@@ -1101,7 +1101,8 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
             staff.availabilityConfigured = true;
         }
         const firstLocalDate = dateValueInTimeZone(scheduleStart, timeZone);
-        const finalLocalDate = dateValueInTimeZone(new Date(scheduleEnd.getTime() - 1), timeZone);
+        const conflictHorizonEnd = new Date(scheduleEnd.getTime() + 86_400_000);
+        const finalLocalDate = dateValueInTimeZone(new Date(conflictHorizonEnd.getTime() - 1), timeZone);
         const availabilityExceptionRows = await tx.$queryRaw<AvailabilityExceptionRow[]>`
             SELECT
               "userId",
@@ -1180,7 +1181,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         if (demandSnapshot.length === 0) {
             throw new BadRequestException("Configure at least one demand window with a date, start/end time, and required staff before auto-scheduling.");
         }
-        const calendarWeeks = calendarWeekRange(scheduleStart, scheduleEnd, timeZone);
+        const calendarWeeks = calendarWeekRange(scheduleStart, conflictHorizonEnd, timeZone);
         const existingShiftRows = await tx.$queryRaw<ExistingShiftRow[]>`
             SELECT shift."id", shift."userId", shift."locationId", shift."startTime", shift."endTime"
             FROM "Shift" shift
@@ -1197,7 +1198,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         const existingWeeklyMinutes = aggregateExistingWeeklyMinutes(existingShiftRows, calendarWeeks, staffIds);
         const existingShifts = existingShiftRows
             .filter((row): row is ExistingShiftRow & { userId: string } => Boolean(row.userId) &&
-            this.requiredDate(row.startTime, "existing shift startTime") < scheduleEnd &&
+            this.requiredDate(row.startTime, "existing shift startTime") < conflictHorizonEnd &&
             this.requiredDate(row.endTime, "existing shift endTime") > scheduleStart)
             .map((row) => {
             const startTime = this.toRequiredIso(row.startTime, "existing shift startTime");
@@ -1276,7 +1277,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         if (endTime <= startTime) {
             throw new BadRequestException(`windows[${index}].endTime must be after startTime`);
         }
-        if (startTime < schedule.startDate || endTime > schedule.endDate) {
+        if (startTime < schedule.startDate || startTime >= schedule.endDate || endTime <= startTime || endTime.getTime() - startTime.getTime() > 86_400_000) {
             throw new BadRequestException(`windows[${index}] must be inside the schedule window`);
         }
         const requiredStaff = this.requiredStaffCount(Number(input.requiredStaff));
@@ -1648,7 +1649,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
                 throw new BadRequestException(`Shift ${shift.id} has an invalid time window.`);
             }
             if (shift.startTime < schedule.startDate ||
-                shift.endTime > schedule.endDate) {
+                shift.startTime >= schedule.endDate || shift.endTime.getTime() - shift.startTime.getTime() > 86_400_000) {
                 throw new BadRequestException(`Shift ${shift.id} must stay within its schedule window before publishing.`);
             }
             this.assertRequiredDefaultBreakTypes(shift);

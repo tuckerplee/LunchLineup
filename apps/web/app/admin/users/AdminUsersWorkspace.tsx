@@ -219,7 +219,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const [tenantLoadingMore, setTenantLoadingMore] = useState(false);
     const [savingKey, setSavingKey] = useState<string | null>(null);
     const [message, setMessage] = useState<Banner>(null);
-    const [temporaryPin, setTemporaryPin] = useState<string | null>(null);
+    const [temporaryPin, setTemporaryPin] = useState<{ userId: string; pin: string } | null>(null);
     const userRequestId = useRef(0);
     const tenantRequestId = useRef(0);
 
@@ -377,15 +377,19 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     }, [form, refreshUsers, selectedUser]);
 
     const resetPin = useCallback(async () => {
-        if (!selectedUser || selectedUser.status === 'DELETED') return;
+        if (!selectedUser || isSelf || !selectedUser.username || selectedUser.status === 'DELETED' || selectedUser.status === 'SUSPENDED') return;
+        if (!window.confirm(`Reset the PIN for ${selectedUser.name}? This signs them out of all sessions.`)) return;
         setSavingKey(`pin:${selectedUser.id}`);
         setMessage(null);
         try {
             const payload = await writeJson<{ temporaryPin?: string; username?: string; pinResetRequired?: boolean }>(
-                `/users/${selectedUser.id}/pin/reset`,
+                `/admin/users/${selectedUser.id}/pin/reset`,
                 'POST',
+                {},
             );
-            setTemporaryPin(payload.temporaryPin ?? null);
+            setTemporaryPin(payload.temporaryPin
+                ? { userId: selectedUser.id, pin: payload.temporaryPin }
+                : null);
             setMessage({ tone: 'success', text: `PIN reset for ${selectedUser.name}.` });
             await refreshUsers();
         } catch (error) {
@@ -393,7 +397,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         } finally {
             setSavingKey(null);
         }
-    }, [refreshUsers, selectedUser]);
+    }, [isSelf, refreshUsers, selectedUser]);
 
     const resetMfa = useCallback(async () => {
         if (!selectedUser || isSelf || !selectedUser.mfaEnabled || !canMutateAdminUserLifecycle(selectedUser.status) || selectedUser.status === 'SUSPENDED') return;
@@ -487,7 +491,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
 
     const actionDisabled = loading || !selectedUser;
     const saveDisabled = actionDisabled || selectedIsDeleted || savingKey === `save:${selectedUser?.id ?? ''}`;
-    const pinDisabled = actionDisabled || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
+    const pinDisabled = actionDisabled || isSelf || !selectedUser?.username || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
     const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `mfa:${selectedUser?.id ?? ''}`;
     const lockDisabled = actionDisabled || isSelf || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `lock:${selectedUser?.id ?? ''}`;
     const suspendDisabled = actionDisabled || selectedIsDeleted || (isSelf && selectedUser?.status !== 'SUSPENDED') || savingKey === `suspend:${selectedUser?.id ?? ''}`;
@@ -1051,11 +1055,11 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                 )}
                             </div>
 
-                            {temporaryPin ? (
+                            {temporaryPin?.userId === selectedUser.id ? (
                                 <div className="surface-muted" style={{ padding: '0.8rem', borderColor: '#ffe1a6', background: '#fff7e7' }}>
                                     <div style={{ fontSize: '0.78rem', color: '#7a2e14', marginBottom: 2 }}>Temporary PIN</div>
                                     <div style={{ fontSize: '1.1rem', fontWeight: 800, color: '#7c4a03', letterSpacing: '0.04em', fontFamily: 'var(--font-mono)' }}>
-                                        {temporaryPin}
+                                        {temporaryPin.pin}
                                     </div>
                                     <div style={{ fontSize: '0.74rem', color: 'var(--text-secondary)', marginTop: 4 }}>
                                         Share this securely. The user should reset it after first login.

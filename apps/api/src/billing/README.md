@@ -27,6 +27,8 @@
 - `stripe.service.ts`: Stripe customer, subscription, deletion cleanup, and verified webhook dispatch/handling.
 - `user-capacity.spec.ts`: tenant active-user capacity tests.
 - `user-capacity.ts`: active-user capacity enforcement helper.
+- `feature-usage-authority.spec.ts`: nested feature debit current-authority and exact ledger replay regressions.
+
 
 ## Credit Purchase Policy
 
@@ -59,3 +61,7 @@ When Stripe's declared aggregate `error_count` exceeds its capped samples, the A
 Operational Stripe failures are logged as bounded JSON diagnostics containing only a fixed event, allowlisted error class and code, normalized category, and validated Stripe request reference. Exception messages, stacks, URLs, headers, payloads, credentials, and tenant or user identifiers are never included. Persisted metered-usage failure state uses the same bounded diagnostic and never stores raw provider exception text.
 
 `stripe-credit-purchase.service.ts` remains an oversized billing orchestration hotspot because Checkout creation, fulfillment verification, and durable refund recovery currently share one provider client and tenant-lock boundary. A later bounded refactor should extract the append-only refund journal/reconciler behind a narrow interface; this P1 fix keeps that contract local to avoid changing schema or cross-module ownership while funds are at risk.
+
+- `stripe-exception.filter.spec.ts`: recovery and acceptance regression checks.
+
+- `stripe-exception.filter.ts`: scoped application repair or disposable qualification support.

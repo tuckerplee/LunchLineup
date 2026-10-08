@@ -1,6 +1,7 @@
 import {
   Injectable,
   Logger,
+  ServiceUnavailableException,
   type OnApplicationShutdown,
   type OnModuleInit,
 } from "@nestjs/common";
@@ -172,7 +173,7 @@ export class RedisThrottlerStorage
     } catch {
       this.reportStorageFailure();
       if (this.options.production) {
-        return this.blockedRecord(safeTtl, safeLimit, safeBlockDuration);
+        throw new ServiceUnavailableException("Request limits are temporarily unavailable.");
       }
       return this.fallback.increment(
         key,
@@ -251,19 +252,6 @@ export class RedisThrottlerStorage
     };
   }
 
-  private blockedRecord(
-    ttl: number,
-    limit: number,
-    blockDuration: number,
-  ): StorageRecord {
-    return {
-      totalHits: limit + 1,
-      timeToExpire: Math.ceil(ttl / 1_000),
-      isBlocked: true,
-      timeToBlockExpire: Math.ceil(blockDuration / 1_000),
-    };
-  }
-
   private positiveInteger(value: number): number {
     return Math.max(1, Math.floor(Number.isFinite(value) ? value : 1));
   }
@@ -293,7 +281,9 @@ export class RedisThrottlerStorage
     const action = this.options.production
       ? "request denied"
       : "local fallback enabled";
-    this.logger.error(`Shared rate-limit storage unavailable; ${action}`);
+    try {
+      this.logger.error(`Shared rate-limit storage unavailable; ${action}`);
+    } catch { /* fixed diagnostics cannot change production denial or development fallback */ }
   }
 }
 

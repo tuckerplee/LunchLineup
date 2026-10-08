@@ -1006,3 +1006,14 @@ class TestConstraintSolver:
         assert len(breaks) == 3
         ordered = sorted(breaks)
         assert all(left[1] <= right[0] for left, right in zip(ordered, ordered[1:]))
+
+class TestOvernightOwnership:
+    def test_next_day_collision_blocks_overnight_demand(self):
+        solver = ConstraintSolver()
+        constraints = {"timezone": "UTC", "demand_windows": [{"id": "night", "start_time": "2026-03-09T22:00:00Z", "end_time": "2026-03-10T02:00:00Z", "required_staff": 1}]}
+        result = solver.solve(staff_ids=["alice"], start_date="2026-03-09T00:00:00Z", end_date="2026-03-10T00:00:00Z", constraints=constraints)
+        assert result["feasible"] is True
+        assert result["assignments"][0]["end_time"].startswith("2026-03-10T02:00:00")
+        constraints["existing_shift_intervals"] = [{"id": "next", "staff_id": "alice", "location_id": "other", "start_time": "2026-03-10T01:00:00Z", "end_time": "2026-03-10T05:00:00Z"}]
+        result = solver.solve(staff_ids=["alice"], start_date="2026-03-09T00:00:00Z", end_date="2026-03-10T00:00:00Z", constraints=constraints)
+        assert result["feasible"] is False

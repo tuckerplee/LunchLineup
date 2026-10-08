@@ -3,6 +3,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Copy, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import type { InvitationRecovery } from './invitation-recovery';
 import {
     buildStaffInvitationPayload,
     generateTemporaryPin,
@@ -26,6 +27,11 @@ type AddTeamMemberFormProps = {
     emailInvitationAvailable: boolean;
     isLoading: boolean;
     invitationDelivery?: ReactNode;
+    recovery?: InvitationRecovery | null;
+    recoveryError?: string | null;
+    recoveryRepairReady?: boolean;
+    onRepairRecovery?: () => Promise<void>;
+    onResolveRecovery?: () => Promise<void>;
     onSubmit: (
         payload: StaffInvitationPayload,
         method: StaffOnboardingMethod,
@@ -53,6 +59,11 @@ export function AddTeamMemberForm({
     emailInvitationAvailable,
     isLoading,
     invitationDelivery,
+    recovery,
+    recoveryError,
+    recoveryRepairReady,
+    onRepairRecovery,
+    onResolveRecovery,
     onSubmit,
 }: AddTeamMemberFormProps) {
     const [method, setMethod] = useState<StaffOnboardingMethod>('pin');
@@ -67,6 +78,16 @@ export function AddTeamMemberForm({
     const [credentials, setCredentials] = useState<TemporaryCredentials | null>(null);
     const [credentialsCopied, setCredentialsCopied] = useState(false);
     const [credentialsAcknowledged, setCredentialsAcknowledged] = useState(false);
+
+    useEffect(() => {
+        if (!recovery) return;
+        setName(recovery.details.name);
+        setEmail(recovery.details.email ?? '');
+        setUsername(recovery.details.username ?? '');
+        setRoleId(recovery.details.roleId ?? '');
+        setMethod(recovery.details.email ? 'email' : 'pin');
+        // Preserve a PIN already entered in this page; reload always starts empty.
+    }, [recovery]);
 
     useEffect(() => {
         if (!roleId && defaultRoleId) setRoleId(defaultRoleId);
@@ -169,6 +190,23 @@ export function AddTeamMemberForm({
 
     return (
         <div className="surface-muted staff-onboarding" style={{ padding: '0.9rem', display: 'grid', gap: '0.8rem' }}>
+            {recoveryError ? <p role="alert">{recoveryError}</p> : null}
+            {recoveryError && onRepairRecovery ? <>
+                {recoveryRepairReady ? <p role="status">The staff directory has been refreshed. Review all relevant pages for the earlier employee before clearing unreadable recovery details.</p> : null}
+                <Button type="button" variant="outline" disabled={isSubmitting || isLoading} onClick={async () => {
+                    setIsSubmitting(true);
+                    try { await onRepairRecovery(); setError(null); }
+                    catch (failure) { setError(failure instanceof Error ? failure.message : 'Recovery storage remains unavailable.'); }
+                    finally { setIsSubmitting(false); }
+                }}>{recoveryRepairReady ? 'Acknowledge directory review and retry recovery' : 'Reload directory to repair recovery'}</Button>
+            </> : null}
+            {recovery ? <p role="status">The creation of {recovery.details.name} is awaiting confirmation. Retry these original details{recovery.details.username ? ' with the original temporary PIN' : ''}. After reload, PINs must be re-entered. If the PIN is unavailable, review this employee in the directory and reset their PIN before sharing access.</p> : null}
+            {recovery && onResolveRecovery ? <Button type="button" variant="outline" disabled={isSubmitting || isLoading} onClick={async () => {
+                setIsSubmitting(true);
+                try { await onResolveRecovery(); }
+                catch (failure) { setError(failure instanceof Error ? failure.message : 'Unable to confirm the employee.'); }
+                finally { setIsSubmitting(false); }
+            }}>Confirm existing employee in directory</Button> : null}
             <div>
                 <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>Add team member</div>
                 <p style={{ margin: '0.2rem 0 0', fontSize: '0.78rem', color: 'var(--text-muted)' }}>
@@ -316,7 +354,7 @@ export function AddTeamMemberForm({
                                         autoComplete="off"
                                         minLength={3}
                                         maxLength={32}
-                                        pattern="[a-z0-9._-]+"
+                                        pattern={'[a-z0-9._\\-]+'}
                                         style={fieldStyle}
                                     />
                                 </label>
@@ -346,7 +384,7 @@ export function AddTeamMemberForm({
                     </div>
 
                     <div className="staff-onboarding__submit-row">
-                        <Button type="submit" size="sm" disabled={isSubmitting || isLoading || roles.length === 0 && canChooseRole}>
+                        <Button type="submit" size="sm" disabled={isSubmitting || isLoading || Boolean(recoveryError) || roles.length === 0 && canChooseRole}>
                             {isSubmitting
                                 ? (method === 'email' ? 'Sending...' : 'Creating...')
                                 : (method === 'email' ? 'Send email invitation' : 'Create team member')}

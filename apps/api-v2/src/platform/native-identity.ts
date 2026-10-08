@@ -1,8 +1,11 @@
-import { PRIVILEGED_MFA_PERMISSION_KEYS } from '@lunchlineup/rbac';
+import { PRIVILEGED_MFA_PERMISSION_KEYS, observeMfaVerification,
+  type MfaSessionObserver, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import Redis from 'ioredis';
 import jwt, { type JwtPayload } from 'jsonwebtoken';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+// Include cookie type augmentation when this adapter is imported without the server.
+import type {} from '@fastify/cookie';
 import type { ApiV2Config } from '../config';
 import type { TenantDatabase } from './database';
 import type { IdentityAdapter } from './identity';
@@ -15,6 +18,23 @@ const MAX_SESSION_TIMEOUT_MINUTES = 1440;
 const MFA_SESSION_KEY = (sessionId: string) => `session_mfa:${sessionId}`;
 const ROLE_NAME_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f-\u009f]/g;
 const MAX_ROLE_NAME_LENGTH = 80;
+const PIN_RESET_OPERATIONS = new Set([
+  'GET /v2/auth/me',
+  'POST /v2/auth/refresh',
+  'POST /v2/auth/logout',
+  'PUT /v2/users/me/pin',
+]);
+const MFA_COMPLETION_OPERATIONS = new Set([
+  'POST /v2/auth/mfa/verify',
+  'POST /v2/auth/mfa/enroll',
+  'POST /v2/auth/mfa/enroll/confirm',
+  'GET /v2/auth/mfa/enrollment',
+  'POST /v2/auth/mfa/enrollment',
+  'PUT /v2/auth/mfa/enrollment',
+  'POST /v2/auth/logout',
+  'GET /v2/auth/me',
+  'POST /v2/auth/refresh',
+]);
 
 type AccessTokenClaims = {
   sub: string;
@@ -60,7 +80,7 @@ type AuthorizationSnapshot = {
   mfaRequired: boolean;
 };
 
-export type MfaSessionStore = {
+export type MfaSessionStore = Partial<MfaSessionObserver> & {
   isVerified(sessionId: string): Promise<boolean>;
   ready?(): Promise<void>;
   close?(): Promise<void>;
@@ -68,8 +88,10 @@ export type MfaSessionStore = {
 
 export class RedisMfaSessionStore implements MfaSessionStore {
   private readonly client: Redis;
+  private readonly observationTimeoutMs: number;
 
   constructor(config: Pick<ApiV2Config, 'redisUrl' | 'authStateTimeoutMs'>) {
+    this.observationTimeoutMs = config.authStateTimeoutMs;
     this.client = new Redis(config.redisUrl, {
       lazyConnect: true,
       enableOfflineQueue: false,
@@ -99,6 +121,13 @@ export class RedisMfaSessionStore implements MfaSessionStore {
     } catch {
       throw new Error('MFA session store is unavailable.');
     }
+  }
+
+  async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+    return observeMfaVerification(identity, async (script, key) => {
+      if (this.client.status !== 'ready') await this.ready();
+      return this.client.eval(script, 1, key);
+    }, this.observationTimeoutMs);
   }
 
   async close(): Promise<void> {
@@ -236,6 +265,15 @@ export class NativeIdentityAdapter implements IdentityAdapter {
     await this.mfaSessions.close?.();
   }
 
+  async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+    if (!this.mfaSessions.observeSessionMfa) throw identityUnavailable();
+    try {
+      return await this.mfaSessions.observeSessionMfa(identity);
+    } catch {
+      throw identityUnavailable();
+    }
+  }
+
   async authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity> {
     const source = requestToken(request);
     const claims = accessClaims(source.token, this.config);
@@ -295,6 +333,17 @@ export class NativeIdentityAdapter implements IdentityAdapter {
       mfaVerified: !snapshot.mfaRequired || mfaVerified,
       pinResetRequired: snapshot.user.pinResetRequired,
     };
+
+    const operation = `${request.method} ${request.url.split('?', 1)[0]}`;
+    // Match the retained session boundary: mandatory PIN replacement must be
+    // completed before MFA, and only explicitly listed recovery routes pass.
+    if (identity.pinResetRequired) {
+      if (!PIN_RESET_OPERATIONS.has(operation)) {
+        throw new ProblemError(403, 'pin_rotation_required', 'Replace your temporary PIN before continuing.', 'PIN rotation required');
+      }
+    } else if (identity.mfaRequired && !identity.mfaVerified && !MFA_COMPLETION_OPERATIONS.has(operation)) {
+      throw new ProblemError(403, 'mfa_verification_required', 'Complete MFA verification before continuing.', 'MFA verification required');
+    }
 
     if (source.cookieAuthenticated) this.rotateCookie(reply, identity, snapshot.effectiveExpiresAt);
     return identity;

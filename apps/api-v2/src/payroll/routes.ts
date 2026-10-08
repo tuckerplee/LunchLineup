@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   PayrollAmendmentDecisionRequestSchema,
   PayrollAmendmentDecisionResponseSchema,
@@ -53,6 +54,7 @@ import type { PayrollService } from './payroll.service';
 export type PayrollRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   payroll: Pick<PayrollService,
     | 'listPolicies'
     | 'latestPolicy'
@@ -99,6 +101,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:export']);
+    await dependencies.quota.consume('getPayrollExportEntitlement', identity, reply);
     const response = await dependencies.payroll.exportEntitlement(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -116,6 +119,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:read']);
+    await dependencies.quota.consume('listPayrollPolicies', identity, reply);
     const response = await dependencies.payroll.listPolicies(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -132,6 +136,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:read']);
+    await dependencies.quota.consume('getPayrollPolicy', identity, reply);
     const response = await dependencies.payroll.latestPolicy(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -150,6 +155,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:policy_write']);
+    await dependencies.quota.consume('createPayrollPolicy', identity, reply);
     const response = await dependencies.payroll.createPolicy(identity, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -167,6 +173,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:read']);
+    await dependencies.quota.consume('listPayrollPeriods', identity, reply);
     const response = await dependencies.payroll.listPeriods(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -185,6 +192,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:policy_write']);
+    await dependencies.quota.consume('createPayrollPeriod', identity, reply);
     const response = await dependencies.payroll.createPeriod(identity, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -206,6 +214,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:read']);
+    await dependencies.quota.consume('getPayrollPeriod', identity, reply);
     const response = await dependencies.payroll.getPeriod(identity, request.params.periodId, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -228,6 +237,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:policy_write']);
+    await dependencies.quota.consume('adoptPayrollTimeCards', identity, reply);
     const response = await dependencies.payroll.adoptCards(identity, request.params.periodId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -250,6 +260,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:lock']);
+    await dependencies.quota.consume('startPayrollReview', identity, reply);
     const response = await dependencies.payroll.startReview(identity, request.params.periodId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -272,6 +283,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['time_cards:approve']);
+    await dependencies.quota.consume('decidePayrollEntries', identity, reply);
     const response = await dependencies.payroll.decideCards(identity, request.params.periodId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -294,6 +306,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:lock']);
+    await dependencies.quota.consume('lockPayrollPeriod', identity, reply);
     const response = await dependencies.payroll.lockPeriod(identity, request.params.periodId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -316,6 +329,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:reconcile']);
+    await dependencies.quota.consume('createPayrollAmendment', identity, reply);
     const response = await dependencies.payroll.createAmendment(identity, request.params.entryId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -338,6 +352,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['time_cards:approve']);
+    await dependencies.quota.consume('decidePayrollAmendment', identity, reply);
     const response = await dependencies.payroll.decideAmendment(identity, request.params.amendmentId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -360,6 +375,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:export']);
+    await dependencies.quota.consume('createPayrollExport', identity, reply);
     const response = await dependencies.payroll.createExport(identity, request.params.periodId, request.body, header(request, 'idempotency-key'));
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -381,6 +397,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:read']);
+    await dependencies.quota.consume('getPayrollExport', identity, reply);
     const response = await dependencies.payroll.getExport(identity, request.params.exportId, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -398,6 +415,7 @@ export async function registerPayrollRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:export']);
+    await dependencies.quota.consume('downloadPayrollExport', identity, reply);
     const artifact = await dependencies.payroll.downloadExport(identity, request.params.exportId);
     reply
       .header('Cache-Control', 'private, no-store')
@@ -425,6 +443,7 @@ export async function registerPayrollRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['payroll:reconcile']);
+    await dependencies.quota.consume('reconcilePayrollExport', identity, reply);
     const response = await dependencies.payroll.reconcileExport(identity, request.params.exportId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;

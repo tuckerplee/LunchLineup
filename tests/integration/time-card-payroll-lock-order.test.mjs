@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -15,6 +16,7 @@ require('tsconfig-paths/register');
 const { FeatureAccessService } = require('../../apps/api/src/billing/feature-access.service.ts');
 const { MeteringService } = require('../../apps/api/src/billing/metering.service.ts');
 const { TenantPrismaService } = require('../../apps/api/src/database/tenant-prisma.service.ts');
+const { RbacService } = require('../../apps/api/src/auth/rbac.service.ts');
 const { PayrollExportService } = require('../../apps/api/src/payroll/payroll-export.service.ts');
 const { materializeLockedSnapshots } = require('../../apps/api/src/payroll/payroll-lock-snapshot.ts');
 const { TimeCardsController } = require('../../apps/api/src/time-cards/time-cards.controller.ts');
@@ -72,6 +74,8 @@ function fixture(prefix) {
     tenantId: `tenant-${prefix}-${suffix}`,
     tenantSlug: `${prefix}-${suffix}`,
     managerId: `manager-${prefix}-${suffix}`,
+    managerSessionId: `session-manager-${prefix}-${suffix}`,
+    exporterRoleId: `role-exporter-${prefix}-${suffix}`,
     employeeId: `employee-${prefix}-${suffix}`,
     locationId: `location-${prefix}-${suffix}`,
     policyId: `policy-${prefix}-${suffix}`,
@@ -144,6 +148,23 @@ async function createFixture(owner, values) {
         mfaBackupCodes: [],
       }],
     });
+    // Actual current actor/session/custom grant rows. The trusted observer
+    // below is explicitly synthetic; this fixture does not prove Redis MFA.
+    await tx.session.create({ data: {
+      id: values.managerSessionId, userId: values.managerId,
+      refreshToken: `hash-${values.managerSessionId}`,
+      ipAddress: '127.0.0.1', userAgent: 'scoped-payroll-lock-order-fixture',
+      expiresAt: new Date('2099-01-01T00:00:00.000Z'),
+    } });
+    const timeAndExportPermissions = ['payroll:export', 'time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'];
+    const permissions = [];
+    for (const key of timeAndExportPermissions) permissions.push(await tx.permission.findUniqueOrThrow({ where: { key } }));
+    await tx.role.create({ data: {
+      id: values.exporterRoleId, tenantId: values.tenantId, name: 'Scoped payroll exporter',
+      slug: `exporter-${values.suffix}`, isSystem: false,
+    } });
+    for (const permission of permissions) await tx.rolePermission.create({ data: { roleId: values.exporterRoleId, permissionId: permission.id } });
+    await tx.roleAssignment.create({ data: { tenantId: values.tenantId, userId: values.managerId, roleId: values.exporterRoleId } });
     await tx.location.create({
       data: { id: values.locationId, tenantId: values.tenantId, name: 'UTC Location', timezone: 'UTC' },
     });
@@ -231,6 +252,10 @@ async function createFixture(owner, values) {
 async function cleanup(owner, tenantIds) {
   await owner.$transaction(async (tx) => {
     await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+    await tx.$executeRawUnsafe('DELETE FROM "Session" WHERE "userId" IN (SELECT "id" FROM "User" WHERE "tenantId" = ANY($1::text[]))', tenantIds);
+    await tx.$executeRawUnsafe('DELETE FROM "RoleAssignment" WHERE "tenantId" = ANY($1::text[])', tenantIds);
+    await tx.$executeRawUnsafe('DELETE FROM "RolePermission" WHERE "roleId" IN (SELECT "id" FROM "Role" WHERE "tenantId" = ANY($1::text[]))', tenantIds);
+    await tx.$executeRawUnsafe('DELETE FROM "Role" WHERE "tenantId" = ANY($1::text[])', tenantIds);
     for (const table of [
       'PayrollExportLine', 'PayrollExportBatch', 'PayrollLockedEntry', 'TimeCardBreak',
       'TimeCard', 'PayrollPeriod', 'PayrollPolicyVersion', 'AuditLog', 'CreditTransaction',
@@ -242,11 +267,19 @@ async function cleanup(owner, tenantIds) {
   });
 }
 
-function runtime(prisma) {
+function runtime(prisma, authorityFixtures = []) {
   const tenantDb = new TenantPrismaService(prisma);
   const metering = new MeteringService(tenantDb);
   const featureAccess = new FeatureAccessService(metering, tenantDb);
-  return { tenantDb, featureAccess };
+  const rbac = new RbacService(tenantDb);
+  const mfaObserver = { observeSessionMfa: async (identity) => {
+    const selected = authorityFixtures.find(values => values.managerId === identity.sub
+      && values.tenantId === identity.tenantId && values.managerSessionId === identity.sessionId);
+    assert.ok(selected, 'synthetic MFA observer refuses an undeclared fixture identity');
+    return { ...identity, expiresAtEpochMs: Date.now() + 300_000,
+      expiresAtMonotonicMs: performance.now() + 300_000 };
+  } };
+  return { tenantDb, featureAccess, rbac, mfaObserver };
 }
 
 function managerRequest(values) {
@@ -254,8 +287,9 @@ function managerRequest(values) {
     user: {
       tenantId: values.tenantId,
       sub: values.managerId,
+      sessionId: values.managerSessionId,
       role: 'ADMIN',
-      permissions: ['users:read', 'shifts:read'],
+      permissions: ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'],
     },
   };
 }
@@ -300,10 +334,10 @@ test('Tenant-first payroll hierarchy serializes clock-in/export and correction/e
       createFixture(owner, clockValues),
       createFixture(owner, correctionValues),
     ]);
-    const mutationRuntime = runtime(mutationPrisma);
-    const exportRuntime = runtime(exportPrisma);
-    const timeCards = new TimeCardsController(mutationRuntime.featureAccess, mutationRuntime.tenantDb);
-    const exports = new PayrollExportService(exportRuntime.tenantDb, exportRuntime.featureAccess);
+    const mutationRuntime = runtime(mutationPrisma, [clockValues, correctionValues]);
+    const exportRuntime = runtime(exportPrisma, [clockValues, correctionValues]);
+    const timeCards = new TimeCardsController(mutationRuntime.featureAccess, mutationRuntime.tenantDb, mutationRuntime.rbac, mutationRuntime.mfaObserver);
+    const exports = new PayrollExportService(exportRuntime.tenantDb, exportRuntime.featureAccess, exportRuntime.rbac, exportRuntime.mfaObserver);
 
     let ready = deferred();
     release = deferred();
@@ -316,7 +350,7 @@ test('Tenant-first payroll hierarchy serializes clock-in/export and correction/e
     );
     await waitForLockWait(observer, mutationName, 'clock-in');
     const clockExport = exports.create(
-      { tenantId: clockValues.tenantId, userId: clockValues.managerId },
+      { tenantId: clockValues.tenantId, userId: clockValues.managerId, sessionId: clockValues.managerSessionId },
       clockValues.lockedPeriodId,
       { expectedCreditCost: 1 },
       `export-${clockValues.suffix}`,
@@ -347,7 +381,7 @@ test('Tenant-first payroll hierarchy serializes clock-in/export and correction/e
     }, managerRequest(correctionValues));
     await waitForLockWait(observer, mutationName, 'time-card correction');
     const correctionExport = exports.create(
-      { tenantId: correctionValues.tenantId, userId: correctionValues.managerId },
+      { tenantId: correctionValues.tenantId, userId: correctionValues.managerId, sessionId: correctionValues.managerSessionId },
       correctionValues.lockedPeriodId,
       { expectedCreditCost: 1 },
       `export-${correctionValues.suffix}`,

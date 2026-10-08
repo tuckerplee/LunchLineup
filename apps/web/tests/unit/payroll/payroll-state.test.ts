@@ -203,6 +203,52 @@ describe('paid export, amendments, and line reconciliation', () => {
     expect(isBatchFullyReconciled(batch({ reconciliation: { acceptedCount: 0, rejectedCount: 1, pendingCount: 0, providerTotalMinutes: 450 } }))).toBe(false);
   });
 
+  it.each(['PENDING', 'REJECTED'] as const)('reaches a later %s line after an accepted 500-row page', (status) => {
+    const firstPage = Array.from({ length: 500 }, (_, index) => ({
+      ...batch().lines[0], id: `line-${index + 1}`, lineNumber: index + 1,
+    }));
+    const later = { ...batch().lines[0], id: 'line-501', lineNumber: 501, reconciliationStatus: status };
+    const loaded = appendPayrollExportLines(firstPage, [later]);
+    const current = batch({
+      status: 'RECONCILING', rowCount: 501, totalPayableMinutes: 501 * 450,
+      lines: loaded,
+      reconciliation: { acceptedCount: 500, rejectedCount: status === 'REJECTED' ? 1 : 0, pendingCount: status === 'PENDING' ? 1 : 0, providerTotalMinutes: 501 * 450 },
+    });
+    expect(reconciliationEditableLines(current).map((line) => line.id)).toEqual(['line-501']);
+    expect(isBatchFullyReconciled(current)).toBe(false);
+    expect(validateReconciliation({
+      provider: 'Provider', providerEventId: 'later-page-event', providerTotalMinutes: current.totalPayableMinutes,
+      lines: reconciliationEditableLines(current).map((line) => ({ lineId: line.id, status: 'ACCEPTED' as const })),
+    })).toBeNull();
+  });
+
+  it('keeps large unresolved selections bounded and reaches the next loaded outcome after readback', () => {
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      ...batch().lines[0], id: `line-${index + 1}`, lineNumber: index + 1, reconciliationStatus: 'PENDING' as const,
+    }));
+    const current = batch({ status: 'RECONCILING', rowCount: 501, lines: rows });
+    expect(reconciliationEditableLines(current)).toHaveLength(500);
+    expect(reconciliationEditableLines(current)[499].id).toBe('line-500');
+    const readBack = batch({
+      ...current,
+      lines: rows.map((line, index) => index < 500 ? { ...line, reconciliationStatus: 'ACCEPTED' as const } : line),
+      reconciliation: { acceptedCount: 500, rejectedCount: 0, pendingCount: 1, providerTotalMinutes: 501 * 450 },
+    });
+    expect(reconciliationEditableLines(readBack).map((line) => line.id)).toEqual(['line-501']);
+  });
+
+  it('retains a bounded accepted-row fallback to repair a large batch provider total', () => {
+    const rows = Array.from({ length: 501 }, (_, index) => ({
+      ...batch().lines[0], id: `line-${index + 1}`, lineNumber: index + 1,
+    }));
+    const current = batch({
+      status: 'RECONCILING', rowCount: 501, totalPayableMinutes: 501 * 450, lines: rows,
+      reconciliation: { acceptedCount: 501, rejectedCount: 0, pendingCount: 0, providerTotalMinutes: 501 * 450 - 1 },
+    });
+    expect(reconciliationEditableLines(current)).toEqual(rows.slice(0, 500));
+    expect(isBatchFullyReconciled(current)).toBe(false);
+  });
+
   it('keeps rejected lines correctable and uses accepted lines to repair a wrong provider total', () => {
     const rejected = { ...batch().lines[0], reconciliationStatus: 'REJECTED' as const, reconciliationReason: 'Provider mismatch' };
     expect(reconciliationEditableLines(batch({

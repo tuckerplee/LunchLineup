@@ -8,11 +8,14 @@ import {
     ServiceUnavailableException,
 } from '@nestjs/common';
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { mkdir, open, readdir, stat, unlink } from 'fs/promises';
 import { basename, extname, join, resolve, sep } from 'path';
 
 import { FeatureAccessService } from '../billing/feature-access.service';
-import { runSerializableMutationWithRetry } from '../auth/serializable-mutation';
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
+import { freezeMutationActor } from '../auth/current-mutation';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { AvailabilityImportPublisher } from './availability-imports.publisher';
 
@@ -40,6 +43,7 @@ export type UploadedAvailabilityPdf = {
 type CreateImportArgs = {
     tenantId: string;
     requestedByUserId: string;
+    requestedBySessionId: string;
     userId: string;
     idempotencyKey: string;
     staffIdentity?: unknown;
@@ -64,6 +68,7 @@ type ImportRow = {
 type CreditLedgerRow = {
     id: string;
     amount: number;
+    debtAmount?: number;
 };
 
 export type AvailabilityImportSettlement = {
@@ -245,6 +250,8 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
         private readonly tenantDb: TenantPrismaService,
         private readonly featureAccess: FeatureAccessService,
         private readonly publisher: AvailabilityImportPublisher,
+        private readonly rbac: RbacService,
+        private readonly auth: AuthService,
     ) {}
 
     async onModuleInit(): Promise<void> {
@@ -263,84 +270,95 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
     }
 
     async createImport(args: CreateImportArgs) {
-        if (!this.publisher.isReady()) {
-            throw new ServiceUnavailableException('Availability import publishing is draining.');
-        }
-        const file = validateAvailabilityPdf(args.file);
+        this.assertPublishingReady();
+        const uploaded = validateAvailabilityPdf(args.file);
+        // Capture the bounded upload and target before outside MFA observation
+        // or transaction waits; later caller changes cannot alter this request.
+        const file = Object.freeze({ buffer: Buffer.from(uploaded.buffer), size: uploaded.size });
+        const targetUserId = args.userId;
         const idempotencyKey = normalizeImportIdempotencyKey(args.idempotencyKey);
         const suppliedIdentity = normalizeAvailabilityImportStaffIdentity(args.staffIdentity);
         if (!suppliedIdentity) {
             throw new BadRequestException('Employee or staff ID is required.');
         }
+        const actor = freezeMutationActor({ tenantId: args.tenantId, userId: args.requestedByUserId,
+            sessionId: args.requestedBySessionId });
         const documentIdentityHash = availabilityImportDocumentIdentityHash(suppliedIdentity);
         const importId = randomUUID();
         const fileSha256 = createHash('sha256').update(file.buffer).digest('hex');
-        const requestKeyHash = this.digest(`${args.tenantId}:${idempotencyKey}`);
+        const requestKeyHash = this.digest(`${actor.tenantId}:${idempotencyKey}`);
         // Identity-bound jobs use requestHash as the non-reversible document identity contract.
         const requestHash = documentIdentityHash;
 
-        let storageKey: string | null = null;
-        let storagePath: string | null = null;
-
-        let row: ImportRow;
-        let replayed = false;
+        // A commit conflict may leave more than one optional local copy. Own
+        // every attempted path until the authorized transaction has settled.
+        const attemptedPaths = new Set<string>();
+        let prepared: { row: ImportRow & { storageKey?: string | null }; response: Awaited<ReturnType<AvailabilityImportsService['getImport']>> };
         try {
-            const prepared = await runSerializableMutationWithRetry(
-                () => this.tenantDb.withTenant(args.tenantId, async (tx: any) => {
+            prepared = await this.rbac.runCurrentMutation({
+                actor, requiredPermission: 'users:write', mfaObserver: this.auth,
+                conflictMessage: 'Availability import changed concurrently; retry the request.',
+            }, (tx, selected) => this.rbac.authorizeActorMutationInTransaction(tx, selected, 'users:write', [targetUserId]),
+            async (tx: any, _authority, assertCurrent, selected) => {
                 const existing = await tx.availabilityImportJob.findUnique({
-                    where: { tenantId_requestKeyHash: { tenantId: args.tenantId, requestKeyHash } },
+                    where: { tenantId_requestKeyHash: { tenantId: selected.tenantId, requestKeyHash } },
                 });
+                assertCurrent();
                 if (existing) {
-                    if (!this.matchesImportRequest(existing, args.userId, fileSha256, documentIdentityHash)) {
+                    if (!this.matchesImportRequest(existing, targetUserId, fileSha256, documentIdentityHash)) {
                         throw new ConflictException('Idempotency-Key was already used for a different availability import.');
                     }
-                    return { row: existing as ImportRow, replayed: true };
+                    return { row: existing, response: await this.serializeImportInTransaction(tx, selected.tenantId, existing, assertCurrent) };
                 }
-
+                let storageKey: string | null = null;
                 const target = await tx.user.findFirst({
                     where: {
-                        id: args.userId,
-                        tenantId: args.tenantId,
+                        id: targetUserId,
+                        tenantId: actor.tenantId,
                         deletedAt: null,
                         suspendedAt: null,
                         role: { in: ['MANAGER', 'STAFF'] },
                     },
                     select: { id: true, username: true },
                 });
+                assertCurrent();
                 if (!target) throw new NotFoundException('Staff member not found.');
                 const targetIdentityHash = availabilityImportAccountIdentityHash(target);
                 const encryptedSourcePayload = encryptAvailabilityImportSource(file.buffer, {
-                    tenantId: args.tenantId,
+                    tenantId: actor.tenantId,
                     importId,
                     fileSha256,
                     requestHash,
                     targetIdentityHash,
                 });
 
+                assertCurrent();
                 if (this.localStorageReady) {
                     storageKey = `${randomUUID()}.pdf`;
-                    storagePath = this.storagePath(storageKey);
+                    const storagePath = this.storagePath(storageKey);
                     try {
-                        await this.writeExclusive(storagePath, encryptedSourcePayload);
+                        await this.writeExclusive(storagePath, encryptedSourcePayload, () => attemptedPaths.add(storagePath));
                     } catch {
-                        await this.safeUnlink(storagePath);
+                        if (attemptedPaths.has(storagePath)) await this.safeUnlink(storagePath);
                         storageKey = null;
-                        storagePath = null;
                         this.localStorageReady = false;
                     }
                 }
 
+                assertCurrent();
                 const entitlement = await this.featureAccess.assertFeatureEnabledInTransaction(
                     tx,
-                    args.tenantId,
+                    actor.tenantId,
                     'scheduling',
                 );
+                assertCurrent();
+                this.assertPublishingReady();
                 await tx.availabilityImportJob.create({
                     data: {
                         id: importId,
-                        tenantId: args.tenantId,
-                        userId: args.userId,
-                        requestedByUserId: args.requestedByUserId,
+                        tenantId: actor.tenantId,
+                        userId: targetUserId,
+                        requestedByUserId: selected.userId,
                         requestKeyHash,
                         requestHash,
                         targetIdentityHash,
@@ -351,78 +369,114 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
                         expiresAt: new Date(Date.now() + ORPHAN_MAX_AGE_MS),
                     },
                 });
+                assertCurrent();
+                this.assertPublishingReady();
                 const creditConsumption = await this.featureAccess.recordFeatureUsageInTransaction(
                     tx,
-                    args.tenantId,
+                    actor.tenantId,
                     entitlement,
                     `Availability PDF import (${importId})`,
                     `availability-import:${importId}`,
                 );
+                assertCurrent();
                 const updated = await tx.availabilityImportJob.update({
                     where: { id: importId },
                     data: { creditConsumption },
                 });
-                return { row: updated as ImportRow, replayed: false };
-                }, { isolationLevel: 'Serializable' }),
-                { conflictMessage: 'Availability import changed concurrently; retry the request.' },
-            );
-            row = prepared.row;
-            replayed = prepared.replayed;
+                assertCurrent();
+                const response = await this.serializeImportInTransaction(tx, selected.tenantId, updated, assertCurrent);
+                assertCurrent();
+                this.assertPublishingReady();
+                return { row: updated, response };
+            }, {
+                isRecoverable: error => this.isUniqueConstraint(error),
+                operation: async (tx: any, _authority, assertCurrent, selected) => {
+                    const existing = await tx.availabilityImportJob.findUnique({
+                        where: { tenantId_requestKeyHash: { tenantId: selected.tenantId, requestKeyHash } },
+                    });
+                    assertCurrent();
+                    if (!existing || !this.matchesImportRequest(existing, targetUserId, fileSha256, documentIdentityHash)) {
+                        throw new ConflictException('Idempotency-Key was already used for a different availability import.');
+                    }
+                    return { row: existing, response: await this.serializeImportInTransaction(tx, selected.tenantId, existing, assertCurrent) };
+                },
+            });
         } catch (error) {
-            if (storagePath) await this.safeUnlink(storagePath);
-            if (this.isUniqueConstraint(error)) {
-                const replay = await this.replayAfterRace(
-                    args.tenantId,
-                    requestKeyHash,
-                    args.userId,
-                    fileSha256,
-                    documentIdentityHash,
-                );
-                this.publisher.kick();
-                return replay;
-            }
+            await this.cleanupAttemptedSources(attemptedPaths);
             throw error;
         }
 
-        if (replayed && storagePath) {
-            await this.safeUnlink(storagePath);
-        }
+        const retainedPath = [...attemptedPaths].find(path => basename(path) === prepared.row.storageKey);
+        await this.cleanupAttemptedSources([...attemptedPaths].filter(path => path !== retainedPath));
         this.publisher.kick();
-        return this.getImport(args.tenantId, row.id);
+        return prepared.response;
+    }
+
+    async cancelImport(tenantId: string, requestedByUserId: string, id: string, requestedBySessionId: string) {
+        const actor = freezeMutationActor({ tenantId, userId: requestedByUserId, sessionId: requestedBySessionId });
+        const { source, response } = await this.rbac.runCurrentMutation({
+            actor, requiredPermission: 'users:write', mfaObserver: this.auth,
+            conflictMessage: 'The import changed while cancellation was being saved. Retry cancellation.',
+        }, (tx, selected) => this.rbac.authorizeActorMutationInTransaction(tx, selected, 'users:write'),
+        async (tx: any, _authority, assertCurrent, selected) => {
+            await this.featureAccess.lockTenantInTransaction(tx, tenantId);
+            assertCurrent();
+            await tx.$queryRaw`SELECT "id" FROM "AvailabilityImportJob" WHERE "id" = ${id} AND "tenantId" = ${tenantId} FOR UPDATE`;
+            assertCurrent();
+            const row = await tx.availabilityImportJob.findFirst({ where: { id, tenantId } });
+            assertCurrent();
+            if (!row) throw new NotFoundException('Availability import not found.');
+            if (row.status === 'SUCCEEDED') throw new ConflictException('This import already completed. Review or discard its preview; cancellation cannot undo completion.');
+            if (['CANCELLED', 'FAILED', 'DEAD_LETTERED'].includes(row.status)) {
+                return { source: null, response: await this.serializeImportInTransaction(tx, selected.tenantId, row, assertCurrent) };
+            }
+            const ids = availabilityImportLedgerIds(id);
+            const debit = await tx.creditTransaction.findFirst({ where: { id: ids.debit, tenantId } });
+            assertCurrent();
+            if (!debit || !Number.isSafeInteger(debit.amount) || debit.amount >= 0) throw new ConflictException('The import charge could not be confirmed. No cancellation was recorded.');
+            const refund = await tx.creditTransaction.findFirst({ where: { id: ids.refund, tenantId } });
+            assertCurrent();
+            if (refund) throw new ConflictException('The import settlement changed. Refresh its status.');
+            const amount = -debit.amount;
+            const reason = `Availability PDF import refund (${id})`;
+            const settled = await tx.$queryRaw`SELECT * FROM public.settle_positive_credit_value(${tenantId}, ${amount}::integer, ${reason}, ${ids.refund})`;
+            assertCurrent();
+            if (settled.length !== 1 || Number(settled[0].creditedValue) !== amount || settled[0].replayed !== false) throw new ConflictException('The import refund could not be confirmed.');
+            const completedAt = new Date();
+            const updated = await tx.availabilityImportJob.updateMany({ where: { id, tenantId, status: row.status }, data: {
+                status: 'CANCELLED', parsedAvailability: Prisma.DbNull, resultErasedAt: completedAt, failureCode: null,
+                storageKey: null, encryptedSourcePayload: null, executionToken: null, executionLeaseUntil: null,
+                completedAt,
+            } });
+            assertCurrent();
+            if (updated.count !== 1) throw new ConflictException('The import changed while cancellation was being saved.');
+            await tx.auditLog.create({ data: { tenantId, userId: selected.userId, action: 'AVAILABILITY_IMPORT_CANCELLED', resource: 'AvailabilityImportJob', resourceId: id } });
+            assertCurrent();
+            return { source: row.storageKey as string | null, response: await this.getImportInTransaction(tx, selected.tenantId, id, assertCurrent) };
+        });
+        if (source) await this.safeUnlink(this.storagePath(source)).catch(() => undefined);
+        return response;
     }
 
     async getImport(tenantId: string, id: string) {
-        return this.tenantDb.withTenant(tenantId, async (tx: any) => {
-            const row = await tx.availabilityImportJob.findFirst({
-                where: { id, tenantId },
-            }) as ImportRow | null;
-            if (!row) throw new NotFoundException('Availability import not found.');
-            const ledgerIds = availabilityImportLedgerIds(row.id);
-            const ledgerRows = await tx.creditTransaction.findMany({
-                where: {
-                    tenantId,
-                    id: { in: [ledgerIds.debit, ledgerIds.refund] },
-                },
-                select: { id: true, amount: true },
-            }) as CreditLedgerRow[];
-            return this.serialize(row, this.deriveSettlement(row, ledgerRows));
-        });
+        return this.tenantDb.withTenant(tenantId, (tx: any) => this.getImportInTransaction(tx, tenantId, id));
     }
 
-    private async replayAfterRace(
-        tenantId: string,
-        requestKeyHash: string,
-        userId: string,
-        fileSha256: string,
-        documentIdentityHash: string,
-    ) {
-        const existing = await this.tenantDb.withTenant(tenantId, (tx: any) => tx.availabilityImportJob.findUnique({
-            where: { tenantId_requestKeyHash: { tenantId, requestKeyHash } },
-        })) as ImportRow | null;
-        if (!existing || !this.matchesImportRequest(existing, userId, fileSha256, documentIdentityHash)) {
-            throw new ConflictException('Idempotency-Key was already used for a different availability import.');
-        }
-        return this.getImport(tenantId, existing.id);
+    private async getImportInTransaction(tx: any, tenantId: string, id: string, assertCurrent: () => void = () => {}) {
+        const row = await tx.availabilityImportJob.findFirst({ where: { id, tenantId } }) as ImportRow | null;
+        assertCurrent();
+        if (!row) throw new NotFoundException('Availability import not found.');
+        return this.serializeImportInTransaction(tx, tenantId, row, assertCurrent);
+    }
+
+    private async serializeImportInTransaction(tx: any, tenantId: string, row: ImportRow, assertCurrent: () => void = () => {}) {
+        const ledgerIds = availabilityImportLedgerIds(row.id);
+        const ledgerRows = await tx.creditTransaction.findMany({
+            where: { tenantId, id: { in: [ledgerIds.debit, ledgerIds.refund] } },
+            select: { id: true, amount: true, debtAmount: true },
+        }) as CreditLedgerRow[];
+        assertCurrent();
+        return this.serialize(row, this.deriveSettlement(row, ledgerRows));
     }
 
     private async cleanupOrphans(): Promise<void> {
@@ -446,13 +500,20 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
             }));
     }
 
-    private async writeExclusive(path: string, bytes: Buffer): Promise<void> {
+    private async writeExclusive(path: string, bytes: Buffer, created: () => void): Promise<void> {
         const handle = await open(path, 'wx', 0o600);
         try {
+            created();
             await handle.writeFile(bytes);
             await handle.sync();
         } finally {
             await handle.close();
+        }
+    }
+
+    private assertPublishingReady(): void {
+        if (!this.publisher.isReady()) {
+            throw new ServiceUnavailableException('Availability import publishing is draining.');
         }
     }
 
@@ -465,6 +526,12 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
             throw new ServiceUnavailableException('Availability import storage is unavailable.');
         }
         return path;
+    }
+
+    private async cleanupAttemptedSources(paths: Iterable<string>): Promise<void> {
+        // Settle every request-owned cleanup without replacing a refusal or a
+        // committed receipt. The bounded orphan sweep recovers unlink failures.
+        await Promise.allSettled([...paths].map(path => this.safeUnlink(path)));
     }
 
     private async safeUnlink(path: string): Promise<void> {
@@ -482,8 +549,8 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
         const chargedCredits = debit && Number.isSafeInteger(debit.amount) && debit.amount < 0
             ? -debit.amount
             : 0;
-        const refundedCredits = refund && Number.isSafeInteger(refund.amount) && refund.amount > 0
-            ? refund.amount
+        const refundedCredits = refund && Number.isSafeInteger(refund.amount) && Number.isSafeInteger(refund.debtAmount ?? 0) && refund.amount >= 0 && (refund.debtAmount ?? 0) <= 0
+            ? refund.amount - (refund.debtAmount ?? 0)
             : 0;
         const refundTerminal = row.status === 'FAILED'
             || row.status === 'DEAD_LETTERED'

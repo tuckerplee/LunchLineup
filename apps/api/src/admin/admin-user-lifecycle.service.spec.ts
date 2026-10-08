@@ -4,6 +4,7 @@ import { RbacService } from '../auth/rbac.service';
 import { resolveFallbackPlanDefinition } from '../billing/plan-definitions';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { AdminUserLifecycleService, type AdminUserLifecycleActor } from './admin-user-lifecycle.service';
+import { syntheticAdminObserver } from './admin-user-authority.fixture';
 
 type LifecycleFixtureRow = {
     id: string;
@@ -67,20 +68,29 @@ describe('AdminUserLifecycleService', () => {
             $executeRaw: vi.fn().mockResolvedValue(1),
             $transaction: vi.fn(async (operation: any) => operation(prisma)),
             user: {
-                findUnique: vi.fn(async () => ({ tenantId: targetRow.tenantId })),
+                findUnique: vi.fn(async () => ({ ...targetRow })),
+                findFirst: vi.fn(async ({ where }: any) => actorRow.id === where.id && actorRow.tenantId === where.tenantId
+                    && !actorRow.deletedAt && !actorRow.suspendedAt
+                    ? { ...actorRow, pinResetRequired: false, mfaEnabled: true } : null),
                 updateMany: vi.fn().mockResolvedValue({ count: 1 }),
                 count: vi.fn().mockResolvedValue(2),
             },
-            session: { updateMany: vi.fn().mockResolvedValue({ count: 3 }) },
+            session: {
+                updateMany: vi.fn().mockResolvedValue({ count: 3 }),
+                findFirst: vi.fn(async () => ({ id: actor.sessionId, userId: actor.userId,
+                    createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null })),
+            },
+            tenantSetting: { findUnique: vi.fn(async () => null) },
             shift: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
             schedule: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
             tenant: {
-                findUnique: vi.fn().mockResolvedValue({
+                findUnique: vi.fn(async ({ where }: any) => ({
+                    id: where.id, deletedAt: null,
                     planTier: 'FREE',
                     status: 'ACTIVE',
                     stripeSubscriptionId: null,
                     trialEndsAt: null,
-                }),
+                })),
             },
             planDefinition: {
                 findUnique: vi.fn(async ({ where }: any) => resolveFallbackPlanDefinition(where.code)),
@@ -99,8 +109,14 @@ describe('AdminUserLifecycleService', () => {
             },
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         };
+        prisma.roleAssignment = { findMany: vi.fn(async ({ where }: any) => {
+            const roles = await prisma.role.findMany({ where: { deletedAt: null } });
+            return assignmentRows.filter(row => row.tenantId === where.tenantId && row.userId === where.userId)
+                .flatMap(row => { const role = roles.find((role: any) => role.id === row.roleId && role.tenantId === row.tenantId && !role.deletedAt);
+                    return role ? [{ ...row, role }] : []; });
+        }) };
         const tenantDb = new TenantPrismaService(prisma);
-        service = new AdminUserLifecycleService(tenantDb, new RbacService(tenantDb));
+        service = new AdminUserLifecycleService(tenantDb, new RbacService(tenantDb), syntheticAdminObserver());
     });
 
     it('suspends under a row lock, revokes sessions, and preserves deletion and credentials', async () => {
@@ -114,17 +130,17 @@ describe('AdminUserLifecycleService', () => {
             sessionsRevoked: 3,
         });
         const tenantLockIndex = prisma.$queryRaw.mock.calls.findIndex(
-            (call: any[]) => String(call[0]).includes('FROM "Tenant"'),
+            (call: any[]) => String(call[0]).includes('FROM "Tenant"') && call[1]?.values?.includes('tenant-1'),
         );
         const userLockIndex = prisma.$queryRaw.mock.calls.findIndex(
-            (call: any[]) => String(call[0]).includes('FROM "User"'),
+            (call: any[], index: number) => index > tenantLockIndex && String(call[0]).includes('FROM "User"'),
         );
         const sessionLockIndex = prisma.$queryRaw.mock.calls.findIndex(
-            (call: any[]) => String(call[0]).includes('FROM "Session"'),
+            (call: any[], index: number) => index > userLockIndex && String(call[0]).includes('FROM "Session"'),
         );
         const tenantLock = prisma.$queryRaw.mock.calls[tenantLockIndex];
         const userLock = prisma.$queryRaw.mock.calls[userLockIndex];
-        expect(String(tenantLock?.[0])).toMatch(/ORDER BY "id"[\s\S]*FOR KEY SHARE/);
+        expect(String(tenantLock?.[0])).toMatch(/ORDER BY "id"[\s\S]*FOR UPDATE/);
         expect(tenantLock?.[1].values).toEqual([actor.tenantId, 'tenant-1'].sort());
         expect(tenantLockIndex).toBeLessThan(userLockIndex);
         expect(prisma.$executeRaw.mock.invocationCallOrder[0])
@@ -471,7 +487,7 @@ describe('AdminUserLifecycleService', () => {
             prisma.$transaction.mockRejectedValueOnce({ code: 'P2034' });
 
             await expect(service[operation]('user-1', actor)).resolves.toBeDefined();
-            expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+            expect(prisma.$transaction).toHaveBeenCalledTimes(3);
             expect(prisma.auditLog.create).toHaveBeenCalledOnce();
 
             vi.clearAllMocks();

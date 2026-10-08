@@ -21,6 +21,7 @@ export async function resolveTimeCardPayrollAssignment(
     tenantId: string,
     clockInAt: Date,
     location: { id: string; timezone: string } | null,
+    assertCurrent: () => void = () => {},
 ): Promise<TimeCardPayrollAssignment> {
     let policy: { id: string; version: number; timeZone: string; effectiveFrom: Date } | undefined;
     let cursorId: string | undefined;
@@ -32,6 +33,7 @@ export async function resolveTimeCardPayrollAssignment(
             ...(cursorId ? { cursor: { id: cursorId }, skip: 1 } : {}),
             select: { id: true, version: true, timeZone: true, effectiveFrom: true },
         });
+        assertCurrent();
         policy = policies.find((candidate) => (
             candidate.effectiveFrom.toISOString().slice(0, 10)
             <= dateValueInTimeZone(clockInAt, candidate.timeZone)
@@ -58,11 +60,15 @@ export async function resolveTimeCardPayrollAssignment(
         },
         select: { id: true },
     });
+    assertCurrent();
     if (!period) {
         throw new ConflictException('No open payroll period covers this clock-in time.');
     }
+    assertCurrent();
     await lockPayrollTenant(tx, tenantId);
+    assertCurrent();
     await lockPayrollPeriod(tx, tenantId, period.id);
+    assertCurrent();
     const current = await tx.$queryRaw<Array<{ id: string }>>`
         SELECT "id"
         FROM "PayrollPeriod"
@@ -74,6 +80,7 @@ export async function resolveTimeCardPayrollAssignment(
           AND "endsAt" > ${clockInAt}
         FOR UPDATE
     `;
+    assertCurrent();
     if (current.length !== 1) {
         throw new ConflictException('Payroll period changed while the time card was being created.');
     }
@@ -88,19 +95,25 @@ export async function lockTimeCardPayrollContext(
     tenantId: string,
     timeCardId: string,
     periodIds: Array<string | null | undefined>,
+    assertCurrent: () => void = () => {},
 ): Promise<LockedPayrollPeriodWindow[]> {
+    assertCurrent();
     await tx.$executeRaw`SET LOCAL lock_timeout = '5s'`;
+    assertCurrent();
     await lockPayrollTenant(tx, tenantId);
+    assertCurrent();
     const orderedPeriodIds = [...new Set(periodIds.filter((value): value is string => Boolean(value)))].sort();
     const lockedPeriods: LockedPayrollPeriodWindow[] = [];
     for (const periodId of orderedPeriodIds) {
         await lockPayrollPeriod(tx, tenantId, periodId);
+        assertCurrent();
         const periods = await tx.$queryRaw<Array<LockedPayrollPeriodWindow & { status: string }>>`
             SELECT "id", "startsAt", "endsAt", "status"::text AS "status"
             FROM "PayrollPeriod"
             WHERE "id" = ${periodId} AND "tenantId" = ${tenantId}
             FOR UPDATE
         `;
+        assertCurrent();
         if (periods.length !== 1) {
             throw new ConflictException('Payroll period changed while the time card was being updated.');
         }
@@ -115,6 +128,7 @@ export async function lockTimeCardPayrollContext(
         WHERE "id" = ${timeCardId} AND "tenantId" = ${tenantId}
         FOR UPDATE
     `;
+    assertCurrent();
     await tx.$queryRaw`
         SELECT "id"
         FROM "TimeCardBreak"
@@ -122,6 +136,7 @@ export async function lockTimeCardPayrollContext(
         ORDER BY "id" ASC
         FOR UPDATE
     `;
+    assertCurrent();
     return lockedPeriods;
 }
 

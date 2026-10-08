@@ -106,12 +106,12 @@ describe('native API v2 location service', () => {
 
   it('locks an active location, invalidates draft schedules after a timezone rewrite, and returns its public record', async () => {
     const location = {
-      update: vi.fn(async () => row({ timezone: 'America/Denver' })),
+      update: vi.fn(async () => row({ timezone: 'America/Denver', expectedUpdatedAt: row().updatedAt.toISOString() })),
     };
     const schedule = { updateMany: vi.fn(async () => ({ count: 2 })) };
     const transaction = {
       $queryRaw: vi.fn()
-        .mockResolvedValueOnce([{ id: 'location-storage-1', publicId, timezone: 'America/Los_Angeles' }])
+        .mockResolvedValueOnce([{ id: 'location-storage-1', publicId, timezone: 'America/Los_Angeles', updatedAt: row().updatedAt }])
         .mockResolvedValueOnce([{ id: 'schedule-1', status: 'DRAFT' }]),
       location,
       schedule,
@@ -120,6 +120,7 @@ describe('native API v2 location service', () => {
 
     const result = await instance.update(identity, publicId, {
       name: 'Downtown Diner',
+      expectedUpdatedAt: row().updatedAt.toISOString(),
       timezone: 'America/Denver',
     });
 
@@ -144,16 +145,34 @@ describe('native API v2 location service', () => {
     const location = { update: vi.fn() };
     const transaction = {
       $queryRaw: vi.fn()
-        .mockResolvedValueOnce([{ id: 'location-storage-1', publicId, timezone: 'America/Los_Angeles' }])
+        .mockResolvedValueOnce([{ id: 'location-storage-1', publicId, timezone: 'America/Los_Angeles', updatedAt: row().updatedAt }])
         .mockResolvedValueOnce([{ id: 'schedule-1', status: 'PUBLISHED' }]),
       location,
       schedule: { updateMany: vi.fn() },
     };
     const { instance } = service(transaction);
 
-    await expect(instance.update(identity, publicId, { timezone: 'America/Denver' }))
+    await expect(instance.update(identity, publicId, { timezone: 'America/Denver', expectedUpdatedAt: row().updatedAt.toISOString() }))
       .rejects.toMatchObject({ status: 409, code: 'location_timezone_locked' });
     expect(location.update).not.toHaveBeenCalled();
+  });
+
+  it('rejects missing and stale versions without changing the location or schedules', async () => {
+    const location = { update: vi.fn() };
+    const schedule = { updateMany: vi.fn() };
+    const transaction = {
+      $queryRaw: vi.fn(async () => [{ id: 'location-storage-1', publicId, timezone: 'America/Los_Angeles', updatedAt: row().updatedAt }]),
+      location,
+      schedule,
+    };
+    const { instance, withTenant } = service(transaction);
+    await expect(instance.update(identity, publicId, { timezone: 'America/Los_Angeles', name: 'Stale name' }))
+      .rejects.toMatchObject({ status: 428, code: 'location_version_required' });
+    expect(withTenant).not.toHaveBeenCalled();
+    await expect(instance.update(identity, publicId, { timezone: 'America/Los_Angeles', name: 'Stale name', expectedUpdatedAt: '2026-07-17T00:00:00.000Z' }))
+      .rejects.toMatchObject({ status: 409, code: 'location_changed' });
+    expect(location.update).not.toHaveBeenCalled();
+    expect(schedule.updateMany).not.toHaveBeenCalled();
   });
 
   it('resolves public and internal location identifiers through tenant-scoped database reads', async () => {

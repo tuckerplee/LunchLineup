@@ -6,6 +6,9 @@ import type {
   WorkspaceTeamSettingsUpdate,
 } from '@lunchlineup/api-contract';
 import type { Prisma } from '@prisma/client';
+import { isCurrentMfaObservation, type MfaSessionIdentity, type MfaSessionObserver,
+  type MfaVerificationObservation } from '@lunchlineup/rbac';
+import { authorizeMutation } from '../people/access';
 import type { ApiV2Config } from '../config';
 import type { TenantDatabase, TenantTransaction } from '../platform/database';
 import { ProblemError } from '../platform/problem';
@@ -154,6 +157,7 @@ export class WorkspaceSettingsService {
   constructor(
     private readonly database: Pick<TenantDatabase, 'withTenant'>,
     private readonly config: Pick<ApiV2Config, 'oidcSsoAvailable'>,
+    private readonly mfaObserver?: Partial<MfaSessionObserver>,
   ) {}
 
   async get(identity: SessionIdentity): Promise<WorkspaceSettings> {
@@ -167,8 +171,8 @@ export class WorkspaceSettingsService {
     const name = body.name === undefined ? undefined : requiredText(body.name, 'name', 200);
     const slug = body.slug === undefined ? undefined : requiredText(body.slug, 'slug', 128).toLowerCase();
     const timezone = body.timezone === undefined ? undefined : normalizeTimeZone(body.timezone);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.read(transaction, identity.tenantId);
+    return this.write(identity, async (transaction, current, identity, assertCurrent) => {
+      assertCurrent();
       const tenant = name === undefined && slug === undefined
         ? current.general
         : await transaction.tenant.update({
@@ -176,12 +180,13 @@ export class WorkspaceSettingsService {
           data: { ...(name === undefined ? {} : { name }), ...(slug === undefined ? {} : { slug }) },
           select: { name: true, slug: true },
         });
+      assertCurrent();
       const next: WorkspaceSettings = {
         general: { name: tenant.name, slug: tenant.slug, timezone: timezone ?? current.general.timezone },
         team: current.team,
         security: current.security,
       };
-      await this.persist(transaction, identity.tenantId, next);
+      await this.persist(transaction, identity.tenantId, next, assertCurrent);
       return next;
     });
   }
@@ -190,8 +195,7 @@ export class WorkspaceSettingsService {
     identity: SessionIdentity,
     body: WorkspaceTeamSettingsUpdate,
   ): Promise<WorkspaceSettings> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.read(transaction, identity.tenantId);
+    return this.write(identity, async (transaction, current, identity, assertCurrent) => {
       const next: WorkspaceSettings = {
         general: current.general,
         team: {
@@ -200,7 +204,7 @@ export class WorkspaceSettingsService {
         },
         security: current.security,
       };
-      await this.persist(transaction, identity.tenantId, next);
+      await this.persist(transaction, identity.tenantId, next, assertCurrent);
       return next;
     });
   }
@@ -210,8 +214,7 @@ export class WorkspaceSettingsService {
     body: WorkspaceSecuritySettingsUpdate,
   ): Promise<WorkspaceSettings> {
     const issuer = body.oidcIssuerUrl === undefined ? undefined : normalizeOidcIssuerUrl(body.oidcIssuerUrl);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const current = await this.read(transaction, identity.tenantId);
+    return this.write(identity, async (transaction, current, identity, assertCurrent) => {
       const next: WorkspaceSettings = {
         general: current.general,
         team: current.team,
@@ -228,10 +231,11 @@ export class WorkspaceSettingsService {
           'oidc_not_configured',
         );
       }
-      await this.persist(transaction, identity.tenantId, next);
+      await this.persist(transaction, identity.tenantId, next, assertCurrent);
       const before = securityAuditValue(current.security);
       const after = securityAuditValue(next.security);
       if (changed(before, after)) {
+        assertCurrent();
         await transaction.auditLog.create({
           data: {
             tenantId: identity.tenantId,
@@ -245,8 +249,92 @@ export class WorkspaceSettingsService {
             newValue: after as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
       }
       return next;
+    });
+  }
+
+  private async authorizeWrite(transaction: TenantTransaction, identity: SessionIdentity): Promise<{
+    current: WorkspaceSettings; expiresAtEpochMs: number;
+  }> {
+    await authorizeMutation(transaction, identity, 'settings:write');
+    const user = await transaction.user.findFirst({
+      where: { id: identity.sub.trim(), tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
+      select: { pinResetRequired: true },
+    });
+    if (!user) throw new ProblemError(403, 'permission_denied', 'The user account is inactive.', 'Forbidden');
+    if (user.pinResetRequired) {
+      throw new ProblemError(403, 'pin_rotation_required', 'Replace your temporary PIN before continuing.', 'PIN rotation required');
+    }
+    // The helper retains Tenant/User/exact Session locks through this write.
+    // Guard observations made before a lock wait do not authorize a mutation
+    // after workspace suspension or policy-shortened session expiry.
+    const tenant = await transaction.tenant.findUnique({
+      where: { id: identity.tenantId },
+      select: { status: true, deletedAt: true },
+    });
+    if (!tenant || tenant.deletedAt || tenant.status === 'SUSPENDED' || tenant.status === 'PURGED') {
+      throw new ProblemError(403, 'permission_denied', 'The workspace is no longer active.', 'Forbidden');
+    }
+    const current = await this.read(transaction, identity.tenantId);
+    const session = await transaction.session.findFirst({
+      where: { id: identity.sessionId.trim(), userId: identity.sub.trim() },
+      select: { createdAt: true, expiresAt: true, revokedAt: true },
+    });
+    const expiresAtEpochMs = session ? Math.min(
+      session.expiresAt.getTime(),
+      session.createdAt.getTime() + current.security.sessionTimeoutMinutes * 60_000,
+    ) : NaN;
+    if (!session || session.revokedAt || !Number.isFinite(expiresAtEpochMs) || expiresAtEpochMs <= Date.now()) {
+      throw new ProblemError(403, 'permission_denied', 'Administrator session is no longer active.', 'Forbidden');
+    }
+    return { current, expiresAtEpochMs };
+  }
+
+  private async write(
+    identity: SessionIdentity,
+    operation: (transaction: TenantTransaction, current: WorkspaceSettings, actor: SessionIdentity,
+      assertCurrent: () => void) => Promise<WorkspaceSettings>,
+  ): Promise<WorkspaceSettings> {
+    const actor = Object.freeze({ ...identity, sub: identity.sub?.trim(), sessionId: identity.sessionId?.trim() });
+    const selected: MfaSessionIdentity = Object.freeze({ sub: actor.sub, tenantId: actor.tenantId, sessionId: actor.sessionId });
+    const observerOwner = this.mfaObserver;
+    const observe = observerOwner?.observeSessionMfa;
+    await this.database.withTenant(actor.tenantId, tx => this.authorizeWrite(tx, actor));
+    if (typeof observe !== 'function') {
+      throw new ProblemError(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+    }
+    let observed: MfaVerificationObservation | null;
+    try { observed = await observe.call(observerOwner, { ...selected }); }
+    catch {
+      throw new ProblemError(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+    }
+    // Copy only the original finite proof; later mutation of the observer's
+    // returned object cannot renew the authorization across write waits.
+    const observation = observed ? Object.freeze({ sub: observed.sub, tenantId: observed.tenantId,
+      sessionId: observed.sessionId, expiresAtEpochMs: observed.expiresAtEpochMs,
+      expiresAtMonotonicMs: observed.expiresAtMonotonicMs }) : null;
+    const requireMarker = () => {
+      if (!isCurrentMfaObservation(observation, selected)) {
+        throw new ProblemError(403, 'mfa_verification_required', 'Complete MFA verification before continuing.', 'MFA verification required');
+      }
+    };
+    requireMarker();
+    return this.database.withTenant(actor.tenantId, async tx => {
+      const { current, expiresAtEpochMs } = await this.authorizeWrite(tx, actor);
+      // This deadline belongs to the original policy authorizing the save,
+      // not the proposed shorter policy which the callback may persist.
+      const assertCurrent = () => {
+        if (!Number.isFinite(expiresAtEpochMs) || expiresAtEpochMs <= Date.now()) {
+          throw new ProblemError(403, 'permission_denied', 'Administrator session is no longer active.', 'Forbidden');
+        }
+        requireMarker();
+      };
+      assertCurrent();
+      const result = await operation(tx, current, actor, assertCurrent);
+      assertCurrent();
+      return result;
     });
   }
 
@@ -271,11 +359,24 @@ export class WorkspaceSettingsService {
     transaction: TenantTransaction,
     tenantId: string,
     settings: WorkspaceSettings,
+    assertCurrent: () => void,
   ): Promise<void> {
+    assertCurrent();
+    // A child-only policy update does not invalidate an earlier Serializable
+    // snapshot waiting on an unchanged Tenant. Change its tuple version in the
+    // same transaction, retaining all business values and the held lock order.
+    const fenced = await transaction.$executeRaw`
+      UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" = ${tenantId}
+    `;
+    assertCurrent();
+    if (fenced !== 1) {
+      throw new ProblemError(503, 'workspace_settings_unavailable', 'Workspace settings could not be saved.', 'Service unavailable');
+    }
     await transaction.tenantSetting.upsert({
       where: { tenantId_key: { tenantId, key: WORKSPACE_SETTINGS_KEY } },
       create: { tenantId, key: WORKSPACE_SETTINGS_KEY, value: settings as Prisma.InputJsonValue },
       update: { value: settings as Prisma.InputJsonValue },
     });
+    assertCurrent();
   }
 }

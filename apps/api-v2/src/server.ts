@@ -1,3 +1,6 @@
+import { NativePlanQuota, type NativeQuotaAdapter } from './platform/native-quota';
+import { NativeRedisQuotaStorage } from './platform/native-quota-storage';
+import { NativeApiMetrics } from './platform/metrics';
 import cookie from '@fastify/cookie';
 import swagger from '@fastify/swagger';
 import { TypeBoxTypeProvider } from '@fastify/type-provider-typebox';
@@ -9,7 +12,7 @@ import type { ApiV2Config } from './config';
 import { TenantDatabase } from './platform/database';
 import { type IdentityAdapter } from './platform/identity';
 import { NativeIdentityAdapter } from './platform/native-identity';
-import { installProblemHandler } from './platform/problem';
+import { installProblemHandler, ProblemError } from './platform/problem';
 import { RetainedApplicationBridge } from './platform/retained-application.bridge';
 import { RetainedOperatorBridge } from './platform/retained-operator.bridge';
 import { LocationIdentifierTranslator } from './locations/identifier-translation';
@@ -53,7 +56,7 @@ const VersionSchema = Type.Object({
 
 export type ApiV2ServerDependencies = Partial<{
   database: TenantDatabase;
-  routes: Omit<SchedulingRouteDependencies, 'config' | 'identity' | 'lunchBreaks'>;
+  routes: Omit<SchedulingRouteDependencies, 'config' | 'identity' | 'lunchBreaks' | 'quota'>;
   locations: Pick<LocationService,
     'list' | 'summary' | 'get' | 'create' | 'update' | 'remove' | 'resolvePublicIds' | 'resolveInternalIds'
   >;
@@ -65,6 +68,7 @@ export type ApiV2ServerDependencies = Partial<{
   timeCards: TimeCardRouteDependencies['timeCards'];
   settings: WorkspaceSettingsRouteDependencies['settings'];
   identity: IdentityAdapter;
+  quota: NativeQuotaAdapter;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
   retainedOperators: Pick<RetainedOperatorBridge, 'executeRetentionPurge'>;
 }>;
@@ -74,7 +78,17 @@ export async function buildServer(
   overrides: ApiV2ServerDependencies = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({
-    logger: { level: config.logLevel },
+    logger: {
+      level: config.logLevel,
+      serializers: {
+        // Route templates preserve request diagnostics without logging query
+        // credentials or caller-controlled path parameters.
+        req: (request) => ({
+          method: request.method,
+          url: request.routeOptions?.url ?? '[unmatched]',
+        }),
+      },
+    },
     trustProxy: config.trustProxy,
     ajv: {
       customOptions: {
@@ -88,180 +102,225 @@ export async function buildServer(
     keepAliveTimeout: 72_000,
     maxRequestsPerSocket: 1000,
   }).withTypeProvider<TypeBoxTypeProvider>();
-  const database = overrides.database ?? new TenantDatabase();
-  const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
-  const locations = overrides.locations ?? new LocationService(database);
-  const people = overrides.people ?? new PeopleService(database, config);
-  const operations = overrides.operations ?? new OperationsService(database);
-  const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database);
-  const notifications = overrides.notifications ?? new NotificationService(database);
-  const payroll = overrides.payroll ?? new PayrollService(database);
-  const timeCards = overrides.timeCards ?? new TimeCardService(database);
-  const settings = overrides.settings ?? new WorkspaceSettingsService(database, config);
-  const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
-    config,
-    [
-      new LocationIdentifierTranslator(locations),
-      new PeopleIdentifierTranslator(people),
-    ],
-  );
-  const retainedOperators = overrides.retainedOperators ?? new RetainedOperatorBridge(config);
-  const routeServices = overrides.routes ?? {
-    board: new ScheduleBoardService(database),
-    scheduleCreate: new ScheduleCreateService(database),
-    changeSets: new ScheduleChangeSetService(database),
-    demandWindows: new DemandWindowService(database),
-    lifecycle: new ScheduleLifecycleService(database),
-    retainedScheduling: new LegacySchedulingBridge(config, database),
+  const resources: {
+    database?: TenantDatabase;
+    identity?: IdentityAdapter;
+    quotaStorage?: NativeRedisQuotaStorage;
+    metrics?: NativeApiMetrics;
+  } = {};
+  let cleanupPromise: Promise<void> | undefined;
+  const cleanup = (): Promise<void> => {
+    cleanupPromise ??= (async () => {
+      try {
+        // The onClose owner runs after Fastify drains its response streams.
+        // Startup cleanup has no admitted requests. Clear only this registry.
+        resources.metrics?.close();
+      } finally {
+        try {
+          await resources.identity?.close?.();
+        } finally {
+          try {
+            resources.quotaStorage?.close();
+          } finally {
+            await resources.database?.disconnect();
+          }
+        }
+      }
+    })();
+    return cleanupPromise;
   };
-
-  await app.register(cookie);
   try {
+    app.addHook('onClose', cleanup);
+    // Retain the successfully returned owner before install/route hooks can fail.
+    const metrics = new NativeApiMetrics(config.metricsToken, message => app.log.error(message));
+    resources.metrics = metrics;
+    metrics.install(app);
+    const database = overrides.database ?? new TenantDatabase();
+    resources.database = database;
+    const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
+    resources.identity = identity;
+    const locations = overrides.locations ?? new LocationService(database);
+    const people = overrides.people ?? new PeopleService(database, config, identity);
+    const operations = overrides.operations ?? new OperationsService(database, identity);
+    const lunchBreaks = overrides.lunchBreaks ?? new LunchBreakService(database, identity);
+    const notifications = overrides.notifications ?? new NotificationService(database);
+    const payroll = overrides.payroll ?? new PayrollService(database, identity);
+    const timeCards = overrides.timeCards ?? new TimeCardService(database, identity);
+    const settings = overrides.settings ?? new WorkspaceSettingsService(database, config, identity);
+    const retainedApplication = overrides.retainedApplication ?? new RetainedApplicationBridge(
+      config,
+      [
+        new LocationIdentifierTranslator(locations),
+        new PeopleIdentifierTranslator(people),
+      ],
+    );
+    const retainedOperators = overrides.retainedOperators ?? new RetainedOperatorBridge(config);
+    const routeServices = overrides.routes ?? {
+      board: new ScheduleBoardService(database),
+      scheduleCreate: new ScheduleCreateService(database),
+      changeSets: new ScheduleChangeSetService(database),
+      demandWindows: new DemandWindowService(database),
+      lifecycle: new ScheduleLifecycleService(database),
+      retainedScheduling: new LegacySchedulingBridge(config, database),
+    };
+
+    const ownedQuotaStorage = overrides.quota === undefined
+      ? new NativeRedisQuotaStorage(config.redisUrl, () => {
+        app.log.error({ component: 'native_quota' }, 'native_quota_storage_unavailable');
+      })
+      : undefined;
+    resources.quotaStorage = ownedQuotaStorage;
+    const quota = overrides.quota ?? new NativePlanQuota(database, ownedQuotaStorage!);
+    await app.register(cookie);
     await identity.ready?.();
+    await quota.ready();
+    app.addContentTypeParser(
+      /^multipart\/form-data(?:;|$)/i,
+      { parseAs: 'buffer', bodyLimit: 10 * 1024 * 1024 },
+      (_request, body, done) => done(null, body),
+    );
+    await app.register(swagger, {
+      openapi: {
+        openapi: '3.1.0',
+        info: {
+          title: 'LunchLineup API',
+          version: '2.0.0',
+          description: 'Contract-first tenant API. Scheduling writes use aggregate change sets, optimistic concurrency, and idempotency.',
+        },
+        servers: [{ url: '/api/v2', description: 'Same-origin tenant API' }],
+        tags: [
+          { name: 'Scheduling', description: 'Schedule board and aggregate mutations' },
+          { name: 'Authentication', description: 'Sign-in and session lifecycle' },
+          { name: 'Locations', description: 'Tenant locations' },
+          { name: 'People', description: 'Staff, access roles, and invitations' },
+          { name: 'Operations', description: 'Operational read models and lunch/break planning' },
+          { name: 'Time', description: 'Time-card lifecycle' },
+          { name: 'Payroll', description: 'Payroll review, locking, export, and reconciliation' },
+          { name: 'Notifications', description: 'Authenticated notification feed' },
+          { name: 'Settings', description: 'Workspace settings' },
+          { name: 'Billing', description: 'Entitlements and customer billing sessions' },
+          { name: 'Imports', description: 'Bounded asynchronous imports' },
+          { name: 'Administration', description: 'Platform and tenant lifecycle administration' },
+        ],
+      },
+    });
+    installProblemHandler(app);
+
+    app.addHook('onSend', async (request, reply, payload) => {
+      if (request.url.startsWith('/v2/')) {
+        reply.header('X-LunchLineup-API-Version', '2');
+        reply.header('X-LunchLineup-Service-Release', config.releaseSha);
+        reply.header('X-Correlation-ID', request.id);
+        reply.header('X-Content-Type-Options', 'nosniff');
+      }
+      return payload;
+    });
+
+    app.get('/v2/live', {
+      schema: {
+        hide: true,
+        response: { 200: ProbeSchema },
+      },
+    }, async () => ({ status: 'ok' as const, service: 'api-v2' as const }));
+
+    app.get('/v2/ready', {
+      schema: {
+        hide: true,
+        response: { 200: ProbeSchema },
+      },
+    }, async () => {
+      try {
+        await database.ready();
+        await quota.ready();
+      } catch {
+        throw new ProblemError(503, 'readiness_unavailable', 'The service is not ready.', 'Service unavailable');
+      }
+      return { status: 'ok' as const, service: 'api-v2' as const };
+    });
+
+    app.get('/v2/version', {
+      schema: {
+        summary: 'API v2 release identity',
+        response: { 200: VersionSchema },
+      },
+    }, async () => ({
+      service: 'api-v2' as const,
+      version: 'v2' as const,
+      releaseSha: config.releaseSha,
+    }));
+
+    await registerSchedulingRoutes(app, {
+      config,
+      identity,
+      ...routeServices,
+      lunchBreaks,
+      quota,
+    });
+    await registerLocationRoutes(app, {
+      config,
+      identity,
+      locations,
+      quota,
+    });
+    await registerPeopleRoutes(app, {
+      config,
+      identity,
+      people,
+      quota,
+    });
+    await registerOperationsRoutes(app, {
+      config,
+      identity,
+      operations,
+      lunchBreaks,
+      quota,
+    });
+    await registerNotificationRoutes(app, {
+      config,
+      identity,
+      notifications,
+      quota,
+    });
+    await registerPayrollRoutes(app, {
+      config,
+      identity,
+      payroll,
+      quota,
+    });
+    await registerTimeCardRoutes(app, {
+      config,
+      identity,
+      timeCards,
+      quota,
+    });
+    await registerWorkspaceSettingsRoutes(app, {
+      config,
+      identity,
+      settings,
+      quota,
+    });
+    await registerRetentionOperatorRoutes(app, { retainedOperators });
+    await registerApplicationRoutes(app, {
+      config,
+      identity,
+      retainedApplication,
+      quota,
+    });
+
+    app.get('/v2/openapi.json', {
+      schema: {
+        hide: true,
+        response: { 200: Type.Any() },
+      },
+    }, async (_request, reply) => {
+      reply.header('Cache-Control', 'public, max-age=300');
+      return app.swagger();
+    });
+
+    return app;
   } catch (error) {
-    try {
-      await identity.close?.();
-    } catch {
-      // Startup is already failing; ensure the database cleanup still runs.
-    }
-    await database.disconnect().catch(() => undefined);
+    await app.close().catch(() => undefined);
+    await cleanup().catch(() => undefined);
     throw error;
   }
-  app.addContentTypeParser(
-    /^multipart\/form-data(?:;|$)/i,
-    { parseAs: 'buffer', bodyLimit: 10 * 1024 * 1024 },
-    (_request, body, done) => done(null, body),
-  );
-  await app.register(swagger, {
-    openapi: {
-      openapi: '3.1.0',
-      info: {
-        title: 'LunchLineup API',
-        version: '2.0.0',
-        description: 'Contract-first tenant API. Scheduling writes use aggregate change sets, optimistic concurrency, and idempotency.',
-      },
-      servers: [{ url: '/api/v2', description: 'Same-origin tenant API' }],
-      tags: [
-        { name: 'Scheduling', description: 'Schedule board and aggregate mutations' },
-        { name: 'Authentication', description: 'Sign-in and session lifecycle' },
-        { name: 'Locations', description: 'Tenant locations' },
-        { name: 'People', description: 'Staff, access roles, and invitations' },
-        { name: 'Operations', description: 'Operational read models and lunch/break planning' },
-        { name: 'Time', description: 'Time-card lifecycle' },
-        { name: 'Payroll', description: 'Payroll review, locking, export, and reconciliation' },
-        { name: 'Notifications', description: 'Authenticated notification feed' },
-        { name: 'Settings', description: 'Workspace settings' },
-        { name: 'Billing', description: 'Entitlements and customer billing sessions' },
-        { name: 'Imports', description: 'Bounded asynchronous imports' },
-        { name: 'Administration', description: 'Platform and tenant lifecycle administration' },
-      ],
-    },
-  });
-  installProblemHandler(app);
-
-  app.addHook('onSend', async (request, reply, payload) => {
-    if (request.url.startsWith('/v2/')) {
-      reply.header('X-LunchLineup-API-Version', '2');
-      reply.header('X-LunchLineup-Service-Release', config.releaseSha);
-      reply.header('X-Correlation-ID', request.id);
-      reply.header('X-Content-Type-Options', 'nosniff');
-    }
-    return payload;
-  });
-
-  app.get('/v2/live', {
-    schema: {
-      hide: true,
-      response: { 200: ProbeSchema },
-    },
-  }, async () => ({ status: 'ok' as const, service: 'api-v2' as const }));
-
-  app.get('/v2/ready', {
-    schema: {
-      hide: true,
-      response: { 200: ProbeSchema },
-    },
-  }, async () => {
-    await database.ready();
-    return { status: 'ok' as const, service: 'api-v2' as const };
-  });
-
-  app.get('/v2/version', {
-    schema: {
-      summary: 'API v2 release identity',
-      response: { 200: VersionSchema },
-    },
-  }, async () => ({
-    service: 'api-v2' as const,
-    version: 'v2' as const,
-    releaseSha: config.releaseSha,
-  }));
-
-  await registerSchedulingRoutes(app, {
-    config,
-    identity,
-    ...routeServices,
-    lunchBreaks,
-  });
-  await registerLocationRoutes(app, {
-    config,
-    identity,
-    locations,
-  });
-  await registerPeopleRoutes(app, {
-    config,
-    identity,
-    people,
-  });
-  await registerOperationsRoutes(app, {
-    config,
-    identity,
-    operations,
-    lunchBreaks,
-  });
-  await registerNotificationRoutes(app, {
-    config,
-    identity,
-    notifications,
-  });
-  await registerPayrollRoutes(app, {
-    config,
-    identity,
-    payroll,
-  });
-  await registerTimeCardRoutes(app, {
-    config,
-    identity,
-    timeCards,
-  });
-  await registerWorkspaceSettingsRoutes(app, {
-    config,
-    identity,
-    settings,
-  });
-  await registerRetentionOperatorRoutes(app, { retainedOperators });
-  await registerApplicationRoutes(app, {
-    config,
-    identity,
-    retainedApplication,
-  });
-
-  app.get('/v2/openapi.json', {
-    schema: {
-      hide: true,
-      response: { 200: Type.Any() },
-    },
-  }, async (_request, reply) => {
-    reply.header('Cache-Control', 'public, max-age=300');
-    return app.swagger();
-  });
-
-  app.addHook('onClose', async () => {
-    try {
-      await identity.close?.();
-    } finally {
-      await database.disconnect();
-    }
-  });
-  return app;
 }

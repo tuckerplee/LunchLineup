@@ -14,6 +14,8 @@
 - `setup-shifts-idempotency.ts`: bounded setup `Idempotency-Key` validation plus tenant-scoped key identity, canonical batch hashing, and a semantic identity for requests that create unassigned shifts.
 - `shift-break-update-idempotency.spec.ts`: manual-replacement key bounds, tenant/shift operation identity, and canonical request-hash coverage.
 - `shift-break-update-idempotency.ts`: bounded manual-replacement `Idempotency-Key` validation plus tenant/shift-scoped operation and canonical request hashing.
+- `lunch-breaks-current-authority.spec.ts`: retained lunch-break owner current-authority, receipt custody and finite-proof regressions.
+
 
 ## Notes
 

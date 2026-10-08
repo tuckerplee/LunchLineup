@@ -6,6 +6,11 @@
 # VM106 identifies only the historical legacy PHP source environment.
 set -euo pipefail
 
+# Retired after the 2026-09-08 shared-storage incident. Keep historical restore
+# implementation below for review; there is deliberately no override switch.
+echo 'VM107 source bootstrap is disabled: build and qualify on the bounded CI runner; deploy retained image digests with --no-build. Launch remains on hold.' >&2
+exit 1
+
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 REPO_URL="${REPO_URL:-https://github.com/tuckerplee/LunchLineup.git}"
 BRANCH="${BRANCH:-main}"

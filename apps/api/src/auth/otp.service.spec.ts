@@ -32,6 +32,24 @@ describe('OtpService', () => {
         vi.clearAllMocks();
     });
 
+    it.each([undefined, null, 123456, {}, ['123456']])('rejects non-string code %j before touching Redis', async code => {
+        const redis = { eval: vi.fn(), on: vi.fn() };
+        const service = serviceWith(redis);
+        await expect(service.verifyOtp('admin@example.com', code as never, { tenantSlug: 'demo' }))
+            .rejects.toBeInstanceOf(BadRequestException);
+        expect(redis.eval).not.toHaveBeenCalled();
+        expect(redisConstructor).not.toHaveBeenCalled();
+    });
+
+    it.each([123, {}, []])('rejects a non-string workspace %j before touching Redis', async tenantSlug => {
+        const redis = { eval: vi.fn(), on: vi.fn() };
+        const service = serviceWith(redis);
+        await expect(service.verifyOtp('admin@example.com', '123456', { tenantSlug: tenantSlug as never }))
+            .rejects.toBeInstanceOf(BadRequestException);
+        expect(redis.eval).not.toHaveBeenCalled();
+        expect(redisConstructor).not.toHaveBeenCalled();
+    });
+
     it('does not create a Redis client during construction or unused shutdown', () => {
         const service = new OtpService(configService as any);
 

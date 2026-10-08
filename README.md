@@ -81,6 +81,7 @@ lunchlineup/
 - `.trivyignore.yaml`: narrow, expiring vulnerability suppressions bound to exact package identities and documented fixed-source provenance.
 - `.zap-rules.tsv`: OWASP ZAP baseline scan rule severity configuration.
 - `README.md`: this project overview and repository map.
+- `node_modules`: existing local dependency link for this checkout; generated dependency contents are not source or release evidence.
 - `apps/`: application workspaces for web, API, engine, worker, and control-plane services.
 - `docker-compose.yml`: local and deployment service topology, including project-scoped persistent Postgres, Redis, and RabbitMQ volumes, loopback-only Alertmanager access, and the one-shot `ops` backup job.
 - `docs/`: architecture, testing, and runbook documentation.
@@ -157,14 +158,15 @@ This single command will:
 
 ---
 
-## 🛠 Commands & Scripts (Turborepo)
+## 🛠 Commands & Scripts
 
-From the root directory, you can utilize the following `turbo` commands:
+Run these commands from the repository root:
 
 | Command | Action |
 | :--- | :--- |
 | `npx turbo run build` | Builds all apps and packages in the correct topological order. |
-| `npx turbo run lint` | Runs ESLint and Prettier across the monorepo. |
+| `npm run lint` | Runs ESLint over active TypeScript and TSX source, tests and configuration, using the shared rules and generated/legacy-directory ignores. |
+| `npx turbo run lint` | Runs the partial workspace lint scripts; shared packages and root-level files require `npm run lint`. Neither command runs Prettier. |
 | `npx turbo run test` | Executes unit and integration tests (Vitest/PyTest). |
 | `npx turbo run typecheck`| Runs TypeScript checks across the workspace. |
 

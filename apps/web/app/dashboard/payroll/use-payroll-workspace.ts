@@ -98,6 +98,24 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
   const detailRequest = useRef(0);
   const attempts = useRef(new Map<string, PayrollMutationAttempt>());
   const storage = useRef<PayrollAttemptStorage | null>(null);
+  const exportOwner = useRef(currentUserId);
+  const exportCustody = useRef(0);
+  const exportOwnerActive = useRef(false);
+  const selectedPeriod = useRef('');
+  const exportFlight = useRef<{ owner: string; custody: number; selection: number; sent: boolean } | null>(null);
+  if (exportOwner.current !== currentUserId) {
+    exportOwner.current = currentUserId;
+    exportCustody.current += 1;
+    exportOwnerActive.current = false;
+    exportFlight.current = null;
+  }
+
+  const cancelExportPreparation = useCallback(() => {
+    if (exportFlight.current && !exportFlight.current.sent) {
+      exportFlight.current = null;
+      setBusyAction(current => current === 'export' ? null : current);
+    }
+  }, []);
 
   const upsertPeriod = useCallback((period: PayrollPeriodSummary) => {
     setPeriods((current) => sortPeriods(mergeById(current, [period])));
@@ -154,7 +172,9 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
 
   const loadPeriod = useCallback(async (periodId: string) => {
     if (!periodId) return;
+    cancelExportPreparation();
     const requestId = ++detailRequest.current;
+    selectedPeriod.current = periodId;
     setSelectedPeriodId(periodId);
     setDetail(null);
     setBusyAction('period');
@@ -168,7 +188,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     } finally {
       if (detailRequest.current === requestId) setBusyAction(null);
     }
-  }, [installDetail]);
+  }, [cancelExportPreparation, installDetail]);
 
   const bootstrap = useCallback(async () => {
     setBusyAction('bootstrap');
@@ -196,6 +216,9 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
   useEffect(() => {
     let active = true;
     const clearSession = () => {
+      exportCustody.current += 1;
+      exportOwnerActive.current = false;
+      exportFlight.current = null;
       clearPayrollBrowserSession(storage.current);
       storage.current = null;
       attempts.current.clear();
@@ -211,6 +234,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     void preparePayrollBrowserStorage(currentUserId, undefined, () => active).then((prepared) => {
       if (!active) return;
       storage.current = prepared;
+      exportOwnerActive.current = true;
       void bootstrap();
     });
 
@@ -474,32 +498,113 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
   }, [attemptFor, completeAttempt, detail, recoverPeriodError, refreshAfterConfirmedPeriodMutation]);
 
   const exportPeriod = useCallback(async (confirmedCost: number) => {
-    if (!detail) return;
-    const authoritativeCost = await loadCreditCost();
-    if (authoritativeCost === null) { setError('The configured export cost could not be confirmed. No export was requested.'); return; }
-    if (authoritativeCost !== confirmedCost) { setError(`The configured cost changed to ${authoritativeCost}. Confirm the new exact cost.`); return; }
-    const payload = { periodId: detail.period.id, expectedCreditCost: authoritativeCost };
-    const attempt = await attemptFor('export', detail.period.id, payload);
+    if (!detail || exportFlight.current || !exportOwnerActive.current
+      || exportOwner.current !== currentUserId || selectedPeriod.current !== detail.period.id) return;
+    const capturedDetail = detail;
+    const periodId = detail.period.id;
+    const flight = { owner: currentUserId, custody: exportCustody.current,
+      selection: detailRequest.current, sent: false };
+    exportFlight.current = flight;
     setBusyAction('export'); setError(null); setNotice(null);
+    const ownsCustody = () => exportOwnerActive.current && exportOwner.current === flight.owner
+      && exportCustody.current === flight.custody;
+    const isSelected = () => ownsCustody() && selectedPeriod.current === periodId
+      && detailRequest.current === flight.selection;
+    const isPreparing = () => exportFlight.current === flight && isSelected();
+    const capturedStorage = storage.current;
+    // Digest calculation awaits. The facade refuses an obsolete owner's write
+    // inside the actual key helper, before its promise returns to this handler.
+    const guardedStorage: PayrollAttemptStorage | null = capturedStorage ? {
+      get length() { return isPreparing() ? capturedStorage.length : 0; },
+      key: index => isPreparing() ? capturedStorage.key(index) : null,
+      getItem: key => isPreparing() ? capturedStorage.getItem(key) : null,
+      setItem: (key, value) => { if (isPreparing()) capturedStorage.setItem(key, value); },
+      removeItem: key => { if (isPreparing()) capturedStorage.removeItem(key); },
+    } : null;
+    const installExportDetail = (payload: PayrollPeriodDetail) => {
+      if (!ownsCustody()) return;
+      if (isSelected()) installDetail(payload);
+      else upsertPeriod(payload.period);
+    };
+    const exportReadback = async () => {
+      const payload = await fetchPayrollPeriod(periodId);
+      installExportDetail(payload);
+      return payload;
+    };
+    let attempt: PayrollMutationAttempt | null = null;
+    const clearCapturedAttempt = () => {
+      if (!attempt || !ownsCustody()) return;
+      clearPayrollAttempt(capturedStorage, attempt);
+      const mapKey = `export:${periodId}`;
+      if (attempts.current.get(mapKey)?.key === attempt.key) attempts.current.delete(mapKey);
+    };
     try {
-      const batch = await createPayrollExport(detail.period.id, payload.expectedCreditCost, attempt.key);
-      completeAttempt(attempt);
-      installDetail({ ...detail, period: { ...detail.period, exportBatch: batch } });
-      setNotice(batch.settlement.consumedCredits === authoritativeCost
-        ? `Payroll export created for ${authoritativeCost} ${authoritativeCost === 1 ? 'credit' : 'credits'}; balance ${batch.settlement.newBalance}.`
-        : 'The payroll export was created but its credit charge differs from the confirmation. Do not create it again.');
-      await refreshAfterConfirmedPeriodMutation(detail.period.id, 'Payroll export creation');
+      let authoritativeCost: number;
+      try {
+        authoritativeCost = parsePayrollExportCreditCost(await fetchPayrollExportEntitlement());
+      } catch (costError) {
+        if (isPreparing()) {
+          setCreditCost(null); setCreditCostError(message(costError, 'The payroll export credit cost is unavailable.'));
+          setError('The configured export cost could not be confirmed. No export was requested.');
+        }
+        return;
+      }
+      if (!isPreparing()) return;
+      setCreditCost(authoritativeCost); setCreditCostError(null);
+      if (authoritativeCost !== confirmedCost) {
+        setError(`The configured cost changed to ${authoritativeCost}. Confirm the new exact cost.`); return;
+      }
+      const payload = { periodId, expectedCreditCost: authoritativeCost };
+      const mapKey = `export:${periodId}`;
+      attempt = await getOrCreatePayrollAttempt(guardedStorage, 'export', periodId, payload,
+        attempts.current.get(mapKey) ?? null);
+      if (!isPreparing()) return;
+      attempts.current.set(mapKey, attempt);
+      flight.sent = true;
+      const batch = await createPayrollExport(periodId, payload.expectedCreditCost, attempt.key);
+      clearCapturedAttempt();
+      if (!ownsCustody()) return;
+      installExportDetail({ ...capturedDetail, period: { ...capturedDetail.period, exportBatch: batch } });
+      if (isSelected()) setNotice(batch.settlement.consumedCredits === authoritativeCost
+          ? `Payroll export created for ${authoritativeCost} ${authoritativeCost === 1 ? 'credit' : 'credits'}; balance ${batch.settlement.newBalance}.`
+          : 'The payroll export was created but its credit charge differs from the confirmation. Do not create it again.');
+      try { await exportReadback(); } catch {
+        if (isSelected()) setError('Payroll export creation succeeded, but the latest payroll state could not be refreshed. Use Refresh; do not repeat the completed command.');
+      }
     } catch (operationError) {
+      if (!ownsCustody()) return;
       if (isExportCostMismatch(operationError)) {
-        completeAttempt(attempt);
-        await Promise.allSettled([loadCreditCost(), refreshAfterPeriodMutation(detail.period.id)]);
-        setError('The configured export cost changed. Review and confirm the refreshed exact cost; the rejected request will not be replayed.');
+        clearCapturedAttempt();
+        await Promise.allSettled([exportReadback(), (async () => {
+          try {
+            const cost = parsePayrollExportCreditCost(await fetchPayrollExportEntitlement());
+            if (isSelected()) { setCreditCost(cost); setCreditCostError(null); }
+          } catch { /* A new explicit confirmation still requires fresh entitlement. */ }
+        })()]);
+        if (isSelected()) setError('The configured export cost changed. Review and confirm the refreshed exact cost; the rejected request will not be replayed.');
       } else {
-        await recoverPeriodError(detail.period.id, 'create export', operationError);
+        const kind = classifyPayrollMutationError(status(operationError));
+        if (kind === 'definitive') {
+          if (isSelected()) setError(message(operationError, 'Unable to create export.'));
+        } else {
+          try {
+            await exportReadback();
+            if (isSelected()) setError(kind === 'stale'
+              ? 'Payroll changed. The latest information was loaded; review it before trying again.'
+              : 'The create export outcome is unclear. The latest information was loaded; review it before trying again.');
+          } catch {
+            if (isSelected()) setError('The create export outcome is unknown. Refresh payroll before trying again.');
+          }
+        }
       }
     }
-    finally { setBusyAction(null); }
-  }, [attemptFor, completeAttempt, detail, installDetail, loadCreditCost, recoverPeriodError, refreshAfterConfirmedPeriodMutation, refreshAfterPeriodMutation]);
+    finally {
+      if (exportFlight.current === flight) {
+        exportFlight.current = null;
+        if (ownsCustody()) setBusyAction(current => current === 'export' ? null : current);
+      }
+    }
+  }, [currentUserId, detail, installDetail, upsertPeriod]);
 
   const downloadExport = useCallback(async () => {
     const batch = detail?.period.exportBatch;
@@ -550,7 +655,7 @@ export function usePayrollWorkspace(canExportPayroll: boolean, currentUserId: st
     createPolicy, loadMorePolicies, createPeriod, loadMorePeriods, loadPeriod, loadMoreCards, loadMoreExportLines,
     adoptCards: (ids: string[]) => actOnCards('adopt', ids),
     decideCards: (ids: string[], decision: PayrollDecision, reason?: string) => actOnCards('decisions', ids, decision, reason),
-    startReview, lockPeriod, createAmendment, decideAmendment, exportPeriod, downloadExport,
+    startReview, lockPeriod, createAmendment, decideAmendment, exportPeriod, cancelExportPreparation, downloadExport,
     reconcileExport: sendReconciliation, replaySavedReconciliation, retryBootstrap: bootstrap,
   };
 }

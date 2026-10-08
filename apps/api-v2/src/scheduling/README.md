@@ -25,3 +25,4 @@
 One change set can create, update, assign, move, or delete up to 100 shifts. It evaluates the final state, so a multi-shift swap is valid when its result has no overlap even if sequential row updates would temporarily overlap. Omitted update fields retain their exact saved values; supplied custom role labels are whitespace-trimmed but retain their casing.
 
 The browser never calls the retained scheduling routes. Compatibility exists only inside `legacy-scheduling.bridge.ts` for publication and solver operations whose settlement or queue still lives in v1. Break generation now uses the native Operations owner directly.
+- `authorization.ts`: shared scheduling permission checks enforced before HTTP quota and inside domain services.

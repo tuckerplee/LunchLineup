@@ -3,13 +3,18 @@
 ## Files
 
 - `README.md`: this scripts folder guide.
+- `read-internal-ci-migrations.mjs`: read-only migration-ledger and restricted-role proof bound to the internal CI source and exact disposable database target.
+- `verify-action-acceptance.mjs`: source-only action/catalog/owner/test/browser inventory verifier; never grants acceptance or release qualification.
+- `verify-action-acceptance.test.mjs`: controlled inventory parser and malformed source/owner/test selection regression fixtures.
+- `verify-development-browser-report.mjs`: exact disposable browser selection and first-attempt complete-report validator with lifecycle, count and controller identity checks.
+- `write-internal-beta-browser-lane-details.mjs`: canonical cohort evidence writer that validates exact case contracts, lane timing, source/run identity and owned media hashes.
 - `activate-retained-rollback.sh`: remote-only rollback activator that hash-verifies staged inputs plus the protected launch-proof URI channel and signed digest-bound old-release compatibility proof, binds pre-promotion failure checks to the exact retained candidate SHA, materializes immutable service-group-readable SHA-addressed releases, atomically recovers `/opt/lunchlineup/current`, preserves an exact target commit when the retained entrypoint fails after promotion, validates its canonical release marker, preserves the previous release pointer, and prunes only inactive releases within the bounded retention count.
 - `apply-db-migrations.mjs`: applies the Prisma schema and raw SQL migrations in deployment order through the repository-local Prisma CLI.
 - `artillery-smoke.yml`: Artillery smoke-load scenario with 200-only response assertions, zero failed-expectation tolerance, request/response completeness checks, and a p99 latency gate, executed through the exact digest-pinned official runner image.
 - `availability-import-load-smoke.mjs`: bounded two-to-four-way availability-import proof with PIN-cookie/CSRF auth (or optional bearer auth), explicit request-origin validation, tenant-directory target resolution, live paid-Stripe and wallet-capacity checks, exact purchase/admin-grant source attestation, deterministic generated-PDF fallback, terminal cancellation handling, and separate secret-free entitlement/load evidence.
 - `audit-prod.mjs`: runs a fail-closed production npm audit gate that blocks every advisory and rejects malformed or metadata-inconsistent reports.
 - `backup.sh`: encrypted Postgres backup helper with conditional immutable S3 publication, exact version/checksum readback, lifecycle-owned expiry proof, atomic local writes, optional Prometheus metrics, and the shared TERM-then-KILL provider-command owner.
-- `bounded-child-process.mjs`: cross-platform bounded child-process owner that terminates complete detached process trees with TERM then KILL and emits secret-free failures.
+- `bounded-child-process.mjs`: cross-platform bounded command helper that sends TERM then KILL to detached process groups, observes direct-child closure for a bounded confirmation window, and reports unconfirmed closure explicitly; group signals do not prove all descendants absent.
 - `build-release-bundle.mjs`: builds a source-bound rollback bundle from exact deployed inputs, retaining only an immutable runtime-secret descriptor and never runtime secret bytes.
 - `build-launch-proof-manifest.mjs`: deterministically builds one secret-free launch proof from all six required source-bound, hash-bound, immutable HTTPS evidence artifacts and rejects stale, detached, duplicate, mutable, or secret-like input.
 - `build-internal-beta-candidate-proof.mjs`: writes the immutable internal-beta candidate receipt only when the exact remote branch SHA, canonical beta build identity with exact `closed_beta` signup, complete digest-pinned image manifest, and every required source, security, integration, release-image E2E, DAST, load, SBOM, and Trivy job are successful.
@@ -30,7 +35,8 @@
 - `final-migration.sh`: final migration helper.
 - `generate-sbom.sh`: generates Syft SPDX JSON SBOMs for every unique production Compose image, keylessly signs all evidence, attaches first-party evidence to writable registry digests, and verifies the complete inventory.
 - `generate-raw-migration-policy.mjs`: generates classifier-proven additive approvals from the immutable Git baseline, preserves only exact pre-existing manually authored expand/contract approvals, and fails on classifier/runtime errors, changed semantics, or changed/removed historical SQL.
-- `import-legacy-users.mjs`: imports legacy PHP `users` and `staff` export JSON into the Prisma tenant/user/RBAC schema, atomically records per-tenant zero-wallet/no-ledger source provenance for each fresh tenant, and writes a private login-method report.
+- `import-legacy-users.mjs`: admits an explicitly reviewed exact legacy export and descriptor before Prisma, creates fresh targets with atomic durable import receipts, supports read-only report recovery, and refuses ambiguous adoption or changed exports. See `docs/runbooks/legacy-import-exact-replay.md`.
+- `legacy-import-plan.mjs`, `legacy-import-executor.mjs`, `legacy-import-report.mjs`: pure bounded import planning, create-only transactional execution with operator-private identity tombstones, and private non-overwriting current-identity report publication.
 - `initial-vm217-cutover.sh`: one-time legacy-PHP-to-v2 cutover wrapper that independently bounds external snapshot, durable proof-fetch, and rollback executables, requires full pinned-host exact-state reconciliation after candidate success and after every external rollback outcome, treats no-op success as manual-recovery exit `70`, and delegates only to the pinned VM217 release transport.
 - `invoke-retained-record-purge.mjs`: controlled staged retention invocation helper that defaults to retained-record dry-run, requires a platform token, writes JSON proof, and publishes mode-and-stage-labeled Prometheus textfile metrics for independent scheduler alerting.
 - `launch-proof-evidence.mjs`: emits canonical candidate-bound DAST/load JSON evidence and verifies fetched or downloaded evidence bundles against successful exit, exact source and served release SHAs, immutable tool identity, signed external DR-adapter provenance, signed DR cleanup/container-absence claims, version-specific PITR objects with fresh provider authentication, exact thresholds, and recomputed raw-file hashes/bytes.
@@ -64,10 +70,53 @@
 - `write-internal-ci-release-manifest.mjs`: records digest-pinned Compose runtime images and their retained CI archives.
 - `internal-ci-policy.mjs`: canonical required internal-beta gate policy.
 - `internal-ci-source-context.mjs`: validates the job-private materialized-source context and exact clone identity.
+- `internal-ci-dependency-install-plan.mjs`: prepares an immutable `npm ci` plan only after actual source/clone verification and the pre-install untracked-clean gate. It does not execute installation or establish custody/admission.
+- `native-billing-source-binding.mjs`: definition-only bounded private-file snapshots and exact canonical source/proof/preflight checks, bound to independently selected source hashes and runtime port/credentials. It has no CLI or native admission. Actual clone/source-selection custody, authenticated owner, quota/isolation/settlement and fresh capacity gates remain external prerequisites.
+- `native-billing-ledger-window.mjs`: callable fixture-only ledger grant/read/revoke mechanism with exact-role/ACL checks and preserved failure observations. It has no CLI or pipeline invocation and supplies no admission authority. A protected source-binding wrapper, authenticated physical owner, settled clients/children, and fresh capacity gates remain prerequisites.
 - `materialize-internal-ci-source.mjs`: materializes independent verified scan and build clones and writes the retained source proof.
 - `run-internal-ci-build-gate.sh`: runs one named build-clone gate and records a source-proof-bound receipt.
 - `run-internal-ci-terraform.sh`: runs the pinned Terraform validation suite from the isolated build clone.
 - `verify-internal-ci-source-clone.mjs`: verifies a downstream build or scan clone against the retained source proof.
+
+### Explicit disposable source selection
+
+Existing source commands and release consumers default to the v1
+`refs/heads/internal-beta-candidate` contract. A separate development ref uses
+v2 context/proof receipts only through an explicit `expectedSource` API argument
+supplied by the independently authenticated controller owner. `CI_REF`, receipt
+contents, a JSON filename/hash, and development environment flags do not select
+that profile. The current CLIs accept no disposable profile option; controller
+authentication, source/profile promotion and protected invocation remain pending.
+
+The exact profile fields are `version: 2`,
+`sourcePurpose: 'disposable-development'`, `repository: 'tuckerplee/LunchLineup'`,
+`sourceRef`, `sourceSha`, `treeSha`, `baselineRef: 'refs/heads/main'`,
+`baselineSha`, `baselineTreeSha`, `pipelinePath`, and `pipelineSha256`.
+The development ref must be a safe full `refs/heads/...` name distinct from
+main and the candidate. The source and baseline must be distinct commits;
+materialization preserves the main-ancestor requirement. `pipelinePath` selects
+one of `.ci/pipeline.json`, `.ci/development-qa.pipeline.json`, or
+`.ci/development-browser.pipeline.json`, bound to its exact approved hash.
+V2 receipts add `sourcePurpose`/`pipelinePath` and use `remoteSourceSha` in place
+of `remoteCandidateSha`. Native metadata verification receives the same exact
+profile as `expected.sourceProfile`, independently of the raw receipt hashes.
+
+The protected adapter can call `materializeInternalCiSource`,
+`readInternalCiSourceContext`, `verifyInternalCiSourceClone`,
+`prepareInternalCiDependencyInstall`, and `readInternalCiMigrations` with that
+same profile. Materialization fetches the exact selected tracking ref into two
+independent detached clones and checks their trees and baseline. Installation
+planning requires completely clean clones before `npm ci`; subsequent migration
+readback allows generated untracked dependencies while checking both development
+clones' actual identities and tracked cleanliness before loading PostgreSQL.
+Plans and metadata bindings remain unqualified and require continuous exclusive
+custody, bounded storage/process supervision and a separately admitted QA owner.
+
+Publication approval applies to an exact immutable source commit and ref.
+Changing these scripts requires a new reviewed commit and renewed owner
+source/profile reconciliation; the previously published commit cannot inherit
+the changes. These interfaces enable no CI policy, triggers, native execution,
+VM start, deployment or launch.
 - `verify-internal-ci-candidate-receipt.mjs`: verifies an externally signed candidate receipt, exact policy, and retained manifest bindings.
 - `run-internal-ci-semgrep.sh`: runs pinned Semgrep analysis from the isolated scan clone.
 - `verify-internal-ci-semgrep.mjs`: validates retained Semgrep reports against the materialized source identity.
@@ -97,8 +146,8 @@
 - `restore.sh`: fail-closed encrypted backup restore helper that keeps owner/app credentials out of child argv, rejects symlinks, snapshots the backup/checksum and every signed target/provenance/execution input once through stable descriptors into private mode-0600 files before hashing, parsing, Cosign verification, decryption, or SQL consumption, and places the destructive transaction, optional rehydration, role provisioning, and readbacks under one absolute mutation deadline; timeout exits `70` only after bounded target-identity/table reconciliation.
 - `rotate-auth-secrets.mjs`: dry-run-first, serializable maintenance helper that hashes legacy refresh tokens, re-encrypts every MFA TOTP secret under the current managed key, and verifies old-key removal before commit.
 - `rotate-webhook-endpoint-secrets.mjs`: verifies managed webhook envelopes without writes before DDL under bounded database lock and statement waits, emits only sanitized error class/code diagnostics, then re-encrypts endpoint and nonterminal delivery envelopes under the current key only after all schema and bootstrap operations succeed.
-- `run-migration-tests.mjs`: runs every deploy, hygiene, migration, and Terraform contract test in a deterministic sorted order with one Node test worker per file, an explicit per-file deadline, complete process-tree cleanup, and progress output that identifies the exact file in flight.
-- `run-bounded-command.mjs`: runs one explicit restore or VM217 transport command through the shared detached process-tree owner, preserves the caller's bounded TERM-to-KILL grace, exits `124` on deadline exhaustion, and never evaluates shell text.
+- `run-migration-tests.mjs`: runs every deploy, hygiene, migration, and Terraform contract test in a deterministic sorted order with one Node test worker per file, an explicit per-file deadline, bounded process-group termination, and progress output that identifies the exact file in flight.
+- `run-bounded-command.mjs`: runs one explicit restore or VM217 transport command through the shared detached process-tree owner, preserves the caller's bounded TERM-to-KILL grace, allows up to two further seconds to observe direct-child closure, exits `124` on deadline exhaustion, and never evaluates shell text.
 - `rsync-vm217.sh`: legacy VM217 rsync helper.
 - `run-dast.sh`: runs OWASP ZAP only through the required immutable `ZAP_IMAGE`, mounts the checkout read-only plus one validated temporary output directory read-write, observes `X-LunchLineup-Release`, and emits a deterministic source-SHA-bound canonical/JSON/HTML bundle.
 - `run-internal-beta-release-qualification.sh`: builds and qualifies the complete disposable internal-beta Compose stack, explicitly drives defined Podman healthchecks when the isolated runner has no user systemd session, then records health, browser interaction, DAST, load, SBOM, and Trivy evidence without contacting a live beta host.
@@ -135,16 +184,13 @@
 
 ## Legacy User Import
 
-`import-legacy-users.mjs` reads the historical VM106 legacy PHP user export JSON, creates zero-credit tenants, locations, users, preserved legacy password hashes, and RBAC assignments in the Prisma/Postgres schema, and writes the login-method report outside the repo by default. Fresh tenant creation and its exact source-digest zero-wallet/no-ledger provenance commit together under a tenant-slug advisory lock; rerunning an existing tenant never manufactures provenance for an ambiguous older import. It never creates an implicit credit grant; paid work remains blocked until a separate Stripe purchase or admin grant creates the ledger-backed wallet credit. The repeatable `20260716_legacy_unbacked_credit_cleanup.sql` rescan ignores obsolete global completion markers, trusts only exact per-tenant fixed-import provenance, removes the earlier importer's known unbacked 1,000-credit excess only when the locked wallet/ledger history is exact, preserves ledger-backed balances, and aborts on malformed provenance or ambiguous/consumed histories. VM106 is a legacy source label, not the current production target. Run the importer only against an isolated dev/staging database unless production cutover has been explicitly approved. Legacy `super_admin` rows import as tenant `ADMIN` with an `import_note`; create platform admins only through `bootstrap-production-admin.mjs`.
+`import-legacy-users.mjs` prepares legacy PHP users and staff for the rewrite. VM106 is a historical source label; VM4014 remains the excluded production site. No current source host contact, import, migration or cutover is authorized by these instructions. See [the exact-export replay contract](../docs/runbooks/legacy-import-exact-replay.md) for source provenance, operator-private schema, generation, role-plan and native qualification gates.
 
-Example:
+An independently reviewed private descriptor and its `LEGACY_IMPORT_DESCRIPTOR_SHA256`, the exact `LEGACY_SOURCE_EXPORT_SHA256`, `DATA_TARGET_ENV` and a valid `DATABASE_URL` are mandatory before Prisma loads. The descriptor selects a stable source namespace, target generation UUID, explicit `legacy-combined-v1` adapter, fixed role-plan digest, a canonical IANA timezone, bounded limits and company-to-fresh-tenant slugs. Synthetic adapter tests do not authenticate a real export. The operator must approve the real exporter and supported password hashes before execution. The supported adapter preserves bcrypt `$2a$`/`$2b$`/`$2y$` cost04–14, matching the retained login verifier. The CLI requires `--descriptor` and an explicit `--report`; `--report-only` recovers reports without domain writes. A production cutover additionally requires `DATA_TARGET_ENV=production-cutover`, `NODE_ENV=production`, and `LEGACY_IMPORT_PRODUCTION_CONFIRM=import-legacy-users-production-cutover`; this campaign does not authorize that action.
 
-```bash
-DATA_TARGET_ENV=development \
-  node scripts/import-legacy-users.mjs /tmp/legacy-users-20260603.json --report /tmp/imported-user-credentials-20260603.csv
-```
+Fresh tenant creation, complete RBAC initialization and the existing exact five-key zero-wallet/no-ledger provenance commit with the company receipt. Each fresh account and role assignment commits with its immutable entity receipt. Exact replay returns the recorded identity without replacing current credentials, PIN/MFA state, roles, names, tenant policy or wallet. An unmapped existing tenant is a conflict. Existing accounts are never adopted or overwritten; username collisions require bounded create-only allocation and email conflicts require reconciliation. Legacy `super_admin` rows import as tenant `ADMIN` with an `import_note`; create platform admins only through `bootstrap-production-admin.mjs`. Fresh Staff cannot receive `lunch_breaks:write`, matching the canonical role seed.
 
-`DATA_TARGET_ENV` and a valid `DATABASE_URL` are mandatory. A production cutover must use `production-cutover`, run with `NODE_ENV=production`, set `LEGACY_IMPORT_PRODUCTION_CONFIRM=import-legacy-users-production-cutover`, and set `LEGACY_SOURCE_EXPORT_SHA256` to the exact 64-hex SHA-256 of the selected export. The script hashes the export and rejects a mismatch before loading Prisma.
+No implicit credit grant is created; paid work requires a separate Stripe purchase or admin grant and its ledger-backed credit. The retained `20260716_legacy_unbacked_credit_cleanup.sql` continues its exact wallet/provenance rescan and fails on ambiguous older histories. The new private receipt schema does not change that provenance ABI or manufacture evidence for older imports. Receipts survive normal target deletion as minimal tombstones, preventing resurrection on replay; privacy retention approval remains required. Report recovery reads current scoped identities and publishes only into a private owned directory without overwriting existing files. A report failure does not authorize repeating domain mutations.
 
 `apply-db-migrations.mjs` requires `MIGRATION_DATABASE_URL` for the database owner/admin and preserves `DATABASE_URL` for the restricted runtime role. Every Prisma, bootstrap, role-provisioning, and webhook-rotation subprocess has an explicit fail-closed deadline. The runner executes the checked-in repository-local Prisma CLI through Node, avoiding shell or `npx` dependency resolution on Windows and CI. Before any Prisma or raw SQL DDL, it invokes `rotate-webhook-endpoint-secrets.mjs --verify-only`; plaintext, malformed, lock-contended, or envelopes outside the configured current/previous keyring fail closed without writes or credential output. It executes ledger-owned `pre_*.sql` transactions before `prisma db push`, then ledger-owned forward SQL transactions after schema synchronization. The private receipt table binds exact path, digest, byte count, phase, source SHA, and applied/baselined mode while a session advisory lock serializes all raw migration runners. Production requires a full `MIGRATION_SOURCE_SHA`; VM217 derives it from the verified candidate release and derives `MIGRATION_BASELINE_SOURCE_SHA` from the authenticated current release. An empty production ledger without that baseline fails unless `MIGRATION_FRESH_DATABASE_CONFIRM=initialize-fresh-production-ledger` explicitly attests a proven fresh database. The inventory skips immutable superseded bootstrap SQL plus schema-superseded legacy username and RBAC migrations, then installs tenant-context helpers, the platform-admin capability, and the corrected forward RBAC owner before dependent migrations. After schema/raw SQL, restricted-role provisioning, and optional production-admin bootstrap all succeed, the helper re-encrypts endpoint and nonterminal delivery envelopes under `WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT` in one serializable transaction. Candidate activation separately requires proof that the retained release preloaded the candidate key for rollback. Ephemeral CI supplies a fixed test-only webhook key; staging and production must receive their protected runtime key.
 
@@ -294,3 +340,13 @@ The wrapper validates the requested VM217 entry in the supplied pinned `known_ho
 A successful initial cutover does not seed, relax, or bypass the retained release registry. Independently retain the now-live v2 release bundle, then use the existing exact-header `bootstrap_release_registry` workflow before any later candidate deploy. Until that bootstrap succeeds, later deployment remains blocked. Retain the external legacy snapshot and proof through registry bootstrap and a successful v2 rollback drill.
 
 See `docs/runbooks/production-readiness.md` for the operator invocation contract. Do not use this wrapper after a v2 registry baseline exists.
+
+- `check-internal-ci-storage.py`: scoped application repair or disposable qualification support.
+
+- `check-internal-ci-target.py`: scoped application repair or disposable qualification support.
+
+- `ci-container-bin/`: scoped application repair or disposable qualification support.
+
+- `run-development-browser-qa.sh`: one disposable application/browser job with private storage, verified internal networks and container routes, synthetic providers, and exact cleanup receipts. Only its generated web override injects the four server markers admitting `http://127.0.0.1:8080` to authentication; canonical runtime configuration keeps production HTTPS enforcement.
+
+- `check-development-browser-isolation.ts`: disposable QA isolation and evidence checks.

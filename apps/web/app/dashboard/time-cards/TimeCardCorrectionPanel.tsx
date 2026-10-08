@@ -1,6 +1,7 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { correctionAcknowledgement } from './time-card-correction-ack';
 import { fetchWithSession } from '@/lib/client-api';
 import { jsonWriteInit } from './time-card-api';
 import {
@@ -14,13 +15,17 @@ import { TimeCard } from './time-card-types';
 type TimeCardCorrectionPanelProps = {
     card: TimeCard;
     onCancel: () => void;
-    onSaved: () => Promise<void>;
+    onSaved: (acknowledged: TimeCard, canClose: () => boolean) => Promise<void>;
 };
 
 type BreakDraft = {
     key: string;
     startAt: string;
     endAt: string;
+    originalStartAt?: string;
+    originalEndAt?: string;
+    startTouched: boolean;
+    endTouched: boolean;
 };
 
 export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCorrectionPanelProps) {
@@ -29,10 +34,16 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     const [clockOutAt, setClockOutAt] = useState(() => (
         card.clockOutAt ? timeCardInstantToLocalInput(card.clockOutAt, timeZone) : ''
     ));
+    const [clockInTouched, setClockInTouched] = useState(false);
+    const [clockOutTouched, setClockOutTouched] = useState(false);
     const [breaks, setBreaks] = useState<BreakDraft[]>(() => (card.breaks ?? []).map((interval) => ({
         key: interval.id,
         startAt: timeCardInstantToLocalInput(interval.startAt, timeZone),
         endAt: timeCardInstantToLocalInput(interval.endAt, timeZone),
+        originalStartAt: interval.startAt,
+        originalEndAt: interval.endAt,
+        startTouched: false,
+        endTouched: false,
     })));
     const [breaksTouched, setBreaksTouched] = useState(Boolean(card.breaks?.length));
     const [reason, setReason] = useState('');
@@ -40,33 +51,82 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     const [ambiguitySelections, setAmbiguitySelections] = useState<Record<string, string>>({});
     const [isSaving, setIsSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [requiresRefresh, setRequiresRefresh] = useState(false);
+    const draftRevision = useRef(0);
+    const saveAttempt = useRef(0);
+    const saving = useRef(false);
+    const unverifiedAcknowledgement = useRef(false);
+    const mounted = useRef(true);
+    const acknowledgedCard = useRef(card);
+
+    useEffect(() => {
+        mounted.current = true;
+        return () => { mounted.current = false; saveAttempt.current += 1; };
+    }, []);
+
+    function updateReason(value: string) {
+        draftRevision.current += 1;
+        setReason(value);
+    }
+
+    function updateAmbiguitySelection(fieldKey: string, value: string) {
+        draftRevision.current += 1;
+        setAmbiguitySelections((current) => ({ ...current, [fieldKey]: value }));
+    }
+
+    function clearLegacyBreak() {
+        draftRevision.current += 1;
+        setBreaksTouched(true);
+    }
 
     function updateDateTime(fieldKey: string, value: string, setter: (next: string) => void) {
+        draftRevision.current += 1;
         setter(value);
+        if (fieldKey === 'clock-in') setClockInTouched(true);
+        if (fieldKey === 'clock-out') setClockOutTouched(true);
         setAmbiguities((current) => withoutKey(current, fieldKey));
         setAmbiguitySelections((current) => withoutKey(current, fieldKey));
     }
 
+    function untouchedOriginal(fieldKey: string): string | undefined {
+        if (fieldKey === 'clock-in' && !clockInTouched) return card.clockInAt;
+        if (fieldKey === 'clock-out' && !clockOutTouched) return card.clockOutAt || undefined;
+        for (const interval of breaks) {
+            if (fieldKey === breakFieldKey(interval.key, 'startAt') && !interval.startTouched) return interval.originalStartAt;
+            if (fieldKey === breakFieldKey(interval.key, 'endAt') && !interval.endTouched) return interval.originalEndAt;
+        }
+        return undefined;
+    }
+
     function inspectDateTime(fieldKey: string, value: string) {
         if (!value) return;
+        if (untouchedOriginal(fieldKey)) {
+            setAmbiguities((current) => withoutKey(current, fieldKey));
+            return;
+        }
         try {
             const candidates = timeCardLocalInputCandidates(value, timeZone);
             setAmbiguities((current) => ({ ...current, [fieldKey]: candidates }));
-            setError(null);
+            // Keep the alert in place while focus moves to Save. Removing it
+            // on blur can move the button between pointer down and pointer up.
+            // The next submission clears the error before validating again.
         } catch (candidateError) {
             setError(candidateError instanceof Error ? candidateError.message : 'Invalid local date/time.');
         }
     }
 
     function addBreak() {
+        draftRevision.current += 1;
         const key = crypto.randomUUID();
-        setBreaks((current) => [...current, { key, startAt: '', endAt: '' }]);
+        setBreaks((current) => [...current, { key, startAt: '', endAt: '', startTouched: true, endTouched: true }]);
         setBreaksTouched(true);
     }
 
     function updateBreak(key: string, field: 'startAt' | 'endAt', value: string) {
+        draftRevision.current += 1;
         setBreaks((current) => current.map((interval) => (
-            interval.key === key ? { ...interval, [field]: value } : interval
+            interval.key === key ? { ...interval, [field]: value,
+                ...(field === 'startAt' ? { startTouched: true } : { endTouched: true }) } : interval
         )));
         setBreaksTouched(true);
         const fieldKey = breakFieldKey(key, field);
@@ -75,6 +135,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     }
 
     function removeBreak(key: string) {
+        draftRevision.current += 1;
         setBreaks((current) => current.filter((interval) => interval.key !== key));
         setBreaksTouched(true);
         for (const field of ['startAt', 'endAt'] as const) {
@@ -85,6 +146,11 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
     }
 
     function resolveInstant(fieldKey: string, value: string, label: string): string {
+        // Minute-only display values must not replace precise saved instants.
+        // A deliberate edit, including respecifying the same wall time, uses
+        // the current local-time validation and occurrence selection instead.
+        const original = untouchedOriginal(fieldKey);
+        if (original) return original;
         if (!value) throw new Error(label + ' is required.');
         const candidates = timeCardLocalInputCandidates(value, timeZone);
         setAmbiguities((current) => ({ ...current, [fieldKey]: candidates }));
@@ -99,13 +165,19 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 
     async function submit(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
+        if (saving.current || unverifiedAcknowledgement.current || !mounted.current) return;
+        saving.current = true;
+        const attempt = ++saveAttempt.current;
+        const issuedRevision = draftRevision.current;
+        const isCurrent = () => mounted.current && saveAttempt.current === attempt;
+        const canClose = () => isCurrent() && draftRevision.current === issuedRevision;
         setIsSaving(true);
         setError(null);
         try {
             const payload = {
                 clockInAt: resolveInstant('clock-in', clockInAt, 'Clock in'),
                 clockOutAt: clockOutAt ? resolveInstant('clock-out', clockOutAt, 'Clock out') : null,
-                expectedUpdatedAt: card.updatedAt,
+                expectedUpdatedAt: acknowledgedCard.current.updatedAt,
                 reason,
                 ...(breaksTouched ? {
                     breakIntervals: breaks.map((interval, index) => ({
@@ -122,21 +194,40 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                     })),
                 } : {}),
             };
+            // An issued write may have committed even if its response is lost.
+            unverifiedAcknowledgement.current = true;
             const response = await fetchWithSession(
                 '/time-cards/' + card.id + '/correction',
                 jsonWriteInit('PATCH', payload),
             );
-            const responseBody = (await response.json().catch(() => ({}))) as { message?: string };
-            if (!response.ok) throw new Error(responseBody.message ?? 'Unable to correct the time card.');
-            await onSaved();
+            const responseBody: unknown = await response.json().catch(() => null);
+            if (!isCurrent()) return;
+            if (!response.ok) {
+                // A server/transport failure can follow a committed write.
+                // Only definitive client refusals allow another local attempt.
+                unverifiedAcknowledgement.current = ![400, 401, 402, 403, 404, 405, 409, 412, 415, 422, 429].includes(response.status);
+                const message = responseBody && typeof responseBody === 'object' && 'message' in responseBody
+                    && typeof responseBody.message === 'string' ? responseBody.message : 'Unable to correct the time card.';
+                throw new Error(message);
+            }
+            const acknowledged = correctionAcknowledgement(responseBody, card, payload);
+            acknowledgedCard.current = acknowledged;
+            unverifiedAcknowledgement.current = false;
+            await onSaved(acknowledged, canClose);
         } catch (submitError) {
-            setError(submitError instanceof Error ? submitError.message : 'Unable to correct the time card.');
+            if (isCurrent()) {
+                setRequiresRefresh(unverifiedAcknowledgement.current);
+                setError(unverifiedAcknowledgement.current
+                    ? 'The correction response could not be verified. Cancel and refresh before saving again.'
+                    : submitError instanceof Error ? submitError.message : 'Unable to correct the time card.');
+            }
         } finally {
-            setIsSaving(false);
+            if (isCurrent()) { saving.current = false; setIsSaving(false); }
         }
     }
 
     function renderAmbiguity(fieldKey: string) {
+        if (untouchedOriginal(fieldKey)) return null;
         const candidates = ambiguities[fieldKey] ?? [];
         if (candidates.length < 2) return null;
         return (
@@ -145,10 +236,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                 <select
                     aria-label="Repeated time occurrence"
                     value={ambiguitySelections[fieldKey] ?? ''}
-                    onChange={(event) => setAmbiguitySelections((current) => ({
-                        ...current,
-                        [fieldKey]: event.target.value,
-                    }))}
+                    onChange={(event) => updateAmbiguitySelection(fieldKey, event.target.value)}
                     style={fieldStyle}
                     required
                 >
@@ -223,7 +311,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                         <div role="note" style={{ fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                             This legacy card stores only an aggregate break. Timestamp-only corrections preserve it.
                             Add intervals to replace it, or{' '}
-                            <button type="button" className="btn btn-link" onClick={() => setBreaksTouched(true)}>clear the aggregate break</button>.
+                            <button type="button" className="btn btn-link" onClick={clearLegacyBreak}>clear the aggregate break</button>.
                         </div>
                     ) : null}
                     {breaks.map((interval, index) => (
@@ -267,7 +355,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
                     Correction reason
                     <textarea
                         value={reason}
-                        onChange={(event) => setReason(event.target.value)}
+                        onChange={(event) => updateReason(event.target.value)}
                         minLength={5}
                         maxLength={500}
                         rows={3}
@@ -278,7 +366,7 @@ export function TimeCardCorrectionPanel({ card, onCancel, onSaved }: TimeCardCor
 
                 <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
                     <button type="button" className="btn btn-secondary" onClick={onCancel} disabled={isSaving}>Cancel</button>
-                    <button type="submit" className="btn btn-primary" disabled={isSaving}>
+                    <button type="submit" className="btn btn-primary" disabled={isSaving || requiresRefresh}>
                         {isSaving ? 'Saving...' : 'Save correction'}
                     </button>
                 </div>

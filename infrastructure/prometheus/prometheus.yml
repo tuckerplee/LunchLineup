@@ -28,6 +28,18 @@ scrape_configs:
       credentials_file: /run/secrets/metrics_token
     scrape_interval: 10s
 
+  - job_name: 'api-v2'
+    static_configs:
+      - targets: ['api-v2:3002']
+    metrics_path: '/metrics'
+    authorization:
+      type: Bearer
+      credentials_file: /run/secrets/metrics_token
+    scrape_interval: 10s
+    scrape_timeout: 5s
+    sample_limit: 12000
+    body_size_limit: 8MB
+
   - job_name: 'engine'
     static_configs:
       - targets: ['engine:8000']

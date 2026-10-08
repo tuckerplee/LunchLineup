@@ -69,6 +69,18 @@ async function enterPlanner(page: Page, staffName: string) {
   await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
 }
 
+async function generatePlanConfirmed(page: Page) {
+  const confirmation = page.waitForEvent('dialog').then(async (dialog) => {
+    expect(dialog.type()).toBe('confirm');
+    expect(dialog.message()).toBe('Generate a lunch and break plan for 1 shift? This uses exactly 1 usage credit. Existing break assignments for these shifts will be replaced. Unchanged retries recover the same request.');
+    await dialog.accept();
+  });
+  await Promise.all([
+    confirmation,
+    page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click(),
+  ]);
+}
+
 test.describe('Lunch/break durable recovery', () => {
   test.skip(runFullStack, 'The focused recovery contract uses deterministic local API routes.');
 
@@ -193,18 +205,18 @@ test.describe('Lunch/break durable recovery', () => {
 
     await loginAsSeedAdmin(page, '/dashboard/lunch-breaks');
     await enterPlanner(page, 'Scope A Staff');
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await generatePlanConfirmed(page);
     await expect.poll(() => calls.filter((call) => call.locationId === 'loc-downtown').length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-uptown');
     await enterPlanner(page, 'Scope B Staff');
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await generatePlanConfirmed(page);
     await expect.poll(() => calls.filter((call) => call.locationId === 'loc-uptown').length).toBe(1);
 
     await page.getByLabel('Location').selectOption('loc-downtown');
     await page.reload();
     await enterPlanner(page, 'Scope A Staff');
-    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+    await generatePlanConfirmed(page);
     await expect.poll(() => calls.filter((call) => call.locationId === 'loc-downtown').length).toBe(2);
 
     const aCalls = calls.filter((call) => call.locationId === 'loc-downtown');
@@ -296,8 +308,8 @@ test.describe('Lunch/break durable recovery', () => {
     expect(debitCount).toBe(1);
 
     await Promise.all([
-      page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click(),
-      secondPage.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click(),
+      generatePlanConfirmed(page),
+      generatePlanConfirmed(secondPage),
     ]);
     await expect.poll(() => generationCalls.length).toBe(2);
     expect(generationCalls[0].key).toBeTruthy();

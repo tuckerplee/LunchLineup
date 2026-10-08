@@ -1,9 +1,10 @@
-import Link from 'next/link';
+import { LogoutLink } from '@/components/auth/LogoutLink';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { LogOut } from 'lucide-react';
 import { AdminNav } from './AdminNav';
+import styles from './admin-shell.module.css';
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
     const user = await getServerUser();
@@ -12,7 +13,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     const roleLabel = user.role.replaceAll('_', ' ');
 
     return (
-        <div className="workspace-shell" style={{ background: '#f7f9ff' }}>
+        <div className={`workspace-shell ${styles.shell}`} style={{ background: '#f7f9ff' }}>
             <aside
                 className="workspace-sidebar"
                 aria-label="Admin sidebar"
@@ -21,28 +22,30 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         'radial-gradient(40rem 24rem at -10% -20%, rgba(231,72,103,0.16), transparent 58%), linear-gradient(180deg, #fef8fa, #f7f9ff 42%, #f9fbff)',
                 }}
             >
-                <div className="workspace-sidebar-inner" style={{ borderColor: '#f0d5de' }}>
-                    <div style={{ padding: '1.05rem 1rem', borderBottom: '1px solid #f0d5de' }}>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.62rem', marginBottom: '0.55rem' }}>
+                <div className={`workspace-sidebar-inner ${styles.sidebarInner}`} style={{ borderColor: '#f0d5de' }}>
+                    <div className={styles.brand} style={{ padding: '1.05rem 1rem', borderBottom: '1px solid #f0d5de' }}>
+                        <div className={styles.brandRow} style={{ display: 'flex', alignItems: 'center', gap: '0.62rem', marginBottom: '0.55rem' }}>
                             <div
                                 aria-hidden="true"
+                                className={styles.brandMark}
                                 style={{
                                     width: 34,
                                     height: 34,
+                                    flexShrink: 0,
                                     display: 'grid',
                                     placeItems: 'center',
                                 }}
                             >
                                 <LunchLineupMark size={34} />
                             </div>
-                            <div>
-                                <div style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
+                            <div className={styles.brandText}>
+                                <div className={styles.brandName} style={{ fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>LunchLineup</div>
                                 <div className="workspace-kicker">Platform Admin</div>
                             </div>
                         </div>
 
                         <span
-                            className="badge"
+                            className={`badge ${styles.roleBadge}`}
                             style={{
                                 fontSize: '0.62rem',
                                 textTransform: 'uppercase',
@@ -62,21 +65,20 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)', marginBottom: '0.45rem', paddingLeft: '0.2rem' }}>
                             Signed in as {roleLabel.toLowerCase()}
                         </div>
-                        <Link
-                            href="/auth/logout"
+                        <LogoutLink
                             className="workspace-nav-link"
                             style={{ color: '#b4233f', borderColor: '#ffd5df', background: '#fff6f8' }}
                         >
                             <span aria-hidden="true">↩</span>
                             Sign out
-                        </Link>
+                        </LogoutLink>
                     </div>
                 </div>
             </aside>
 
             <section className="workspace-main">
                 <header
-                    className="workspace-topbar"
+                    className={`workspace-topbar ${styles.topbar}`}
                     style={{
                         borderBottomColor: '#f0d5de',
                         background:
@@ -87,23 +89,23 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                         <div className="workspace-kicker" style={{ color: '#b4233f' }}>
                             Internal Console
                         </div>
-                        <div style={{ fontSize: '1rem', fontWeight: 700, color: 'var(--text-primary)' }}>System Administration</div>
+                        <div className={styles.heading} style={{ fontWeight: 700, color: 'var(--text-primary)' }}>System Administration</div>
                     </div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
-                        <Link
-                            href="/auth/logout"
-                            prefetch={false}
-                            className="workspace-mobile-signout btn btn-secondary btn-sm"
+                    <div className={styles.actions} style={{ display: 'flex', alignItems: 'center', gap: '0.7rem' }}>
+                        <LogoutLink
+                            className={`workspace-mobile-signout btn btn-secondary btn-sm ${styles.mobileSignout}`}
                             aria-label="Sign out"
                         >
                             <LogOut aria-hidden="true" size={16} />
                             <span className="workspace-mobile-signout-label">Sign out</span>
-                        </Link>
-                        <span className="badge" style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#b4233f' }}>
+                        </LogoutLink>
+                        <span className={`badge ${styles.environment}`} style={{ background: '#ffeef2', borderColor: '#ffcfda', color: '#b4233f' }}>
                             {environment}
                         </span>
                         <span
+                            className={styles.avatar}
+                            aria-hidden="true"
                             style={{
                                 width: 32,
                                 height: 32,

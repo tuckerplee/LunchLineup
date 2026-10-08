@@ -9,8 +9,9 @@ import type {
 } from '@lunchlineup/api-contract';
 
 import { Button } from '@/components/ui/button';
-import { fetchJsonWithSession } from '@/lib/client-api';
+import { ApiRequestError, fetchJsonWithSession } from '@/lib/client-api';
 
+import { ProfileOperationOwner, profileMatchesDraft } from './profile-save-state';
 import { AvailabilityPdfImport } from './AvailabilityPdfImport';
 
 type StaffSchedulingProfileEditorProps = {
@@ -44,7 +45,12 @@ function localToday(): string {
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
 }
 
-export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true }: StaffSchedulingProfileEditorProps) {
+export function StaffSchedulingProfileEditor(props: StaffSchedulingProfileEditorProps) {
+    return <ProfileEditorSession key={props.user.id} {...props} />;
+}
+
+function ProfileEditorSession({ user, onClose, showHeader = true }: StaffSchedulingProfileEditorProps) {
+    const [version, setVersion] = useState<string | null>(null);
     const [skills, setSkills] = useState<string[]>([]);
     const [skillDraft, setSkillDraft] = useState('');
     const [availability, setAvailability] = useState<AvailabilityWindow[]>([]);
@@ -63,8 +69,14 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
     const profileLoadRequestRef = useRef(0);
     const locationLoadRequestRef = useRef(0);
     const saveInFlightRef = useRef(false);
+    const saveOwner = useRef(new ProfileOperationOwner());
+    const pendingSave = useRef<{ userId: string; draft: StaffSchedulingProfileRequest } | null>(null);
+    const [outcomeUnknown, setOutcomeUnknown] = useState(false);
 
     const loadProfile = useCallback(async () => {
+        saveOwner.current.invalidate();
+        pendingSave.current = null;
+        setOutcomeUnknown(false);
         const requestId = ++profileLoadRequestRef.current;
         setIsProfileLoading(true);
         setIsProfileHydrated(false);
@@ -74,6 +86,8 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
         try {
             const profile = await fetchJsonWithSession<SchedulingProfile>(`/users/${user.id}/scheduling-profile`);
             if (requestId !== profileLoadRequestRef.current) return;
+            if (!profile.version) throw new Error('Reload this page to use the current profile editor.');
+            setVersion(profile.version);
             setSkills(profile.skills);
             setAvailability(profile.availability);
             setAvailabilityExceptions(profile.availabilityExceptions ?? []);
@@ -123,6 +137,11 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
     useEffect(() => {
         void loadProfile();
         void loadLocations();
+        return () => {
+            saveOwner.current.invalidate();
+            profileLoadRequestRef.current += 1;
+            locationLoadRequestRef.current += 1;
+        };
     }, [loadLocations, loadProfile]);
 
     const missingLocationIds = useMemo(() => {
@@ -196,39 +215,85 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
         setMessage(null);
     }, [isProfileHydrated]);
 
+    const acceptProfile = useCallback((profile: SchedulingProfile) => {
+        setVersion(profile.version!);
+        setSkills(profile.skills);
+        setAvailability(profile.availability);
+        setAvailabilityExceptions(profile.availabilityExceptions ?? []);
+        pendingSave.current = null;
+        setOutcomeUnknown(false);
+    }, []);
+
+    const reconcileSave = useCallback(async (token: number): Promise<boolean> => {
+        const pending = pendingSave.current;
+        if (!pending) return false;
+        try {
+            const profile = await fetchJsonWithSession<SchedulingProfile>(`/users/${pending.userId}/scheduling-profile`);
+            if (!saveOwner.current.owns(token)) return false;
+            if (!profile.version || profile.user.id !== pending.userId) throw new Error('Invalid profile readback.');
+            if (profileMatchesDraft(profile, pending.draft)) {
+                acceptProfile(profile);
+                setError(null);
+                setMessage('Saved profile matches your submitted draft. Confirmed by a fresh read.');
+                return true;
+            }
+            if (profile.version !== pending.draft.expectedVersion) {
+                pendingSave.current = null;
+                setOutcomeUnknown(false);
+                setError('Conflict: the saved profile differs from your draft. Your draft is retained. Reload explicitly before reapplying.');
+            } else {
+                setError('Outcome unknown: the save is not confirmed yet. Your draft is retained; check again before retrying.');
+            }
+        } catch {
+            if (saveOwner.current.owns(token)) setError('Outcome unknown: readback failed. Your draft is retained and saving is disabled. Check saved outcome to recover.');
+        }
+        return false;
+    }, [acceptProfile]);
+
     const save = useCallback(async (
         nextAvailability: AvailabilityWindow[] = availability,
         successMessage?: string,
     ): Promise<boolean> => {
-        if (!isProfileHydrated || saveInFlightRef.current) return false;
+        if (!isProfileHydrated || !version || saveInFlightRef.current || pendingSave.current) return false;
+        const token = saveOwner.current.begin();
         saveInFlightRef.current = true;
+        const draft = { skills, availability: nextAvailability, availabilityExceptions, expectedVersion: version };
+        pendingSave.current = { userId: user.id, draft };
+        setAvailability(nextAvailability);
         setIsSaving(true);
         setError(null);
-        setMessage(null);
+        setMessage('Saving…');
         try {
-            const profile = await fetchJsonWithSession<SchedulingProfile>(
-                `/users/${user.id}/scheduling-profile`,
-                {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ skills, availability: nextAvailability, availabilityExceptions }),
-                },
-            );
-            setSkills(profile.skills);
-            setAvailability(profile.availability);
-            setAvailabilityExceptions(profile.availabilityExceptions ?? []);
-            setMessage(successMessage ?? (profile.availabilityConfigured
-                ? 'Scheduling profile saved.'
-                : 'Profile saved. This staff member remains unavailable to auto-scheduling.'));
+            const profile = await fetchJsonWithSession<SchedulingProfile>(`/users/${user.id}/scheduling-profile`, {
+                method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
+            });
+            if (!saveOwner.current.owns(token)) return false;
+            if (!profile.version || profile.user.id !== user.id) throw new Error('Invalid save confirmation.');
+            acceptProfile(profile);
+            setMessage(successMessage ?? 'Scheduling profile saved and confirmed.');
             return true;
         } catch (saveError) {
-            setError((saveError as Error).message);
-            return false;
+            if (!saveOwner.current.owns(token)) return false;
+            if (saveError instanceof ApiRequestError && saveError.status !== null
+                && saveError.status >= 400 && saveError.status < 500 && saveError.status !== 408) {
+                pendingSave.current = null;
+                setMessage(null);
+                setError(saveError.status === 409
+                    ? 'Conflict: this profile changed. Your draft is retained. Reload explicitly before reapplying.'
+                    : `Save rejected. Your draft is retained. ${saveError.message}`);
+                return false;
+            }
+            setOutcomeUnknown(true);
+            setMessage(null);
+            setError('Outcome unknown—reconciling the original employee profile…');
+            return await reconcileSave(token);
         } finally {
-            setIsSaving(false);
-            saveInFlightRef.current = false;
+            if (saveOwner.current.owns(token)) {
+                setIsSaving(false);
+                saveInFlightRef.current = false;
+            }
         }
-    }, [availability, availabilityExceptions, isProfileHydrated, skills, user.id]);
+    }, [acceptProfile, availability, availabilityExceptions, isProfileHydrated, reconcileSave, skills, user.id, version]);
 
     const applyImportedAvailability = useCallback((importedAvailability: AvailabilityWindow[]) => (
         save(importedAvailability, 'Imported availability applied and scheduling profile saved.')
@@ -264,6 +329,7 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
                 </div>
             ) : (
                 <>
+                    <fieldset disabled={isSaving || outcomeUnknown} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
                     <div style={{ display: 'grid', gap: '0.65rem' }}>
                         <label htmlFor="staff-skill" style={{ fontSize: '0.78rem', fontWeight: 700 }}>Skills</label>
                         <div style={{ display: 'flex', gap: '0.5rem' }}>
@@ -456,9 +522,17 @@ export function StaffSchedulingProfileEditor({ user, onClose, showHeader = true 
                         </div>
                     </div>
 
+                    </fieldset>
                     <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
                         <div aria-live="polite" style={{ fontSize: '0.8rem', color: error ? '#b42318' : 'var(--text-muted)' }}>{error ?? message}</div>
-                        <Button type="button" onClick={() => void save()} disabled={isSaving || !isProfileHydrated}>
+                        {error && !outcomeUnknown ? <Button type="button" variant="outline" disabled={isSaving} onClick={() => { if (window.confirm('Discard this draft and reload the saved profile?')) void loadProfile(); }}>Reload saved profile</Button> : null}
+                        {outcomeUnknown ? <Button type="button" variant="outline" disabled={isSaving} onClick={async () => {
+                            const token = saveOwner.current.begin();
+                            setIsSaving(true);
+                            try { await reconcileSave(token); }
+                            finally { if (saveOwner.current.owns(token)) setIsSaving(false); }
+                        }}>Check saved outcome</Button> : null}
+                        <Button type="button" onClick={() => void save()} disabled={outcomeUnknown || isSaving || !isProfileHydrated || !version}>
                             {isSaving ? <CalendarClock aria-hidden="true" size={16} /> : <Save aria-hidden="true" size={16} />}
                             {isSaving ? 'Saving...' : 'Save profile'}
                         </Button>

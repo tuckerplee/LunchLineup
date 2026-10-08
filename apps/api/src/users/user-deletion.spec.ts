@@ -1,4 +1,5 @@
 import { Prisma } from "@prisma/client";
+import { ForbiddenException } from "@nestjs/common";
 import { describe, expect, it, vi } from "vitest";
 import {
   anonymizeDeletedUser,
@@ -572,5 +573,98 @@ describe("anonymizeDeletedUser", () => {
     expect(tx.user.updateMany).not.toHaveBeenCalled();
     expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
     expect(tx.$executeRaw).toHaveBeenCalledOnce();
+  });
+});
+
+
+// Actual helper traversal with valid refundable imports and editable/published
+// shifts. The lease guard is injected; policy/Session/Redis capture is tested by
+// the shared current-mutation runner, and this model is not native rollback.
+describe('legacy user deletion forwards the same finite authority guard to every effect', () => {
+  const flattenValues = (values: unknown[]): unknown[] => values.flatMap(value => value && typeof value === 'object' && 'values' in value
+    ? flattenValues((value as { values: unknown[] }).values) : [value]);
+  function guardedDeletion(expireAt = 0) {
+    const attempts: string[] = [], committed: string[] = [];
+    let expired = false;
+    const assertCurrent = () => { if (expired) throw new ForbiddenException('Controlled authority expiry'); };
+    const effect = (name: string) => { attempts.push(name); if (attempts.length === expireAt) expired = true; };
+    const jobs = ['import-1', 'import-2'].map(id => ({ id, status: 'FAILED', storageKey: null,
+      creditConsumption: { source: 'credits', consumedCredits: 1, newBalance: 5 },
+      debitCount: 1, debitTenantId: 'tenant-1', debitAmount: -1, debitDebtAmount: 0,
+      debitReason: `Availability PDF import (${id})`, debitBalanceAfter: 5, debitDebtAfter: 0,
+      refundCount: 0, refundTenantId: null, refundAmount: null, refundDebtAmount: null,
+      refundReason: null, refundBalanceAfter: null, refundDebtAfter: null }));
+    const tx = {
+      $queryRaw: vi.fn(async (query: any) => {
+        const text = query.strings.join(''); const values = flattenValues(query.values);
+        if (text.includes('settle_positive_credit_value')) {
+          expect(values[0]).toBe('tenant-1'); expect(values[1]).toBe(1);
+          expect(values[2]).toBe(`Availability PDF import refund (${jobs[attempts.filter(x => x === 'credit.refund').length].id})`);
+          effect('credit.refund');
+          return [{ transactionId: values[3], creditedValue: 1, spendableAmount: 1, repaidDebt: 0,
+            newBalance: 6, debtAfter: 0, replayed: false }];
+        }
+        if (text.includes('FROM "AvailabilityImportJob"')) return jobs;
+        if (text.includes('FROM "Shift"')) return [
+          { id: 'editable', scheduleId: 'draft', scheduleTenantId: 'tenant-1', scheduleStatus: 'DRAFT', scheduleDeletedAt: null },
+          { id: 'retained', scheduleId: 'published', scheduleTenantId: 'tenant-1', scheduleStatus: 'PUBLISHED', scheduleDeletedAt: null },
+        ];
+        if (text.includes('FROM "Schedule"')) return [{ id: 'draft' }, { id: 'published' }];
+        if (text.includes('FROM "Tenant"')) return [{ id: 'tenant-1' }];
+        if (text.includes('FROM "User"')) return [{ id: 'user-1' }];
+        throw new Error('Unmodeled deletion query');
+      }),
+      $executeRaw: vi.fn(async (query: any) => {
+        const text = query.strings.join('');
+        if (text.includes('pg_advisory_xact_lock')) return 1;
+        expect(text).toContain('UPDATE "Session"'); effect('session.redact'); return 1;
+      }),
+      shift: { updateMany: vi.fn(async ({ where }: any) => {
+        expect(where).toEqual({ id: { in: ['editable'] }, tenantId: 'tenant-1', userId: 'user-1', deletedAt: null });
+        effect('shift.unassign'); return { count: 1 };
+      }) },
+      schedule: { updateMany: vi.fn(async ({ where }: any) => {
+        expect(where).toEqual({ id: { in: ['draft'] }, tenantId: 'tenant-1', status: 'DRAFT', deletedAt: null });
+        effect('schedule.revise'); return { count: 1 };
+      }) },
+      availabilityImportJob: { updateMany: vi.fn(async ({ where }: any) => {
+        expect(where.tenantId).toBe('tenant-1'); effect('import.update'); return { count: 2 };
+      }) },
+      staffInvitationOutbox: { updateMany: vi.fn(async ({ where }: any) => {
+        expect(where).toMatchObject({ tenantId: 'tenant-1', userId: 'user-1' }); effect('invitation.cancel'); return { count: 1 };
+      }) },
+      user: { updateMany: vi.fn(async ({ where }: any) => {
+        expect(where).toEqual({ id: 'user-1', tenantId: 'tenant-1', deletedAt: null }); effect('user.anonymize'); return { count: 1 };
+      }) },
+      refreshTokenReplay: { deleteMany: vi.fn(async ({ where }: any) => {
+        expect(where).toEqual({ session: { userId: 'user-1' } }); effect('refreshReplay.delete'); return { count: 1 };
+      }) },
+      passwordResetEmailOutbox: { deleteMany: vi.fn(async () => { effect('resetEmail.delete'); return { count: 1 }; }) },
+      passwordResetToken: { deleteMany: vi.fn(async () => { effect('resetToken.delete'); return { count: 1 }; }) },
+      mfaTotpClaim: { deleteMany: vi.fn(async () => { effect('totp.delete'); return { count: 1 }; }) },
+      roleAssignment: { deleteMany: vi.fn(async () => { effect('assignment.delete'); return { count: 1 }; }) },
+      onboardingSignupAttempt: { deleteMany: vi.fn(async () => { effect('onboarding.delete'); return { count: 1 }; }) },
+      notificationOutbox: { deleteMany: vi.fn(async () => { effect('notificationOutbox.delete'); return { count: 1 }; }) },
+      notification: { deleteMany: vi.fn(async () => { effect('notification.delete'); return { count: 1 }; }) },
+    };
+    const run = async () => {
+      const result = await anonymizeDeletedUser(tx as never, 'tenant-1', 'user-1', new Date('2026-10-04T12:00:00Z'), assertCurrent);
+      committed.push(...attempts); return result;
+    };
+    return { run, attempts, committed, tx };
+  }
+  it('has a viable populated refund/shift/anonymization positive', async () => {
+    const h = guardedDeletion(); await expect(h.run()).resolves.toMatchObject({ refundedAvailabilityImportCredits: 2 });
+    expect(h.attempts).toEqual(['credit.refund', 'credit.refund', 'import.update', 'import.update',
+      'shift.unassign', 'schedule.revise', 'invitation.cancel', 'user.anonymize', 'import.update',
+      'refreshReplay.delete', 'session.redact', 'resetEmail.delete', 'resetToken.delete', 'totp.delete',
+      'assignment.delete', 'onboarding.delete', 'notificationOutbox.delete', 'notification.delete']);
+    expect(h.committed).toEqual(h.attempts);
+  });
+  it.each(Array.from({ length: 18 }, (_, index) => index + 1))('stops after effect completion%d and cannot publish cleanup', async index => {
+    const positive = guardedDeletion(); await positive.run();
+    const h = guardedDeletion(index);
+    await expect(h.run()).rejects.toBeInstanceOf(ForbiddenException);
+    expect(h.attempts).toEqual(positive.attempts.slice(0, index)); expect(h.committed).toEqual([]);
   });
 });

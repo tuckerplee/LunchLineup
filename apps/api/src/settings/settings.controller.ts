@@ -1,6 +1,9 @@
-import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, Optional, Put, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
+import { isCurrentMfaObservation, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
+import { AuthService } from '../auth/auth.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RbacGuard } from '../auth/rbac.guard';
+import { RbacService } from '../auth/rbac.service';
 import { RequirePermission } from '../auth/require-permission.decorator';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
@@ -94,9 +97,12 @@ type SecurityPolicyAuditValue = {
 @UseGuards(JwtAuthGuard, RbacGuard)
 export class SettingsController {
     private readonly tenantDb: TenantPrismaService;
+    private readonly rbacService: RbacService;
 
-    constructor(@Optional() tenantDb?: TenantPrismaService) {
+    constructor(@Optional() tenantDb?: TenantPrismaService, @Optional() rbacService?: RbacService,
+        @Optional() private readonly authService?: AuthService) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
+        this.rbacService = rbacService ?? new RbacService(this.tenantDb);
     }
 
     private assertCanReadSettings(permissions: unknown): void {
@@ -330,7 +336,17 @@ export class SettingsController {
         client: TenantPrismaTransaction,
         tenantId: string,
         settings: NormalizedSettings,
+        assertCurrent: () => void,
     ): Promise<void> {
+        assertCurrent();
+        // Commit an actual tuple version with the child policy while preserving
+        // business values. Waiting Serializable authority readers must retry
+        // instead of proceeding with an older workspace_settings snapshot.
+        const fenced = await client.$executeRaw`
+            UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" = ${tenantId}
+        `;
+        assertCurrent();
+        if (fenced !== 1) throw new ServiceUnavailableException('Workspace settings could not be saved');
         await client.tenantSetting.upsert({
             where: {
                 tenantId_key: {
@@ -346,6 +362,89 @@ export class SettingsController {
             update: {
                 value: settings as any,
             },
+        });
+        assertCurrent();
+    }
+
+    private async authorizeSettingsWrite(client: TenantPrismaTransaction, tenantId: string, actor: any): Promise<{
+        current: NormalizedSettings; expiresAtEpochMs: number;
+    }> {
+        // The shared helper obtains Tenant first, preserving aggregate/policy
+        // serialization, then rechecks the exact session and live role grants.
+        await this.rbacService.authorizeSelfSecurityMutationInTransaction(client, tenantId, {
+            actorUserId: actor?.sub,
+            actorSessionId: actor?.sessionId,
+            requiredPermission: 'settings:write',
+        });
+
+        const user = await client.user.findFirst({
+            where: { id: actor.sub.trim(), tenantId, deletedAt: null, suspendedAt: null },
+            select: { pinResetRequired: true },
+        });
+        if (!user) throw new ForbiddenException('User account is inactive');
+        if (user.pinResetRequired) throw new ForbiddenException('PIN rotation required');
+
+        // A request guard can precede a Tenant/Session/role lock wait. Recheck
+        // workspace eligibility and the effective lifetime under those locks,
+        // using the current policy rather than the proposed security update.
+        const tenant = await client.tenant.findUnique({
+            where: { id: tenantId },
+            select: { status: true, deletedAt: true },
+        });
+        if (!tenant || tenant.deletedAt || tenant.status === 'SUSPENDED' || tenant.status === 'PURGED') {
+            throw new ForbiddenException('Workspace is no longer active');
+        }
+        const current = await this.readNormalizedSettings(client, tenantId);
+        const session = await client.session.findFirst({
+            where: { id: actor.sessionId.trim(), userId: actor.sub.trim() },
+            select: { createdAt: true, expiresAt: true, revokedAt: true },
+        });
+        const expiresAtEpochMs = session ? Math.min(
+            session.expiresAt.getTime(),
+            session.createdAt.getTime() + current.security.sessionTimeoutMinutes * 60_000,
+        ) : NaN;
+        if (!session || session.revokedAt || !Number.isFinite(expiresAtEpochMs) || expiresAtEpochMs <= Date.now()) {
+            throw new ForbiddenException('Administrator session is no longer active');
+        }
+        return { current, expiresAtEpochMs };
+    }
+
+    private async writeSettings(
+        actor: any,
+        operation: (client: TenantPrismaTransaction, current: NormalizedSettings,
+            assertCurrent: () => void) => Promise<NormalizedSettings>,
+    ): Promise<NormalizedSettings> {
+        const identity: MfaSessionIdentity = Object.freeze({ sub: actor?.sub?.trim(), tenantId: actor?.tenantId,
+            sessionId: actor?.sessionId?.trim() });
+        const observerOwner = this.authService;
+        const observe = observerOwner?.observeSessionMfa;
+        // Validate database authority without writes before observing Redis.
+        await this.tenantDb.withTenant(identity.tenantId, tx => this.authorizeSettingsWrite(tx, identity.tenantId, identity));
+        if (typeof observe !== 'function') {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
+        let observed: MfaVerificationObservation | null;
+        try { observed = await observe.call(observerOwner, { ...identity }); }
+        catch { throw new ServiceUnavailableException('MFA verification is temporarily unavailable'); }
+        const observation = observed ? Object.freeze({ sub: observed.sub, tenantId: observed.tenantId,
+            sessionId: observed.sessionId, expiresAtEpochMs: observed.expiresAtEpochMs,
+            expiresAtMonotonicMs: observed.expiresAtMonotonicMs }) : null;
+        if (!isCurrentMfaObservation(observation, identity)) throw new ForbiddenException('MFA verification required');
+        return this.tenantDb.withTenant(identity.tenantId, async tx => {
+            const { current, expiresAtEpochMs } = await this.authorizeSettingsWrite(tx, identity.tenantId, identity);
+            // settings:write always requires MFA, even when user/workspace/JWT
+            // flags say otherwise. Clock/TTL and exact identity are rechecked
+            // after the final Tenant/User/Session/role waits, before any write.
+            const assertCurrent = () => {
+                if (!Number.isFinite(expiresAtEpochMs) || expiresAtEpochMs <= Date.now()) {
+                    throw new ForbiddenException('Administrator session is no longer active');
+                }
+                if (!isCurrentMfaObservation(observation, identity)) throw new ForbiddenException('MFA verification required');
+            };
+            assertCurrent();
+            const result = await operation(tx, current, assertCurrent);
+            assertCurrent();
+            return result;
         });
     }
 
@@ -367,8 +466,7 @@ export class SettingsController {
         const timezone = this.parseOptionalString(body?.timezone, 'timezone');
 
         const tenantId = req.user.tenantId;
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.readNormalizedSettings(tx, tenantId);
+        return this.writeSettings(req.user, async (tx, current, assertCurrent) => {
             const tenantUpdate: Record<string, string> = {};
 
             if (name !== undefined) {
@@ -379,6 +477,7 @@ export class SettingsController {
                 tenantUpdate.slug = slug;
             }
 
+            assertCurrent();
             const tenant = Object.keys(tenantUpdate).length > 0
                 ? await tx.tenant.update({
                     where: { id: tenantId },
@@ -389,6 +488,7 @@ export class SettingsController {
                     },
                 })
                 : { name: current.general.name, slug: current.general.slug };
+            assertCurrent();
 
             const nextSettings: NormalizedSettings = {
                 general: {
@@ -400,7 +500,7 @@ export class SettingsController {
                 security: current.security,
             };
 
-            await this.persistSettings(tx, tenantId, nextSettings);
+            await this.persistSettings(tx, tenantId, nextSettings, assertCurrent);
             return nextSettings;
         });
     }
@@ -418,8 +518,7 @@ export class SettingsController {
             : this.normalizeShiftApprovalPolicy(body.shiftApprovalPolicy);
 
         const tenantId = req.user.tenantId;
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.readNormalizedSettings(tx, tenantId);
+        return this.writeSettings(req.user, async (tx, current, assertCurrent) => {
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: {
@@ -429,7 +528,7 @@ export class SettingsController {
                 security: current.security,
             };
 
-            await this.persistSettings(tx, tenantId, nextSettings);
+            await this.persistSettings(tx, tenantId, nextSettings, assertCurrent);
             return nextSettings;
         });
     }
@@ -450,8 +549,7 @@ export class SettingsController {
             throw new ForbiddenException('A live actor identity is required to update security settings');
         }
 
-        return this.tenantDb.withTenant(tenantId, async (tx) => {
-            const current = await this.readNormalizedSettings(tx, tenantId);
+        return this.writeSettings(req.user, async (tx, current, assertCurrent) => {
             const nextSettings: NormalizedSettings = {
                 general: current.general,
                 team: current.team,
@@ -467,11 +565,12 @@ export class SettingsController {
                 this.assertOidcAvailableForSsoOnly();
             }
 
-            await this.persistSettings(tx, tenantId, nextSettings);
+            await this.persistSettings(tx, tenantId, nextSettings, assertCurrent);
 
             const oldValue = this.securityPolicyAuditValue(current.security);
             const newValue = this.securityPolicyAuditValue(nextSettings.security);
             if (this.securityPolicyChanged(oldValue, newValue)) {
+                assertCurrent();
                 await tx.auditLog.create({
                     data: {
                         tenantId,
@@ -485,6 +584,7 @@ export class SettingsController {
                         newValue,
                     },
                 });
+                assertCurrent();
             }
             return nextSettings;
         });

@@ -1,6 +1,8 @@
 import { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { createPlatformArchiveActorFixture } from './platform-archive-actor.fixture';
+import { installPlatformTenantAuthorityModel } from './platform-tenant-lifecycle-authority.fixture';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { FeatureAccessService } from '../billing/feature-access.service';
 import { StripeService } from '../billing/stripe.service';
@@ -25,6 +27,7 @@ const customerActor = {
 const platformActor = {
     tenantId: 'platform-tenant',
     userId: 'platform-admin-1',
+    sessionId: 'platform-session-1',
     ipAddress: '203.0.113.20',
     userAgent: 'vitest-platform',
 };
@@ -648,14 +651,16 @@ describe('PrismaTenantCancellationIntentStore lifecycle barriers', () => {
             },
             auditLog: { create: vi.fn() },
         };
+        const authority = installPlatformTenantAuthorityModel(tx, platformActor);
         const tenantDb = {
+            client: tx,
             withTenant: vi.fn(async (_tenantId: string, operation: (scoped: any) => any) =>
                 operation(tx)),
             withPlatformAdmin: vi.fn(async (operation: (scoped: any) => any) =>
                 operation(tx)),
         };
         return {
-            store: new PrismaTenantCancellationIntentStore(tenantDb as any),
+            store: new PrismaTenantCancellationIntentStore(tenantDb as any, undefined, undefined, undefined, authority.observer),
             tx,
         };
     }
@@ -683,7 +688,8 @@ describe('PrismaTenantCancellationIntentStore lifecycle barriers', () => {
             tenantId: 'tenant-1',
             actor: platformActor,
         })).rejects.toThrow('blocked by an active retention legal hold');
-        expect(tx.tenantSetting.findUnique).not.toHaveBeenCalled();
+        expect(tx.tenantSetting.findUnique.mock.calls.filter((args: any[]) =>
+            args[0].where.tenantId_key.tenantId === 'tenant-1')).toHaveLength(0);
         expect(tx.tenantSetting.upsert).not.toHaveBeenCalled();
     });
 
@@ -914,6 +920,16 @@ async function bounded<T>(promise: Promise<T>, timeoutMs = 5_000): Promise<T> {
 
 if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
     describe('TenantCancellationLifecycleService restricted-role Postgres intent', () => {
+        let authority: Awaited<ReturnType<typeof createPlatformArchiveActorFixture>> | undefined;
+        let platformActor: Awaited<ReturnType<typeof createPlatformArchiveActorFixture>>['actor'];
+        beforeEach(async () => {
+            authority = await createPlatformArchiveActorFixture(postgresOwnerUrl, postgresCapability);
+            platformActor = authority.actor;
+        });
+        afterEach(async () => {
+            const owned = authority; authority = undefined;
+            await owned?.close();
+        });
         it('persists attributed pre-provider intent and replays both customer and platform outcomes', async () => {
             const restricted = new PrismaClient({
                 datasources: { db: { url: postgresRestrictedUrl } },
@@ -935,9 +951,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     .mockResolvedValueOnce({ ...reassertedProviderResult, stripeSubscriptionId: subscriptionId })
                     .mockResolvedValue({ ...providerResult, stripeSubscriptionId: subscriptionId }),
             };
-            const durableStore = new PrismaTenantCancellationIntentStore(
-                new TenantPrismaService(restricted),
-            );
+            const durableStore = new PrismaTenantCancellationIntentStore(new TenantPrismaService(restricted), undefined, undefined, undefined, authority!.mfaObserver);
             const finalizeFailures = new Map([
                 ['CUSTOMER_CANCELLATION', 1],
                 ['PLATFORM_ARCHIVE', 1],
@@ -1018,6 +1032,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     tenantId,
                     subscriptionId,
                     expect.any(String),
+                    { authoritativeCustomerCancellation: true },
                 );
 
                 await expect(service.archivePlatform(platform, tenantId)).rejects.toThrow(
@@ -1107,16 +1122,8 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             let nowMs = Date.parse('2026-07-16T20:00:00.000Z');
             const clock = () => new Date(nowMs);
             const tenantDbA = new TenantPrismaService(restrictedA);
-            const storeA = new PrismaTenantCancellationIntentStore(
-                tenantDbA,
-                60_000,
-                clock,
-            );
-            const storeB = new PrismaTenantCancellationIntentStore(
-                new TenantPrismaService(restrictedB),
-                60_000,
-                clock,
-            );
+            const storeA = new PrismaTenantCancellationIntentStore(tenantDbA, 60_000, clock, undefined, authority!.mfaObserver);
+            const storeB = new PrismaTenantCancellationIntentStore(new TenantPrismaService(restrictedB), 60_000, clock, undefined, authority!.mfaObserver);
             const stripe = {
                 cancelTenantSubscriptionAtPeriodEnd: vi.fn(async (
                     _tenantId: string,
@@ -1311,7 +1318,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                 (_value, index) => `tenant-cancellation-recovery-starvation-${index}-${suffix}`,
             );
             const tenantDb = new TenantPrismaService(restricted);
-            const store = new PrismaTenantCancellationIntentStore(tenantDb, 5_000);
+            const store = new PrismaTenantCancellationIntentStore(tenantDb, 5_000, undefined, undefined, authority!.mfaObserver);
             const stripe = {
                 cancelTenantSubscriptionAtPeriodEnd: vi.fn(async () => providerResult),
             };
@@ -1393,14 +1400,8 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                 { length: 3 },
                 (_value, index) => `tenant-cancellation-recovery-lease-${index}-${suffix}`,
             );
-            const storeA = new PrismaTenantCancellationIntentStore(
-                new TenantPrismaService(restrictedA),
-                120,
-            );
-            const storeB = new PrismaTenantCancellationIntentStore(
-                new TenantPrismaService(restrictedB),
-                120,
-            );
+            const storeA = new PrismaTenantCancellationIntentStore(new TenantPrismaService(restrictedA), 120, undefined, undefined, authority!.mfaObserver);
+            const storeB = new PrismaTenantCancellationIntentStore(new TenantPrismaService(restrictedB), 120, undefined, undefined, authority!.mfaObserver);
             let firstEnteredResolve!: () => void;
             const firstEntered = new Promise<void>((resolve) => {
                 firstEnteredResolve = resolve;
@@ -1500,7 +1501,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const tenantId = `tenant-cancellation-recovery-hold-${suffix}`;
             const subscriptionId = `sub-cancellation-hold-${suffix}`;
             const tenantDb = new TenantPrismaService(restrictedArchive);
-            const store = new PrismaTenantCancellationIntentStore(tenantDb, 500);
+            const store = new PrismaTenantCancellationIntentStore(tenantDb, 500, undefined, undefined, authority!.mfaObserver);
             let providerEnteredResolve!: () => void;
             const providerEntered = new Promise<void>((resolve) => {
                 providerEnteredResolve = resolve;
@@ -1613,7 +1614,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const sessionId = `session-cancellation-recovery-hold-readback-${suffix}`;
             const subscriptionId = `sub-cancellation-hold-readback-${suffix}`;
             const tenantDb = new TenantPrismaService(restrictedRecovery);
-            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 250);
+            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 250, undefined, undefined, authority!.mfaObserver);
             let markFailures = 1;
             const failureStore: TenantCancellationIntentStore = {
                 prepare: (input) => durableStore.prepare(input),
@@ -1807,7 +1808,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const tenantId = `tenant-cancellation-recovery-ownership-${suffix}`;
             const subscriptionId = `sub-cancellation-ownership-${suffix}`;
             const tenantDb = new TenantPrismaService(restrictedArchive);
-            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 300);
+            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 300, undefined, undefined, authority!.mfaObserver);
             let markAttempt = 0;
             let finalizeFailures = 1;
             let thirdMarkEnteredResolve!: () => void;
@@ -2020,7 +2021,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const userId = `user-cancellation-recovery-owned-${suffix}`;
             const subscriptionId = `sub-cancellation-owned-${suffix}`;
             const tenantDb = new TenantPrismaService(restrictedArchive);
-            const store = new PrismaTenantCancellationIntentStore(tenantDb, 500);
+            const store = new PrismaTenantCancellationIntentStore(tenantDb, 500, undefined, undefined, authority!.mfaObserver);
             let providerEnteredResolve!: () => void;
             const providerEntered = new Promise<void>((resolve) => {
                 providerEnteredResolve = resolve;
@@ -2420,7 +2421,14 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     },
                 };
                 let constructedEvent = terminalEvent;
-                const retrieveSubscription = vi.fn();
+                const retrieveSubscription = vi.fn().mockResolvedValue({
+                    object: 'subscription',
+                    id: subscriptionId,
+                    customer: customerId,
+                    status: 'paused',
+                    cancel_at_period_end: false,
+                    metadata: { tenantId },
+                });
                 const webhook = new StripeService({
                     get: (key: string) => ({
                         STRIPE_SECRET_KEY: 'sk_test_terminal_replay',
@@ -2440,6 +2448,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
 
                 await webhook.handleWebhook(Buffer.from('{}'), 'sig_terminal_replay');
                 await webhook.handleWebhook(Buffer.from('{}'), 'sig_terminal_replay');
+                expect(retrieveSubscription).not.toHaveBeenCalled();
                 await expect(owner.$queryRaw<Array<{
                     status: string;
                     subscriptionId: string | null;
@@ -2531,7 +2540,10 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
                     subscriptionId: replacementSubscriptionId,
                     disposition: 'skipped_unverified_subscription',
                 }]);
-                expect(retrieveSubscription).not.toHaveBeenCalled();
+                expect(retrieveSubscription).toHaveBeenCalledExactlyOnceWith(
+                    subscriptionId,
+                    { expand: ['items.data.price'] },
+                );
             } finally {
                 await cleanupCancellationProofTenants(owner, [tenantId], postgresCapability);
                 await restricted.$disconnect();
@@ -2553,7 +2565,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const subscriptionId = `sub-cancellation-recovery-missed-webhook-${suffix}`;
             const effectiveAt = new Date(Date.now() - 60_000).toISOString();
             const tenantDb = new TenantPrismaService(restricted);
-            const store = new PrismaTenantCancellationIntentStore(tenantDb, 5_000);
+            const store = new PrismaTenantCancellationIntentStore(tenantDb, 5_000, undefined, undefined, authority!.mfaObserver);
             let providerMutations = 0;
             let providerTerminal = false;
             const provider = {
@@ -2889,7 +2901,7 @@ if (postgresRestrictedUrl && postgresOwnerUrl && postgresCapability) {
             const subscriptionId = `sub-cancellation-recovery-webhook-${suffix}`;
             const eventId = `evt-cancellation-recovery-webhook-${suffix}`;
             const tenantDb = new TenantPrismaService(restrictedLifecycle);
-            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 5_000);
+            const durableStore = new PrismaTenantCancellationIntentStore(tenantDb, 5_000, undefined, undefined, authority!.mfaObserver);
             let markEnteredResolve!: () => void;
             const markEntered = new Promise<void>((resolve) => {
                 markEnteredResolve = resolve;

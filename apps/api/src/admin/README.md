@@ -27,6 +27,9 @@
 - `tenant-export.service.ts`: process-safe database-leased NDJSON export jobs with persisted authorization/progress, a database-derived repeatable-read watermark, requester-scoped recovery, shared artifacts, cursor-only chunk streaming including dated staff availability exceptions, atomically reserved global/per-tenant quotas, job-fenced writers, close/file-fsync/atomic-rename/directory-fsync publication before `READY`, durable cleanup claims, retryable failure/expiry cleanup, internal-intent and deletion-lease diagnostic exclusion, attributed downloads, and privacy-safe projections.
 - `tenant-provisioning.service.spec.ts`: focused proof that platform tenant, owner, default RBAC assignment, and attributed audit creation share one transaction.
 - `tenant-provisioning.service.ts`: platform-admin transaction coordinator for tenant, owner, default RBAC role, assignment, and attributed audit provisioning.
+- `admin-user-authority.fixture.ts`: staged local authority fixtures for actual platform admin and RBAC owners.
+- `admin-user-current-authority.spec.ts`: platform admin user mutation, delegation and finite-authority regressions.
+
 
 ## Notes
 
@@ -63,3 +66,11 @@ Tenant exports are durable asynchronous NDJSON jobs. PostgreSQL persists request
 The same repeatable-read export covers time-card payroll-period/time-zone/revision state plus payroll policy versions, periods, approvals, locked entries, amendments and decisions, operation audit summaries, export batches and lines, reconciliation receipts, events, and current line states. Cursor pages contain only stable identity fields; each full projection is fetched and streamed separately, and JSON strings are emitted in bounded chunks so one valid record larger than 4 MiB does not fail the export. Every collection is tenant-filtered and stably ordered. Request hashes, operation identifiers, lock request hashes, and stored idempotency responses remain internal; customer-visible rows retain actors, decisions, timestamps, statuses, counts, external references, and evidence hashes needed to audit payroll operations.
 
 Platform tenant and credit-list reads are bounded keyset pages ordered by createdAt and id, fetch limit plus one, and reject malformed limits, cursors, and overlong or control-character searches before querying. Tenant search exposes only existing name and slug fields. Credit balances and ledger history have independent cursors, and responses expose page metadata without claiming global totals.
+
+- `account-deletion-receipt.controller.spec.ts`: recovery and acceptance regression checks.
+
+- `account-deletion-receipt.controller.ts`: scoped application repair or disposable qualification support.
+
+- `admin-user-pin-recovery.service.spec.ts`: recovery and acceptance regression checks.
+
+- `admin-user-pin-recovery.service.ts`: scoped application repair or disposable qualification support.

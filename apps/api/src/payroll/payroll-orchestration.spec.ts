@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import { payrollRequestIdentity } from './payroll-idempotency';
 import { PayrollAmendmentService } from './payroll-amendment.service';
@@ -7,7 +8,7 @@ import { PayrollPeriodService } from './payroll-period.service';
 import { PayrollPolicyService } from './payroll-policy.service';
 import { retryPayrollSerializableMutation } from './payroll-transaction';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'session-1' };
 
 function basePeriod(overrides: Record<string, unknown> = {}) {
     return {
@@ -25,6 +26,10 @@ function basePeriod(overrides: Record<string, unknown> = {}) {
 
 function tenantDb(tx: any) {
     return { withTenant: vi.fn((_tenantId: string, work: (value: any) => unknown) => work(tx)) } as any;
+}
+
+function domainDependencies(tx: any) {
+    const db = tenantDb(tx); return [db, ...payrollDomainAuthority(db, tx, actor)] as const;
 }
 
 describe('immutable payroll orchestration services', () => {
@@ -59,7 +64,7 @@ describe('immutable payroll orchestration services', () => {
             payrollPeriod: { findFirst: vi.fn().mockResolvedValue(null), create: periodCreate },
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         };
-        const service = new PayrollPeriodService(tenantDb(tx));
+        const service = new PayrollPeriodService(...domainDependencies(tx));
 
         const first = await service.create(actor, { localStartDate: '2026-06-01' }, 'period-key');
         const replay = await service.create(actor, { localStartDate: '2026-06-01' }, 'period-key');
@@ -95,13 +100,13 @@ describe('immutable payroll orchestration services', () => {
         };
 
         const db = tenantDb(tx);
-        let transactionAttempts = 0;
+        let transactionAttempts = 0; let transactionCalls = 0;
         db.withTenant.mockImplementation((_tenantId: string, work: (value: any) => unknown, options?: unknown) => {
-            if (options && ++transactionAttempts === 1) return Promise.reject({ code: 'P2034' });
+            if (options && ++transactionCalls > 1 && ++transactionAttempts === 1) return Promise.reject({ code: 'P2034' });
             return work(tx);
         });
 
-        const result = await new PayrollCardService(db).adopt(
+        const result = await new PayrollCardService(db, ...payrollDomainAuthority(db, tx, actor)).adopt(
             actor,
             open.id,
             { cards: [{ id: card.id, expectedRevision: 3 }] },
@@ -131,7 +136,7 @@ describe('immutable payroll orchestration services', () => {
         };
         const tx = { payrollPolicyVersion: { findUnique: vi.fn().mockResolvedValue(committed) } };
 
-        const result = await new PayrollPolicyService(tenantDb(tx)).create(actor, body, 'policy-key');
+        const result = await new PayrollPolicyService(...domainDependencies(tx)).create(actor, body, 'policy-key');
 
         expect(result).toMatchObject({ id: committed.id, effectiveFrom: '2026-06-01' });
         expect(tx.payrollPolicyVersion.findUnique).toHaveBeenCalledOnce();
@@ -160,7 +165,7 @@ describe('immutable payroll orchestration services', () => {
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         };
 
-        const result = await new PayrollPolicyService(tenantDb(tx)).create(actor, body, 'bootstrap-key');
+        const result = await new PayrollPolicyService(...domainDependencies(tx)).create(actor, body, 'bootstrap-key');
 
         expect(result).toMatchObject({ id: created.id, version: 1, effectiveFrom: '2026-06-01' });
         expect(tx.payrollPolicyVersion.create).toHaveBeenCalledOnce();
@@ -181,7 +186,7 @@ describe('immutable payroll orchestration services', () => {
             },
         };
 
-        await expect(new PayrollPolicyService(tenantDb(tx)).create(actor, {
+        await expect(new PayrollPolicyService(...domainDependencies(tx)).create(actor, {
             timeZone: 'UTC', cadence: 'WEEKLY', anchorDate: '2099-08-10', effectiveFrom: '2099-08-10',
         }, 'dual-anchor-key')).rejects.toThrow('align');
         expect(tx.payrollPolicyVersion.create).not.toHaveBeenCalled();
@@ -202,7 +207,7 @@ describe('immutable payroll orchestration services', () => {
             },
         };
 
-        await expect(new PayrollPolicyService(tenantDb(tx)).create(actor, {
+        await expect(new PayrollPolicyService(...domainDependencies(tx)).create(actor, {
             timeZone: 'America/New_York', cadence: 'WEEKLY',
             anchorDate: '2099-08-17', effectiveFrom: '2099-08-17',
         }, 'timezone-key')).rejects.toThrow('timezone cannot change');
@@ -225,7 +230,7 @@ describe('immutable payroll orchestration services', () => {
             payrollPeriod: { findFirst: vi.fn().mockResolvedValue(open), updateMany },
         };
 
-        await expect(new PayrollPeriodService(tenantDb(tx)).startReview(
+        await expect(new PayrollPeriodService(...domainDependencies(tx)).startReview(
             actor, open.id, { expectedRevision: 0 }, 'review-key',
         )).rejects.toThrow('overlap');
         expect(updateMany).not.toHaveBeenCalled();
@@ -252,13 +257,13 @@ describe('immutable payroll orchestration services', () => {
         };
 
         const db = tenantDb(tx);
-        let transactionAttempts = 0;
+        let transactionAttempts = 0; let transactionCalls = 0;
         db.withTenant.mockImplementation((_tenantId: string, work: (value: any) => unknown, options?: unknown) => {
-            if (options && ++transactionAttempts === 1) return Promise.reject({ code: '40001' });
+            if (options && ++transactionCalls > 1 && ++transactionAttempts === 1) return Promise.reject({ code: '40001' });
             return work(tx);
         });
 
-        const result = await new PayrollPeriodService(db).startReview(
+        const result = await new PayrollPeriodService(db, ...payrollDomainAuthority(db, tx, actor)).startReview(
             actor, open.id, { expectedRevision: 0 }, 'review-empty-key',
         );
 
@@ -286,7 +291,7 @@ describe('immutable payroll orchestration services', () => {
             payrollTimeCardApproval: { findMany: vi.fn(), create: approvalCreate },
         };
 
-        await expect(new PayrollCardService(tenantDb(tx)).decide(actor, review.id, {
+        await expect(new PayrollCardService(...domainDependencies(tx)).decide(actor, review.id, {
             decisions: [{
                 timeCardId: 'card-1', expectedRevision, decision: 'APPROVED',
             }],
@@ -316,7 +321,7 @@ describe('immutable payroll orchestration services', () => {
             )) },
         };
 
-        await expect(new PayrollAmendmentService(tenantDb(tx)).create(actor, entry.id, {
+        await expect(new PayrollAmendmentService(...domainDependencies(tx)).create(actor, entry.id, {
             adjustmentPeriodId: adjustment.id,
             replacementClockInAt: '2026-06-02T08:00:00Z',
             replacementClockOutAt: '2026-06-02T16:00:00Z',
@@ -346,7 +351,7 @@ describe('immutable payroll orchestration services', () => {
             payrollLockedEntry: { findFirst: vi.fn().mockResolvedValue({ id: 'entry-1', employeeId: 'employee-1' }) },
         };
 
-        await expect(new PayrollAmendmentService(tenantDb(tx)).decide(actor, 'amendment-1', {
+        await expect(new PayrollAmendmentService(...domainDependencies(tx)).decide(actor, 'amendment-1', {
             decision: 'APPROVED',
         }, 'amendment-decision-key')).rejects.toThrow('independent approver');
         expect(decisionCreate).not.toHaveBeenCalled();

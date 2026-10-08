@@ -5,6 +5,7 @@ Shared helpers for the Next.js web app.
 ## Files
 
 - `README.md`: this web lib folder guide.
+- `logout-navigation.ts`: prepares same-tab document logout by cancelling old session work while preserving modified-link navigation.
 - `api-v2.ts`: generated API v2 client bound to the authenticated same-origin session transport.
 - `bounded-pagination.ts`: guarded multi-page continuation helper for bounded schedule, shift, roster, and lunch-break reads.
 - `user-directory-pagination.ts`: fixed-size user-directory request and cursor-validation helpers.
@@ -15,6 +16,7 @@ Shared helpers for the Next.js web app.
 - `location-timezone.ts`: location-local date/range, wall-clock conversion, unambiguous DST persistence, and display formatting helpers.
 - `permissions.ts`: shared workspace permission capability matrix for read/write-aware UI, including complete scheduling and lunch/location read prerequisites.
 - `safe-navigation.ts`: shared same-origin return-path scrubbing and approved application-origin validation for browser and proxy redirects.
+- `server-app-origin.ts`: server authentication origin policy; production requires HTTPS, with an explicit disposable QA marker bundle permitting only the exact loopback HTTP origin.
 - `server-auth.ts`: server-only auth helpers for App Router pages with non-sensitive debug metadata.
 - `utils.ts`: small shared utility helpers.
 - `workspace-slug.ts`: canonical workspace slug persistence used by onboarding and login prefill.

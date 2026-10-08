@@ -54,6 +54,7 @@ from src.staff_invitation_outbox import (
 from src.availability_import import (
     AvailabilityImportBusy,
     AvailabilityImportRejected,
+    AvailabilityImportRetryable,
     mark_import_retry,
     process_availability_import,
     run_availability_import_retention_loop,
@@ -550,7 +551,7 @@ class SolvePayload(BaseModel):
             shift_end = parse_iso_datetime(shift.end_time, "existing_shifts.end_time", require_time=True)
             if shift_end <= shift_start:
                 raise ValueError("existing_shifts end_time must be after start_time")
-            if shift_start >= parse_iso_datetime(self.end_date, "end_date") or shift_end <= parse_iso_datetime(self.start_date, "start_date"):
+            if shift_start >= parse_iso_datetime(self.end_date, "end_date") + timedelta(days=1) or shift_end <= parse_iso_datetime(self.start_date, "start_date"):
                 raise ValueError("existing_shifts must overlap the schedule window")
         if self.staff_skills and "staff_skills" in self.constraints:
             raise ValueError("staff_skills cannot be supplied in both staff_skills and constraints")
@@ -570,7 +571,7 @@ class SolvePayload(BaseModel):
         for window in self.demand_windows:
             window_start = parse_iso_datetime(window.start_time, "demand_windows.start_time", require_time=True)
             window_end = parse_iso_datetime(window.end_time, "demand_windows.end_time", require_time=True)
-            if not (start_date <= window_start < window_end <= end_date):
+            if not (start_date <= window_start < end_date and window_start < window_end <= window_start + timedelta(days=1)):
                 raise ValueError("demand window must be inside the schedule window")
         for weekly_minutes in self.existing_weekly_minutes.values():
             if len(weekly_minutes) > 6:
@@ -589,7 +590,7 @@ class SolvePayload(BaseModel):
         except (ZoneInfoNotFoundError, ValueError) as exc:
             raise ValueError("timezone must be a valid IANA timezone") from exc
         first_local_date = start_date.astimezone(schedule_time_zone).date()
-        final_local_date = (end_date - timedelta(microseconds=1)).astimezone(schedule_time_zone).date()
+        final_local_date = (end_date + timedelta(days=1) - timedelta(microseconds=1)).astimezone(schedule_time_zone).date()
         for rules in self.availability_exceptions.values():
             for rule in rules:
                 parsed = date.fromisoformat(rule.local_date)
@@ -1893,7 +1894,7 @@ def normalize_solved_shifts(solve_payload: SolvePayload, response: Any) -> list[
 
         if end_time <= start_time:
             raise NonRetryableJobError("solve response includes a shift with end_time before start_time")
-        if start_time < schedule_start or end_time > schedule_end:
+        if start_time < schedule_start or start_time >= schedule_end or end_time - start_time > timedelta(days=1):
             raise NonRetryableJobError("solve response includes a shift outside the schedule window")
 
         shift_key = (staff_id, instant_key(start_time), instant_key(end_time), role)
@@ -1924,7 +1925,18 @@ def normalize_solved_shifts(solve_payload: SolvePayload, response: Any) -> list[
 
     if not solved_shifts:
         raise NonRetryableJobError("engine returned no solved shifts")
-    return coalesce_adjacent_solved_shifts(solve_payload, solved_shifts)
+    final_shifts = coalesce_adjacent_solved_shifts(solve_payload, solved_shifts)
+    for shift in final_shifts:
+        if shift.end_time - shift.start_time > timedelta(days=1):
+            raise NonRetryableJobError("solve response includes a shift longer than 24 hours")
+        for existing in solve_payload.existing_shifts:
+            if existing.staff_id != shift.staff_id:
+                continue
+            existing_start = parse_iso_datetime(existing.start_time, "existing_shifts.start_time", require_time=True)
+            existing_end = parse_iso_datetime(existing.end_time, "existing_shifts.end_time", require_time=True)
+            if shift.start_time < existing_end and shift.end_time > existing_start:
+                raise NonRetryableJobError("solve response overlaps an existing staff shift")
+    return final_shifts
 
 
 def coalesce_adjacent_solved_shifts(
@@ -2657,6 +2669,8 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
         raise
     except Exception as exc:
         retry_count = read_retry_count(message.body)
+        if isinstance(exc, AvailabilityImportRetryable) and exc.effective_retry_count is not None:
+            retry_count = max(retry_count, exc.effective_retry_count)
         job_type = read_job_type(message.body)
         if retry_count >= MAX_RETRIES:
             try:

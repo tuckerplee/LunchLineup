@@ -279,7 +279,10 @@ class BillingUsageTests(unittest.IsolatedAsyncioTestCase):
             normalized,
         )
         self.assertIn('"quantity" = EXCLUDED."quantity"', conflict_update)
-        self.assertIn('WHERE "StripeUsageEvent"."status" IN (\'PENDING\', \'FAILED\')', conflict_update)
+        self.assertIn('WHERE "StripeUsageEvent"."status" = \'PENDING\'', conflict_update)
+        self.assertIn('AND "StripeUsageEvent"."attempts" = 0', conflict_update)
+        self.assertIn('AND "StripeUsageEvent"."submittedAt" IS NULL', conflict_update)
+        self.assertNotIn("'FAILED'", conflict_update)
         self.assertNotIn('"identifier" =', conflict_update)
         self.assertNotIn('"idempotencyKey" =', conflict_update)
         self.assertEqual(params[1], "tenant-1")

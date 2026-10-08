@@ -207,3 +207,48 @@ describe('logout route', () => {
 
 
 });
+
+
+describe('disposable QA logout origin', () => {
+  it('requires real revocation before redirecting to the exact approved local login', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_APP_ORIGIN', 'http://127.0.0.1:8080');
+    vi.stubEnv('LUNCHLINEUP_DEVELOPMENT_QA', '1');
+    vi.stubEnv('DATA_TARGET_ENV', 'disposable');
+    vi.stubEnv('APP_ENV', 'test');
+    vi.stubEnv('DEPLOY_ENV', 'test');
+    vi.stubEnv('INTERNAL_API_V2_URL', 'http://api-v2:3002/v2');
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true, session: 'revoked' }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const response = await GET(logoutRequest({ referer: 'http://127.0.0.1:8080/dashboard' }));
+    expect(response.status).toBe(307);
+    expect(response.headers.get('location')).toBe('http://127.0.0.1:8080/auth/login');
+    expect(response.headers.get('set-cookie')).toContain('access_token=;');
+    expect(fetchMock).toHaveBeenCalledWith('http://api-v2:3002/v2/auth/logout', expect.objectContaining({ headers: expect.objectContaining({ Origin: 'http://127.0.0.1:8080' }) }));
+  });
+
+  it('rejects public HTTP even when all disposable QA markers are present', async () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_APP_ORIGIN', 'http://lunchlineup.com');
+    vi.stubEnv('LUNCHLINEUP_DEVELOPMENT_QA', '1');
+    vi.stubEnv('DATA_TARGET_ENV', 'disposable');
+    vi.stubEnv('APP_ENV', 'test');
+    vi.stubEnv('DEPLOY_ENV', 'test');
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const response = await GET(logoutRequest());
+    expect(response.status).toBe(503);
+    expect(response.headers.get('set-cookie')).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['http://lunchlineup.com', 'http://127.0.0.1:8080'])('keeps HTTP %s forbidden without the server opt-in', async (origin) => {
+    vi.stubEnv('NODE_ENV', 'production');
+    vi.stubEnv('NEXT_PUBLIC_APP_ORIGIN', origin);
+    vi.stubEnv('LUNCHLINEUP_DEVELOPMENT_QA', undefined);
+    vi.stubEnv('NEXT_PUBLIC_APP_ENV', 'test');
+    const fetchMock = vi.fn(); vi.stubGlobal('fetch', fetchMock);
+    const response = await GET(logoutRequest());
+    expect(response.status).toBe(503);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

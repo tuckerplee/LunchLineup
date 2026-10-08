@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   TimeCardActiveQuerySchema,
   TimeCardActiveResponseSchema,
@@ -26,6 +27,7 @@ import type { TimeCardService } from './time-cards.service';
 export type TimeCardRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   timeCards: Pick<TimeCardService, 'list' | 'active' | 'get' | 'clockIn' | 'clockOut' | 'correct'>;
 };
 
@@ -80,6 +82,7 @@ export async function registerTimeCardRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:read']);
+    await dependencies.quota.consume('listTimeCards', identity, reply);
     const response = await dependencies.timeCards.list(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -97,6 +100,7 @@ export async function registerTimeCardRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:read']);
+    await dependencies.quota.consume('getActiveTimeCard', identity, reply);
     const response = await dependencies.timeCards.active(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -119,6 +123,7 @@ export async function registerTimeCardRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:write']);
+    await dependencies.quota.consume('clockIn', identity, reply);
     const response = await dependencies.timeCards.clockIn(identity, request.body, header(request, 'idempotency-key'));
     reply.code(response.reused ? 200 : 201).header('Cache-Control', 'private, no-store');
     return response;
@@ -136,6 +141,7 @@ export async function registerTimeCardRoutes(
   }, async (request, reply) => {
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:read']);
+    await dependencies.quota.consume('getTimeCard', identity, reply);
     const response = await dependencies.timeCards.get(identity, request.params.timeCardId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -158,6 +164,7 @@ export async function registerTimeCardRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:write']);
+    await dependencies.quota.consume('clockOut', identity, reply);
     const response = await dependencies.timeCards.clockOut(identity, request.params.timeCardId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -180,6 +187,7 @@ export async function registerTimeCardRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await authenticate(request, reply, dependencies);
     requirePermissions(identity, ['time_cards:write']);
+    await dependencies.quota.consume('correctTimeCard', identity, reply);
     const response = await dependencies.timeCards.correct(identity, request.params.timeCardId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;

@@ -16,3 +16,7 @@ Tenant settings route for organization defaults, team policy, billing status, an
 - `page.tsx`: dashboard settings route entry that requires `settings:read` and passes settings, billing, tenant export, and account lifecycle capabilities.
 
 Full tenant export requires `account:data_export`; `settings:write` continues to control ordinary settings and account status without exposing the full workspace data set. The account panel recovers the caller's unexpired recent jobs on reload, polls an active job without a client timeout, retries transient status failures, and hands the ready NDJSON attachment to the browser's native download path so the browser never assembles the export in memory.
+
+- `settings-request.ts`: scoped application repair or disposable qualification support.
+
+- `settings-save-state.ts`: scoped application repair or disposable qualification support.

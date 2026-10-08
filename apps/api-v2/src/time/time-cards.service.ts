@@ -12,6 +12,9 @@ import type {
   TimeCardListResponse,
   TimeCardRecord,
 } from '@lunchlineup/api-contract';
+import { type MfaSessionObserver, type MfaVerificationObservation } from '@lunchlineup/rbac';
+import { authorizeCurrentMutation, assertCurrentMutation, mutationIdentity } from '../people/mutation-authority';
+import { retryPayrollSerializableMutation } from '../payroll/domain';
 import type { TenantDatabase, TenantTransaction } from '../platform/database';
 import { assertFeatureEntitled, debitFeatureCredit } from '../platform/feature-entitlement';
 import { ProblemError } from '../platform/problem';
@@ -138,9 +141,51 @@ function normalizeClockInIdempotencyKey(value: string | undefined): string {
  * strictly internal implementation detail and never calls a retained route.
  */
 export class TimeCardService {
-  constructor(private readonly database: Pick<TenantDatabase, 'withTenant'>) {}
+  constructor(private readonly database: Pick<TenantDatabase, 'withTenant'>,
+    private readonly mfaObserver?: Partial<MfaSessionObserver>) {}
+
+  private async prepare(identity: SessionIdentity, permission: string,
+    options?: Parameters<TenantDatabase['withTenant']>[2]) {
+    const owner = this.mfaObserver, observe = owner?.observeSessionMfa;
+    const preflight = await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId,
+      tx => authorizeCurrentMutation(tx, identity, permission), options));
+    let observation: MfaVerificationObservation | null = null;
+    if (preflight.requiresMfa) {
+      if (typeof observe !== 'function') {
+        throw timeCardProblem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+      }
+      try {
+        const value = await observe.call(owner, { ...preflight.identity });
+        if (value) observation = Object.freeze({ sub: value.sub, tenantId: value.tenantId, sessionId: value.sessionId,
+          expiresAtEpochMs: value.expiresAtEpochMs, expiresAtMonotonicMs: value.expiresAtMonotonicMs });
+      } catch {
+        throw timeCardProblem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+      }
+    }
+    assertCurrentMutation(preflight, observation);
+    return {
+      run: <T>(operation: (tx: TenantTransaction, current: SessionIdentity, assertCurrent: () => void, targetUserId?: string) => Promise<T>,
+        locateTarget?: (tx: TenantTransaction) => Promise<string | undefined>): Promise<T> =>
+        retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async tx => {
+          // Only a scoped locator precedes the sorted actor/target User fence.
+          // Missing targets are classified after current actor authorization.
+          const targetUserId = locateTarget ? await locateTarget(tx) : undefined;
+          const authority = await authorizeCurrentMutation(tx, identity, permission,
+            targetUserId ? { targetUserId, allowDeletedTarget: true } : {});
+          const current = Object.freeze({ ...identity, sub: authority.actor.id,
+            publicUserId: authority.actor.publicId, permissions: [...authority.actorAccess.permissions] });
+          const assertCurrent = () => assertCurrentMutation(authority, observation);
+          assertCurrent();
+          const result = await operation(tx, current, assertCurrent, targetUserId);
+          assertCurrent();
+          return result;
+        }, options)),
+    };
+  }
 
   async list(identity: SessionIdentity, query: TimeCardListQuery): Promise<TimeCardListResponse> {
+    identity = mutationIdentity(identity); query = Object.freeze({ ...query });
+    const scope = await this.prepare(identity, 'time_cards:read');
     const limit = parseTimeCardLimit(query.limit);
     const cursor = decodeTimeCardCursor(query.cursor);
     const startDate = query.startDate ? parseTimeCardInstant(query.startDate, 'startDate') : undefined;
@@ -148,12 +193,13 @@ export class TimeCardService {
     if (startDate && endDate && endDate <= startDate) {
       throw invalidTimeCardInput('endDate must be after startDate.');
     }
-    if (!this.canViewTeam(identity) && query.userId && query.userId !== identity.publicUserId) {
-      throw timeCardProblem(403, 'time_card_scope_denied', 'Staff can only view their own time cards.', 'Forbidden');
-    }
 
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    return scope.run(async (transaction, identity, assertCurrent) => {
       await assertFeatureEntitled(transaction, identity.tenantId, 'time_cards', false);
+      assertCurrent();
+      if (!this.canViewTeam(identity) && query.userId && query.userId !== identity.publicUserId) {
+        throw timeCardProblem(403, 'time_card_scope_denied', 'Staff can only view their own time cards.', 'Forbidden');
+      }
       const where: Prisma.TimeCardWhereInput = {
         tenantId: identity.tenantId,
         deletedAt: null,
@@ -183,6 +229,7 @@ export class TimeCardService {
         take: limit + 1,
         select: TIME_CARD_SELECT,
       }) as unknown as InternalTimeCard[];
+      assertCurrent();
       const page = rows.slice(0, limit);
       const hasMore = rows.length > limit;
       return {
@@ -205,11 +252,13 @@ export class TimeCardService {
   }
 
   async active(identity: SessionIdentity, query: TimeCardActiveQuery): Promise<TimeCardActiveResponse> {
-    if (!this.canViewTeam(identity) && query.userId && query.userId !== identity.publicUserId) {
-      throw timeCardProblem(403, 'time_card_scope_denied', 'Staff can only view their own time cards.', 'Forbidden');
-    }
-    const requestedPublicUserId = query.userId ?? identity.publicUserId;
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity); query = Object.freeze({ ...query });
+    const scope = await this.prepare(identity, 'time_cards:read');
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      if (!this.canViewTeam(identity) && query.userId && query.userId !== identity.publicUserId) {
+        throw timeCardProblem(403, 'time_card_scope_denied', 'Staff can only view their own time cards.', 'Forbidden');
+      }
+      const requestedPublicUserId = query.userId ?? identity.publicUserId;
       // Recovery must remain available after a subscription expires: a worker
       // must always be able to close an already-open time card.
       const row = await transaction.timeCard.findFirst({
@@ -222,14 +271,19 @@ export class TimeCardService {
         orderBy: [{ clockInAt: 'desc' }, { publicId: 'desc' }],
         select: TIME_CARD_SELECT,
       }) as unknown as InternalTimeCard | null;
+      assertCurrent();
       return { data: row ? this.serialize(row) : null };
     });
   }
 
   async get(identity: SessionIdentity, timeCardPublicId: string): Promise<TimeCardRecord> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    const scope = await this.prepare(identity, 'time_cards:read');
+    return scope.run(async (transaction, identity, assertCurrent) => {
       await assertFeatureEntitled(transaction, identity.tenantId, 'time_cards', false);
+      assertCurrent();
       const card = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, true);
+      assertCurrent();
       return this.serialize(card);
     });
   }
@@ -239,19 +293,32 @@ export class TimeCardService {
     body: TimeCardClockInRequest,
     idempotencyKeyValue: string | undefined,
   ): Promise<TimeCardClockInResponse> {
+    identity = mutationIdentity(identity); body = Object.freeze({ ...body });
     const idempotencyKey = normalizeClockInIdempotencyKey(idempotencyKeyValue);
     const operation = operationId(identity.tenantId, idempotencyKey);
-    if (!this.canViewTeam(identity) && body.clockInAt !== undefined) {
-      throw timeCardProblem(403, 'manual_clock_time_denied', 'Staff self-service clockInAt uses server time.', 'Forbidden');
-    }
     const requestedClockInAt = body.clockInAt === undefined
       ? null
       : parseTimeCardInstant(body.clockInAt, 'clockInAt');
     const notes = normalizeTimeCardNotes(body.notes) ?? null;
     let expectedRequestHash: string | null = null;
+    const scope = await this.prepare(identity, 'time_cards:write', {
+      maxWait: 5_000, timeout: 10_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    const assertRequestScope = (current: SessionIdentity) => {
+      this.writableTargetPublicId(current, body.userId);
+      if (!this.canViewTeam(current) && body.clockInAt !== undefined) {
+        throw timeCardProblem(403, 'manual_clock_time_denied', 'Staff self-service clockInAt uses server time.', 'Forbidden');
+      }
+    };
+    const locateTarget = async (tx: TenantTransaction) => {
+      if (!body.userId) return identity.sub;
+      const target = await tx.user.findFirst({ where: { tenantId: identity.tenantId, publicId: body.userId }, select: { id: true } });
+      return target?.id;
+    };
 
     try {
-      return await this.database.withTenant(identity.tenantId, async (transaction) => {
+      return await scope.run(async (transaction, identity, assertCurrent, targetUserId) => {
+        assertRequestScope(identity);
         const targetPublicId = this.writableTargetPublicId(identity, body.userId);
         // Resolve only durable storage references before replay detection. The
         // v1 operation hash used explicit request fields (not shift-derived
@@ -262,12 +329,18 @@ export class TimeCardService {
           identity.tenantId,
           targetPublicId,
         );
+        assertCurrent();
+        if (requestedTarget.id !== targetUserId) {
+          throw timeCardProblem(409, 'time_card_target_changed', 'The selected worker changed while this request was being authorized.', 'Concurrent change');
+        }
         const requestedLocation = body.locationId
           ? await this.resolveLocationForReplay(transaction, identity.tenantId, body.locationId)
           : null;
+        assertCurrent();
         const requestedShift = body.shiftId
           ? await this.resolveShiftForReplay(transaction, identity.tenantId, body.shiftId)
           : null;
+        assertCurrent();
         const requestHash = clockInRequestHash({
           actorUserId: identity.sub,
           targetUserId: requestedTarget.id,
@@ -278,21 +351,26 @@ export class TimeCardService {
         });
         expectedRequestHash = requestHash;
         const replay = await this.findClockInReplay(transaction, identity.tenantId, operation, requestHash);
+        assertCurrent();
         if (replay) return { data: this.serialize(replay), reused: true };
 
-        const target = await this.lockActiveClockInTarget(transaction, identity.tenantId, targetPublicId);
+        const target = await this.readActiveClockInTarget(transaction, identity.tenantId, targetPublicId);
+        assertCurrent();
         const shift = body.shiftId
           ? await this.resolveShift(transaction, identity.tenantId, body.shiftId, target.id)
           : null;
+        assertCurrent();
         const location = body.locationId
           ? await this.resolveLocation(transaction, identity.tenantId, body.locationId)
           : shift
             ? await this.resolveLocationByInternalId(transaction, identity.tenantId, shift.locationId)
             : null;
+        assertCurrent();
         if (shift && location && location.id !== shift.locationId) {
           throw invalidTimeCardInput('Time-card location must match the selected shift location.');
         }
         const entitlement = await assertFeatureEntitled(transaction, identity.tenantId, 'time_cards', true);
+        assertCurrent();
         if (!entitlement) {
           throw timeCardProblem(403, 'time_cards_not_entitled', 'Clock-in requires usage credits.', 'Feature unavailable');
         }
@@ -305,11 +383,13 @@ export class TimeCardService {
           },
           select: { id: true },
         });
+        assertCurrent();
         if (openCard) {
           throw invalidTimeCardInput('This employee already has an open time card.');
         }
         const clockInAt = requestedClockInAt ?? new Date();
-        const payroll = await resolveTimeCardPayrollAssignment(transaction, identity.tenantId, clockInAt, location);
+        const payroll = await resolveTimeCardPayrollAssignment(transaction, identity.tenantId, clockInAt, location, assertCurrent);
+        assertCurrent();
         const created = await transaction.timeCard.create({
           data: {
             tenantId: identity.tenantId,
@@ -326,12 +406,15 @@ export class TimeCardService {
           },
           select: TIME_CARD_SELECT,
         }) as unknown as InternalTimeCard;
+        assertCurrent();
         await debitFeatureCredit(transaction, {
           tenantId: identity.tenantId,
           entitlement,
           operationId: operation,
           reason: `Time card clock-in (${created.id})`,
+          assertCurrent,
         });
+        assertCurrent();
         await transaction.auditLog.create({
           data: {
             tenantId: identity.tenantId,
@@ -344,22 +427,25 @@ export class TimeCardService {
             newValue: timeCardAuditValue(created) as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
         return { data: this.serialize(created), reused: false };
-      }, {
-        maxWait: 5_000,
-        timeout: 10_000,
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      });
+      }, locateTarget);
     } catch (error) {
       // A successful commit followed by a dropped response must return the
       // exact persisted outcome instead of charging a second clock-in.
-      const replay = await this.findClockInReplayOutsideTransaction(identity.tenantId, operation);
-      if (replay && expectedRequestHash && replay.clockInRequestHash === expectedRequestHash) {
-        return { data: this.serialize(replay), reused: true };
-      }
-      if (replay && expectedRequestHash) {
-        throw timeCardProblem(409, 'idempotency_conflict', 'Idempotency-Key was already used with a different clock-in request.', 'Conflict');
-      }
+      if (error instanceof ProblemError && ['permission_denied', 'pin_rotation_required', 'mfa_verification_required',
+        'time_card_scope_denied', 'manual_clock_time_denied'].includes(error.code)) throw error;
+      const recovery = await scope.run(async (transaction, current, assertCurrent) => {
+        assertRequestScope(current);
+        const row = await transaction.timeCard.findUnique({ where: { clockInOperationId: operation }, select: TIME_CARD_SELECT }) as unknown as InternalTimeCard | null;
+        assertCurrent();
+        if (!row || row.tenantId !== current.tenantId || !expectedRequestHash) return null;
+        if (row.clockInRequestHash !== expectedRequestHash) {
+          throw timeCardProblem(409, 'idempotency_conflict', 'Idempotency-Key was already used with a different clock-in request.', 'Conflict');
+        }
+        return { data: this.serialize(row), reused: true };
+      }, locateTarget);
+      if (recovery) return recovery;
       if (isUniqueConstraint(error)) {
         throw invalidTimeCardInput('This employee already has an open time card.');
       }
@@ -372,22 +458,27 @@ export class TimeCardService {
     timeCardPublicId: string,
     body: TimeCardClockOutRequest,
   ): Promise<TimeCardRecord> {
-    if (!this.canViewTeam(identity) && body.clockOutAt !== undefined) {
-      throw timeCardProblem(403, 'manual_clock_time_denied', 'Staff self-service clockOutAt uses server time.', 'Forbidden');
-    }
+    identity = mutationIdentity(identity); body = Object.freeze({ ...body });
+    const scope = await this.prepare(identity, 'time_cards:write', { maxWait: 5_000, timeout: 10_000 });
     const requestedClockOutAt = body.clockOutAt === undefined
       ? null
       : parseTimeCardInstant(body.clockOutAt, 'clockOutAt');
     const notes = normalizeTimeCardNotes(body.notes);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      if (!this.canViewTeam(identity) && body.clockOutAt !== undefined) {
+        throw timeCardProblem(403, 'manual_clock_time_denied', 'Staff self-service clockOutAt uses server time.', 'Forbidden');
+      }
       const initial = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, false);
+      assertCurrent();
       const payrollPeriods = await lockTimeCardPayrollContext(
         transaction,
         identity.tenantId,
         initial.id,
         [initial.payrollPeriodId],
+        assertCurrent,
       );
       const card = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, false);
+      assertCurrent();
       if (card.status !== 'OPEN') {
         throw invalidTimeCardInput('This time card is already closed.');
       }
@@ -398,6 +489,7 @@ export class TimeCardService {
       assertClockOutWithinPayrollPeriod(card.payrollPeriodId, clockOutAt, payrollPeriods);
       const totalMinutes = Math.floor((clockOutAt.getTime() - card.clockInAt.getTime()) / 60_000);
       const breakMinutes = normalizeClockOutBreakMinutes(body.breakMinutes, totalMinutes);
+      assertCurrent();
       const updated = await transaction.timeCard.updateMany({
         where: {
           id: card.id,
@@ -415,10 +507,12 @@ export class TimeCardService {
           revision: { increment: 1 },
         },
       });
+      assertCurrent();
       if (updated.count !== 1) {
         throw timeCardProblem(409, 'concurrent_time_card_change', 'This time card was already clocked out by another request.', 'Concurrent change');
       }
       const result = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, true);
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
@@ -432,8 +526,9 @@ export class TimeCardService {
           newValue: timeCardAuditValue(result) as Prisma.InputJsonValue,
         },
       });
+      assertCurrent();
       return this.serialize(result);
-    }, { maxWait: 5_000, timeout: 10_000 });
+    });
   }
 
   async correct(
@@ -441,13 +536,21 @@ export class TimeCardService {
     timeCardPublicId: string,
     body: TimeCardCorrectionRequest,
   ): Promise<TimeCardRecord> {
-    if (!this.canViewTeam(identity)) {
-      throw timeCardProblem(403, 'time_card_correction_denied', 'Team time-card corrections require manager access.', 'Forbidden');
-    }
+    identity = mutationIdentity(identity);
+    body = Object.freeze({ ...body, ...(Array.isArray(body.breakIntervals)
+      ? { breakIntervals: body.breakIntervals.map(interval => Object.freeze({ ...interval })) } : {}) });
+    const scope = await this.prepare(identity, 'time_cards:write', {
+      maxWait: 5_000, timeout: 10_000, isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
     try {
-      return await this.database.withTenant(identity.tenantId, async (transaction) => {
+      return await scope.run(async (transaction, identity, assertCurrent) => {
+        if (!this.canViewTeam(identity)) {
+          throw timeCardProblem(403, 'time_card_correction_denied', 'Team time-card corrections require manager access.', 'Forbidden');
+        }
         await assertFeatureEntitled(transaction, identity.tenantId, 'time_cards', false);
+        assertCurrent();
         const initial = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, true);
+        assertCurrent();
         if (initial.status === 'VOID') {
           throw invalidTimeCardInput('Voided time cards cannot be corrected.');
         }
@@ -459,14 +562,17 @@ export class TimeCardService {
           initial.location && initial.locationId
             ? { id: initial.locationId, timezone: initial.workTimeZone }
             : null,
+          assertCurrent,
         );
         const periods = await lockTimeCardPayrollContext(
           transaction,
           identity.tenantId,
           initial.id,
           [initial.payrollPeriodId, assignment.payrollPeriodId],
+          assertCurrent,
         );
         const card = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, true);
+        assertCurrent();
         if (card.status === 'VOID') {
           throw invalidTimeCardInput('Voided time cards cannot be corrected.');
         }
@@ -478,6 +584,7 @@ export class TimeCardService {
           correction.clockInAt,
           correction.clockOutAt,
         );
+        assertCurrent();
         const update = await transaction.timeCard.updateMany({
           where: {
             id: card.id,
@@ -496,14 +603,18 @@ export class TimeCardService {
             revision: { increment: 1 },
           },
         });
+        assertCurrent();
         if (update.count !== 1) {
           throw timeCardProblem(409, 'concurrent_time_card_change', 'This time card changed while you were editing it. Refresh and try again.', 'Concurrent change');
         }
         if (correction.breakIntervals !== null) {
+          assertCurrent();
           await transaction.timeCardBreak.deleteMany({
             where: { tenantId: identity.tenantId, timeCardId: card.id },
           });
+          assertCurrent();
           if (correction.breakIntervals.length > 0) {
+            assertCurrent();
             await transaction.timeCardBreak.createMany({
               data: correction.breakIntervals.map((interval) => ({
                 tenantId: identity.tenantId,
@@ -512,12 +623,15 @@ export class TimeCardService {
                 endAt: interval.endAt,
               })),
             });
+            assertCurrent();
           }
         }
         const result = await this.findScopedTimeCard(transaction, identity, timeCardPublicId, true);
+        assertCurrent();
         if (result.payrollPeriodId && result.clockOutAt) {
           assertClockOutWithinPayrollPeriod(result.payrollPeriodId, result.clockOutAt, periods);
         }
+        assertCurrent();
         await transaction.auditLog.create({
           data: {
             tenantId: identity.tenantId,
@@ -534,11 +648,8 @@ export class TimeCardService {
             } as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
         return this.serialize(result);
-      }, {
-        maxWait: 5_000,
-        timeout: 10_000,
-        isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
       });
     } catch (error) {
       if (isTimeCardOverlap(error)) {
@@ -578,25 +689,15 @@ export class TimeCardService {
     return user;
   }
 
-  private async lockActiveClockInTarget(
-    transaction: TenantTransaction,
-    tenantId: string,
-    publicId: string,
+  private async readActiveClockInTarget(
+    transaction: TenantTransaction, tenantId: string, publicId: string,
   ): Promise<TargetUser> {
-    const rows = await transaction.$queryRaw<Array<{ id: string; publicId: string }>>(Prisma.sql`
-      SELECT "id", "publicId"::text AS "publicId"
-      FROM "User"
-      WHERE "tenantId" = ${tenantId}
-        AND "publicId" = ${publicId}::uuid
-        AND "role" IN (${UserRole.MANAGER}::"UserRole", ${UserRole.STAFF}::"UserRole")
-        AND "deletedAt" IS NULL
-        AND "suspendedAt" IS NULL
-      FOR UPDATE
-    `);
-    if (rows.length !== 1) {
-      throw invalidTimeCardInput('User is not available for time tracking in this workspace.');
-    }
-    return rows[0];
+    const user = await transaction.user.findFirst({
+      where: { tenantId, publicId, role: { in: [UserRole.MANAGER, UserRole.STAFF] }, deletedAt: null, suspendedAt: null },
+      select: { id: true, publicId: true },
+    });
+    if (!user) throw invalidTimeCardInput('User is not available for time tracking in this workspace.');
+    return user;
   }
 
   private async resolveLocationForReplay(
@@ -683,19 +784,6 @@ export class TimeCardService {
       throw timeCardProblem(409, 'idempotency_conflict', 'Idempotency-Key was already used with a different clock-in request.', 'Conflict');
     }
     return row;
-  }
-
-  private async findClockInReplayOutsideTransaction(
-    tenantId: string,
-    operation: string,
-  ): Promise<InternalTimeCard | null> {
-    return this.database.withTenant(tenantId, async (transaction) => {
-      const row = await transaction.timeCard.findUnique({
-        where: { clockInOperationId: operation },
-        select: TIME_CARD_SELECT,
-      }) as unknown as InternalTimeCard | null;
-      return row?.tenantId === tenantId ? row : null;
-    });
   }
 
   private async findScopedTimeCard(

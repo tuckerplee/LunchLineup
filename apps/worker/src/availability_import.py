@@ -79,6 +79,7 @@ async def process_availability_import(raw: Any, retry_count: int) -> dict[str, A
             "failed to claim availability import",
             payload,
             token,
+            retry_count,
         ) from exc
 
     if claimed.status == "terminal":
@@ -102,6 +103,7 @@ async def process_availability_import(raw: Any, retry_count: int) -> dict[str, A
             "availability parser infrastructure failed",
             payload,
             token,
+            claimed.effective_retry_count,
         ) from exc
 
     try:
@@ -127,6 +129,7 @@ async def process_availability_import(raw: Any, retry_count: int) -> dict[str, A
             "failed to persist availability import",
             payload,
             token,
+            claimed.effective_retry_count,
         ) from exc
 
     await asyncio.to_thread(cleanup_source, payload, claimed.path)

@@ -72,6 +72,8 @@ export async function readBoundedResponseBytes(
   } catch (error) {
     await reader.cancel().catch(() => undefined);
     throw error;
+  } finally {
+    reader.releaseLock();
   }
 
   const bytes = new Uint8Array(size);

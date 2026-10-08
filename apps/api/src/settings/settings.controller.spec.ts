@@ -3,9 +3,10 @@ import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PERMISSION_METADATA_KEY } from '../auth/require-permission.decorator';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { SettingsController } from './settings.controller';
+import { verifiedSettingsObserver } from './settings-test-mfa.fixture';
 
 const settingsReadReq = { user: { tenantId: 'tenant-1', role: 'MANAGER', permissions: ['settings:read'] } };
-const settingsWriteReq = { user: { sub: 'admin-1', tenantId: 'tenant-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
+const settingsWriteReq = { user: { sub: 'admin-1', tenantId: 'tenant-1', sessionId: 'session-1', role: 'ADMIN', permissions: ['settings:read', 'settings:write'] } };
 const oidcEnvKeys = [
     'OIDC_ENABLED',
     'NEXT_PUBLIC_OIDC_ENABLED',
@@ -43,7 +44,13 @@ describe('SettingsController', () => {
             delete process.env[key];
         }
         prisma = {
+            user: { findFirst: vi.fn().mockResolvedValue({ id: 'admin-1', role: 'ADMIN', lockedUntil: null, pinLockedUntil: null }) },
+            roleAssignment: { findMany: vi.fn().mockResolvedValue([{ userId: 'admin-1', roleId: 'role-1' }]) },
+            role: { findMany: vi.fn().mockResolvedValue([{ id: 'role-1', name: 'Admin', isSystem: true, legacyRole: 'ADMIN',
+                rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
+            session: { findFirst: vi.fn().mockResolvedValue({ createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null }) },
             tenant: {
+                findUnique: vi.fn().mockResolvedValue({ status: 'ACTIVE', deletedAt: null }),
                 findUniqueOrThrow: vi.fn().mockResolvedValue({
                     name: 'Acme Dining',
                     slug: 'acme-dining',
@@ -57,11 +64,26 @@ describe('SettingsController', () => {
             auditLog: {
                 create: vi.fn().mockResolvedValue({}),
             },
-            $executeRaw: vi.fn().mockResolvedValue(1),
-            $queryRaw: vi.fn().mockResolvedValue([{ set_current_tenant: null }]),
+            $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+                const text = Array.from(sql).join('').replace(/\s+/g, ' ').trim();
+                if (text.startsWith('UPDATE')) {
+                    expect(text).toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+                    expect(values).toEqual(['tenant-1']);
+                } else {
+                    expect(text).toContain('set_current_tenant');
+                    expect(values).toEqual(['tenant-1']);
+                }
+                return 1;
+            }),
+            $queryRaw: vi.fn(async (sql: unknown) => {
+                const text = Array.from(sql as TemplateStringsArray).join('');
+                return text.includes('FROM "Session"')
+                    ? [{ id: 'session-1', userId: 'admin-1', expiresAt: new Date(Date.now() + 60_000), revokedAt: null }]
+                    : [{ id: 'tenant-1' }];
+            }),
             $transaction: vi.fn(async (cb: any) => cb(prisma)),
         };
-        controller = new SettingsController(new TenantPrismaService(prisma));
+        controller = new SettingsController(new TenantPrismaService(prisma), undefined, verifiedSettingsObserver as never);
     });
 
     afterEach(() => {
@@ -81,6 +103,22 @@ describe('SettingsController', () => {
         expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, SettingsController.prototype.updateGeneral)).toBe('settings:write');
         expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, SettingsController.prototype.updateTeam)).toBe('settings:write');
         expect(Reflect.getMetadata(PERMISSION_METADATA_KEY, SettingsController.prototype.updateSecurity)).toBe('settings:write');
+    });
+
+    it.each(['general', 'team', 'security'] as const)('does not read or write %s settings after its Tenant lock fails', async section => {
+        const failure = new Error('owned settings lock failure');
+        prisma.$queryRaw.mockRejectedValueOnce(failure);
+        const operation = section === 'general'
+            ? controller.updateGeneral({ timezone: 'America/Chicago' }, settingsWriteReq)
+            : section === 'team'
+                ? controller.updateTeam({ defaultInviteRole: 'MANAGER' }, settingsWriteReq)
+                : controller.updateSecurity({ requireMfaForAll: true }, settingsWriteReq);
+        await expect(operation).rejects.toBe(failure);
+        expect(prisma.tenantSetting.findUnique).not.toHaveBeenCalled();
+        expect(prisma.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(prisma.tenant.update).not.toHaveBeenCalled();
+        expect(prisma.tenantSetting.upsert).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('returns normalized settings for managers', async () => {

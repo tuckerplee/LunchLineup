@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
 const DEFAULT_TERMINATION_GRACE_MS = 2_000;
+const DEFAULT_TERMINATION_CONFIRMATION_MS = 2_000;
 
 function windowsMsysProcessGroup(bash, windowsPid) {
   if (!bash || !existsSync(bash)) return undefined;
@@ -88,6 +89,7 @@ export function runBoundedProcessResult(command, args, options) {
     stdio = input === undefined ? 'inherit' : ['pipe', 'inherit', 'inherit'],
     timeoutMs,
     terminationGraceMs = DEFAULT_TERMINATION_GRACE_MS,
+    terminationConfirmationMs = DEFAULT_TERMINATION_CONFIRMATION_MS,
     windowsMsysBash,
     detached = true,
   } = options;
@@ -97,6 +99,10 @@ export function runBoundedProcessResult(command, args, options) {
   }
   if (!Number.isInteger(terminationGraceMs) || terminationGraceMs < 1) {
     throw new Error('runBoundedProcess requires a positive integer terminationGraceMs');
+  }
+
+  if (!Number.isInteger(terminationConfirmationMs) || terminationConfirmationMs < 1) {
+    throw new Error('runBoundedProcess requires a positive integer terminationConfirmationMs');
   }
 
   return new Promise((resolve, reject) => {
@@ -109,6 +115,22 @@ export function runBoundedProcessResult(command, args, options) {
     });
     let completed = false;
     let timedOut = false;
+    let closeResult;
+    let forceKillAttempted = false;
+    let forceTimer;
+    let confirmationTimer;
+    const finishTimeout = () => {
+      if (completed) return;
+      completed = true;
+      clearTimeout(forceTimer);
+      clearTimeout(confirmationTimer);
+      resolve({
+        code: 124, signal: closeResult?.signal ?? null, timedOut: true,
+        directChildPid: child.pid, childCloseObserved: closeResult !== undefined,
+        // Detached group signals cannot prove escaped or surviving descendants.
+        processGroupSettlementVerified: false,
+      });
+    };
 
     const timeout = setTimeout(() => {
       timedOut = true;
@@ -116,12 +138,11 @@ export function runBoundedProcessResult(command, args, options) {
         ? windowsMsysProcessGroup(windowsMsysBash, child.pid)
         : undefined;
       terminateProcessTree(child.pid, false, msysGroup);
-      setTimeout(() => {
+      forceTimer = setTimeout(() => {
+        forceKillAttempted = true;
         terminateProcessTree(child.pid, true, msysGroup);
-        if (!completed) {
-          completed = true;
-          resolve({ code: 124, signal: null, timedOut: true });
-        }
+        if (closeResult !== undefined) finishTimeout();
+        else confirmationTimer = setTimeout(finishTimeout, terminationConfirmationMs);
       }, terminationGraceMs);
     }, timeoutMs);
 
@@ -133,12 +154,19 @@ export function runBoundedProcessResult(command, args, options) {
     });
 
     child.once('close', (code, signal) => {
+      if (completed) return;
+      closeResult = { code, signal };
       // A parent can exit after TERM while one of its descendants survives.
-      // Keep the timeout owner alive through the forced tree cleanup below.
-      if (completed || timedOut) return;
+      // Always retain the scheduled KILL phase before returning a timeout.
+      if (timedOut) {
+        if (forceKillAttempted) finishTimeout();
+        return;
+      }
       completed = true;
       clearTimeout(timeout);
-      resolve({ code, signal, timedOut: false });
+      resolve({ code, signal, timedOut: false,
+        directChildPid: child.pid, childCloseObserved: true,
+        processGroupSettlementVerified: false });
     });
 
     if (input !== undefined) {
@@ -152,7 +180,11 @@ export async function runBoundedProcess(command, args, options) {
   const result = await runBoundedProcessResult(command, args, options);
   const { label = command, timeoutMs } = options;
   if (result.timedOut) {
-    throw new Error(`${label} timed out after ${timeoutMs}ms`);
+    const error = new Error(`${label} timed out after ${timeoutMs}ms${result.childCloseObserved ? '' : '; direct child closure unconfirmed'}`);
+    error.code = 'BOUNDED_PROCESS_TIMEOUT';
+    error.childCloseObserved = result.childCloseObserved;
+    error.processGroupSettlementVerified = false;
+    throw error;
   }
   if (result.code === 0) return result;
   throw new Error(`${label} failed with ${result.signal ? `signal ${result.signal}` : `exit code ${result.code}`}`);

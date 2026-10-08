@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { createPlatformArchiveActorFixture } from './platform-archive-actor.fixture';
 import {
     TenantAccountLifecycleService,
     type TenantLifecycleActor,
@@ -1019,6 +1020,7 @@ if (postgresIntegrationUrl && postgresIntegrationCapability) {
                 finalizeTenantBillingForPurge: vi.fn().mockResolvedValue(billingPurge),
             };
             const tenantDb = {
+                client: owner,
                 withPlatformAdmin: (operation: (tx: any) => Promise<unknown>, options?: any) =>
                     owner.$transaction(async (tx) => {
                         await tx.$executeRaw`SELECT set_current_platform_admin(true, ${postgresIntegrationCapability})`;
@@ -1030,24 +1032,19 @@ if (postgresIntegrationUrl && postgresIntegrationCapability) {
                         return operation(tx);
                     }, options),
             };
-            const service = new TenantAccountLifecycleService(
-                tenantDb as TenantPrismaService,
-                stripeBilling as any,
-            );
             const customer: TenantLifecycleActor = {
                 tenantId,
                 userId,
                 ipAddress: '203.0.113.30',
                 userAgent: 'vitest-postgres-overlap',
             };
-            const platform: TenantRetentionLegalHoldActor = {
-                tenantId: 'platform-tenant',
-                userId: 'platform-admin-overlap',
-                ipAddress: '203.0.113.31',
-                userAgent: 'vitest-postgres-overlap',
-            };
+            let authority: Awaited<ReturnType<typeof createPlatformArchiveActorFixture>> | undefined;
 
             try {
+                authority = await createPlatformArchiveActorFixture(postgresIntegrationUrl, postgresIntegrationCapability!);
+                const platform = authority.actor;
+                const service = new TenantAccountLifecycleService(tenantDb as TenantPrismaService,
+                    stripeBilling as any, undefined, undefined, authority.mfaObserver);
                 await owner.$executeRaw`
                     INSERT INTO "Tenant"
                         ("id", "name", "slug", "stripeSubscriptionId", "status", "usageCredits", "createdAt", "updatedAt")
@@ -1148,7 +1145,7 @@ if (postgresIntegrationUrl && postgresIntegrationCapability) {
                 await owner.tenantSetting.deleteMany({ where: { tenantId } }).catch(() => undefined);
                 await owner.user.deleteMany({ where: { tenantId } }).catch(() => undefined);
                 await owner.tenant.deleteMany({ where: { id: tenantId } }).catch(() => undefined);
-                await owner.$disconnect();
+                try { await owner.$disconnect(); } finally { await authority?.close(); }
             }
         }, 20_000);
     });

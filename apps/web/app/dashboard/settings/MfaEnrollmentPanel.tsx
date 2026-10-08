@@ -5,9 +5,10 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, KeyRound, Loader2, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react';
 import { fetchWithSession } from '@/lib/client-api';
 import {
-    normalizeMfaEnrollmentState,
-    normalizeMfaSetupChallenge,
-    readRecoveryCodes,
+    requireMfaEnrollmentState,
+    requireMfaSetupChallenge,
+    requireMfaConfirmation,
+    requireMfaDisableConfirmation,
     type MfaEnrollmentState,
     type MfaSetupChallenge,
 } from './mfa-enrollment-contract';
@@ -84,10 +85,10 @@ function badgeStyle(enabled: boolean): CSSProperties {
 
 async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetchWithSession(path, init);
-    const payload = await response.json().catch(() => ({}));
+    const payload = await response.json().catch(() => null);
 
     if (!response.ok) {
-        const message = typeof (payload as { message?: unknown }).message === 'string'
+        const message = typeof (payload as { message?: unknown } | null)?.message === 'string'
             ? String((payload as { message: string }).message)
             : `Request failed (${response.status})`;
         const error = new Error(message) as ApiError;
@@ -108,6 +109,7 @@ function jsonInit(method: 'POST' | 'PUT' | 'DELETE', body?: unknown): RequestIni
 
 export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProps) {
     const [state, setState] = useState<MfaEnrollmentState>(EMPTY_STATE);
+    const [stateKnown, setStateKnown] = useState(false);
     const [setup, setSetup] = useState<MfaSetupChallenge | null>(null);
     const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
     const [confirmCode, setConfirmCode] = useState('');
@@ -118,15 +120,16 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
 
     const isBusy = pendingAction !== null;
     const disableBlockedByPolicy = state.enabled && tenantMfaRequired;
-    const statusLabel = state.enabled ? 'Enabled' : 'Not enrolled';
+    const statusLabel = stateKnown ? state.enabled ? 'Enabled' : 'Not enrolled' : 'Status unavailable';
 
     const loadEnrollment = useCallback(async () => {
         setPendingAction('refresh');
         setContractUnavailable(false);
         try {
             const payload = await requestJson<unknown>('/auth/mfa/enrollment');
-            const nextState = normalizeMfaEnrollmentState(payload);
+            const nextState = requireMfaEnrollmentState(payload);
             setState(nextState);
+            setStateKnown(true);
             setSetup(nextState.setup);
         } catch (error) {
             const apiError = error as ApiError;
@@ -152,7 +155,7 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
         setRecoveryCodes([]);
         try {
             const payload = await requestJson<unknown>('/auth/mfa/enrollment', jsonInit('POST'));
-            setSetup(normalizeMfaSetupChallenge(payload));
+            setSetup(requireMfaSetupChallenge(payload));
             setNotice({ tone: 'success', text: 'MFA setup started.' });
         } catch (error) {
             const apiError = error as ApiError;
@@ -177,8 +180,10 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
                 code,
                 enrollmentId: setup?.enrollmentId ?? undefined,
             }));
-            setState(normalizeMfaEnrollmentState({ ...(payload as Record<string, unknown>), enabled: true }));
-            setRecoveryCodes(readRecoveryCodes(payload));
+            const codes = requireMfaConfirmation(payload);
+            setState({ enabled: true, verifiedAt: null, recoveryCodesRemaining: codes.length, setup: null });
+            setStateKnown(true);
+            setRecoveryCodes(codes);
             setSetup(null);
             setConfirmCode('');
             setNotice({ tone: 'success', text: 'MFA is enabled.' });
@@ -206,7 +211,9 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
         setNotice(null);
         try {
             const payload = await requestJson<unknown>('/auth/mfa/enrollment', jsonInit('DELETE', { code }));
-            setState(normalizeMfaEnrollmentState({ ...(payload as Record<string, unknown>), enabled: false }));
+            requireMfaDisableConfirmation(payload);
+            setState({ ...EMPTY_STATE, enabled: false, recoveryCodesRemaining: 0 });
+            setStateKnown(true);
             setSetup(null);
             setRecoveryCodes([]);
             setDisableCode('');
@@ -281,7 +288,7 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
                         type="button"
                         className="btn btn-primary"
                         onClick={() => void startEnrollment()}
-                        disabled={isBusy || contractUnavailable}
+                        disabled={isBusy || contractUnavailable || !stateKnown}
                     >
                         {pendingAction === 'start' ? <Loader2 size={15} aria-hidden="true" /> : <ShieldCheck size={15} aria-hidden="true" />}
                         Start MFA setup

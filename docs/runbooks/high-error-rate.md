@@ -1,41 +1,49 @@
 # Runbook: High Error Rate
 
-## Symptom
+## Current scope
 
-Prometheus alerts `HighApiErrorRate`, `HighApiLatency`, `WorkerJobFailures`, or `SolverErrors` fire, or users report failed scheduling workflows.
+Production VM4014 is protected from all access and probes. VM107 remains stopped and launch-held; VM218 runtime admission remains disabled. This source runbook applies to an owner-admitted private candidate only after incident clearance. Historical public recovery probes do not authorize current execution.
 
-## Diagnostics
+## Symptom and ownership
 
-Check service health and recent logs:
+HighNativeApiErrorRate and HighNativeApiLatency describe completed native front-door application responses. Native latency is seconds, with a two-second p99 threshold. ApiAvailabilityBudgetFastBurn and ApiAvailabilityBudgetSlowBurn require their paired windows.
 
-```bash
-docker compose ps
-docker compose logs --tail=200 api worker engine
-```
+HighApiErrorRate and HighApiLatency remain retained API diagnostics; retained latency is milliseconds. WorkerJobFailures and SolverErrors retain separate worker/solver ownership. NativeApiMetricsMissing, NativeApiHttpInstrumentationUnavailable and ServiceDown mean availability evidence is unavailable and need their own investigation.
 
-Check Prometheus for the failing surface:
+## Diagnostics after private admission
 
-```bash
-docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum by (job, route) (rate(http_requests_total{status=~"5.."}[5m]))'
-docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum by (type) (rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))'
-docker compose exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=rate(lunchlineup_solver_errors_total[5m])'
-```
+Use the approved private Prometheus or Grafana interface. Do not invoke wget inside the distroless Prometheus image. Keep retained downstream traffic separate when examining one delegated browser response.
 
-Use Loki and Tempo to identify the failing route, tenant boundary, and downstream dependency. Do not expose raw stack traces to browsers while diagnosing.
+Native failures by route:
+
+~~~promql
+sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[5m]))
+~~~
+
+Native p99 in seconds:
+
+~~~promql
+histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job="api-v2",scope="application"}[5m])))
+~~~
+
+Retained and worker diagnostics:
+
+~~~promql
+sum by (job, route) (rate(http_requests_total{job="api",status=~"5.."}[5m]))
+sum by (type) (rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))
+rate(lunchlineup_solver_errors_total[5m])
+~~~
+
+Check the current native scrape and initialized marker, then admitted /v2/ready and retained dependency gauges. Metrics scraping deliberately does not call readiness. Genuine quota429 and quota-storage 503 are distinct. Abort diagnostics are separate from completed responses; a missing denominator is unknown, not success.
+
+Use bounded private logs/traces and exact deployed identity to locate the route and downstream dependency. Do not expose credentials, tenant identifiers, driver/provider messages or raw stack traces in evidence or browser responses. A silent test logger does not qualify production log privacy.
 
 ## Resolution
 
-- If database-related, follow `database-failover.md`.
-- If CPU or solver backlog is involved, follow `high-cpu.md`.
-- If the latest deploy caused the issue, follow `deployment-rollback.md`.
-- If credential compromise or unauthorized access is suspected, follow `security-incident.md`.
+Follow database-failover.md for database failures, high-cpu.md for solver saturation, the admitted private rollback procedure for a causal candidate, and security-incident.md for suspected unauthorized access. Coordinate all resource and infrastructure changes with their owners; application diagnostics cannot lift the launch hold or authorize shared-storage changes.
 
-## Recovery Verification
+## Recovery verification
 
-```bash
-curl -fsS https://lunchlineup.com/health
-curl -fsS https://lunchlineup.com/api/v2/ready
-docker compose logs --tail=100 api worker engine | grep -E "ERROR|timeout" || true
-```
+After owner admission, verify the exact private deployed SHA, authenticated scrape/marker, native readiness, retained dependencies and relevant route results. Confirm paired burn windows and high-error/latency alerts recover and the paging target receives the resolved event. Retain at least 15 minutes without a new worker/solver failure for the immediate incident check.
 
-Expected result: health checks pass, error-rate alerts clear, and no new worker or solver failures appear for 15 minutes.
+This recovery check does not qualify a rolling 30-day SLO, every user action, provider delivery, restore, or the required months of private testing. Those release gates remain independently open until actual evidence proves them.

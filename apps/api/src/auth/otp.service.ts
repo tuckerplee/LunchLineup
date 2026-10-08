@@ -126,6 +126,7 @@ export class OtpService implements OnModuleDestroy {
      * Returns true if valid, throws UnauthorizedException if not.
      */
     async verifyOtp(email: string, code: string, options: OtpScopeOptions = {}): Promise<boolean> {
+        if (typeof code !== 'string') throw new BadRequestException('Invalid code');
         const scope = this.scopeFor(email, options);
         const otpKey = KEY_OTP(scope);
         const attemptsKey = KEY_ATTEMPTS(scope);
@@ -150,6 +151,10 @@ export class OtpService implements OnModuleDestroy {
     }
 
     private scopeFor(email: string, options: OtpScopeOptions): string {
+        if (typeof email !== 'string'
+            || (options.tenantSlug !== undefined && typeof options.tenantSlug !== 'string')) {
+            throw new BadRequestException('Invalid workspace or email');
+        }
         const normalizedEmail = email.trim().toLowerCase();
         const tenantSlug = (options.tenantSlug ?? '').trim().toLowerCase();
         if (tenantSlug) return `tenant:${tenantSlug}:${normalizedEmail}`;
@@ -166,6 +171,9 @@ export class OtpService implements OnModuleDestroy {
     }
 
     private onboardingTenantHash(value?: string): string {
+        if (value !== undefined && typeof value !== 'string') {
+            throw new BadRequestException('Invalid organization name');
+        }
         const tenantName = (value ?? '').trim().toLowerCase().replace(/\s+/g, ' ');
         if (!tenantName) {
             throw new BadRequestException('Organization name is required');

@@ -7,7 +7,7 @@ import {
 import { Prisma } from '@prisma/client';
 import { TenantDatabase, type TenantTransaction } from '../platform/database';
 import { matchesContract } from '../platform/contract-check';
-import { requirePermissions } from '../platform/identity';
+import { authorizeScheduleReopen } from './authorization';
 import { ProblemError } from '../platform/problem';
 import {
   requestHash,
@@ -79,7 +79,7 @@ export class ScheduleLifecycleService {
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<ScheduleReopenResponse> {
-    requirePermissions(identity, ['schedules:publish']);
+    authorizeScheduleReopen(identity);
     const baseRevision = requireScheduleRevision(headers.ifMatch, schedulePublicId);
     const idempotencyKey = requireIdempotencyKey(headers.idempotencyKey);
     const idempotencyKeyHash = sha256(idempotencyKey);

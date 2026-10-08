@@ -21,7 +21,7 @@ import {
 } from './availability-imports.service';
 
 type AuthenticatedRequest = {
-    user: { sub: string; tenantId: string };
+    user: { sub: string; tenantId: string; sessionId: string };
     headers: Record<string, string | string[] | undefined>;
 };
 
@@ -57,11 +57,19 @@ export class AvailabilityImportsController {
         return this.imports.createImport({
             tenantId: req.user.tenantId,
             requestedByUserId: req.user.sub,
+            requestedBySessionId: req.user.sessionId,
             userId,
             idempotencyKey,
             staffIdentity,
             file,
         });
+    }
+
+    @Post(':id/cancel')
+    @HttpCode(HttpStatus.OK)
+    @RequirePermission('users:write')
+    cancel(@Req() req: AuthenticatedRequest, @Param('id') id: string) {
+        return this.imports.cancelImport(req.user.tenantId, req.user.sub, id, req.user.sessionId);
     }
 
     @Get(':id')

@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   LocationCreateRequestSchema,
   LocationListQuerySchema,
@@ -24,6 +25,7 @@ import type { LocationService } from './locations.service';
 export type LocationRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   locations: Pick<LocationService, 'list' | 'summary' | 'get' | 'create' | 'update' | 'remove'>;
 };
 
@@ -50,6 +52,7 @@ export async function registerLocationRoutes(
   }, async (request, reply): Promise<LocationListResponse> => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:read']);
+    await dependencies.quota.consume('listLocations', identity, reply);
     const response = await dependencies.locations.list(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -70,6 +73,7 @@ export async function registerLocationRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:write']);
+    await dependencies.quota.consume('createLocation', identity, reply);
     const response = await dependencies.locations.create(identity, request.body, header(request, 'idempotency-key'));
     reply.code(201).header('Cache-Control', 'private, no-store');
     return response;
@@ -86,6 +90,7 @@ export async function registerLocationRoutes(
   }, async (request, reply): Promise<LocationSummaryResponse> => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:read']);
+    await dependencies.quota.consume('getLocationSummary', identity, reply);
     const response = await dependencies.locations.summary(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -105,6 +110,7 @@ export async function registerLocationRoutes(
   }, async (request, reply): Promise<LocationRecord> => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:read']);
+    await dependencies.quota.consume('getLocation', identity, reply);
     const response = await dependencies.locations.get(identity, request.params.locationId);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -127,6 +133,7 @@ export async function registerLocationRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:write']);
+    await dependencies.quota.consume('updateLocation', identity, reply);
     const response = await dependencies.locations.update(identity, request.params.locationId, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -147,6 +154,7 @@ export async function registerLocationRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['locations:delete']);
+    await dependencies.quota.consume('deleteLocation', identity, reply);
     await dependencies.locations.remove(identity, request.params.locationId);
     reply.code(204).header('Cache-Control', 'private, no-store').send();
   });

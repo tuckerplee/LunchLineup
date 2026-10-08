@@ -1,6 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional, UnauthorizedException } from '@nestjs/common';
 import { PermissionCategory, Prisma, PrismaClient, UserRole } from '@prisma/client';
-import { PRIVILEGED_MFA_PERMISSION_KEYS as SHARED_PRIVILEGED_MFA_PERMISSION_KEYS } from '@lunchlineup/rbac';
+import { PRIVILEGED_MFA_PERMISSION_KEYS as SHARED_PRIVILEGED_MFA_PERMISSION_KEYS, type MfaSessionObserver } from '@lunchlineup/rbac';
 import {
     lockTenantSchedulingMutations,
     SCHEDULABLE_USER_ROLES,
@@ -8,6 +8,8 @@ import {
 } from '../common/schedulable-user';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { runSerializableMutationWithRetry } from './serializable-mutation';
+import { assertCurrentMutationPolicy, captureCurrentMutationPolicy, freezeMutationActor,
+    observeCurrentMutationMfa, type CurrentMutationActor, type CurrentMutationOptions } from './current-mutation';
 
 type CatalogPermission = {
     key: string;
@@ -86,6 +88,7 @@ type RoleMutationOptions = {
     actorSessionId: string;
     ipAddress?: string | null;
     userAgent?: string | null;
+    mfaObserver?: MfaSessionObserver;
 };
 
 
@@ -115,6 +118,7 @@ type UserRoleReplacementRequest = {
     auditAction: 'USER_ROLE_UPDATED' | 'USER_ACCESS_UPDATED';
     roleIds?: string[];
     legacyRole?: UserRole;
+    mfaObserver?: MfaSessionObserver;
 };
 
 export type PlatformAdminMutationActor = {
@@ -187,7 +191,7 @@ export type AuthorizedInvitationRole = RoleAccessRecord;
 export type SelfSecurityMutationAuthorizationRequest = {
     actorUserId: string;
     actorSessionId: string;
-    requiredPermission?: 'auth:login_pin';
+    requiredPermission?: 'auth:login_pin' | 'settings:write';
 };
 
 export type AssignedRole = {
@@ -215,6 +219,13 @@ export type PlatformAdminSystemRoleReplacementResult = RoleReplacementResult & {
     previousRoleIds: string[];
     roleId: string;
 };
+
+export type PreparedPlatformAdminSystemRoleReplacement = Readonly<{
+    target: Readonly<PlatformAdminMutationTarget>;
+    targetTenantId: string;
+    roleId: string;
+    previousRoleIds: readonly string[];
+}>;
 
 const USER_ROLE_RANK: Record<UserRole, number> = {
     [UserRole.STAFF]: 1,
@@ -354,20 +365,131 @@ export type EffectiveAccess = {
 export class RbacService {
     private readonly prisma: PrismaClient;
     private readonly tenantDb: TenantPrismaService;
+    private readonly platformRolePlans = new WeakMap<PreparedPlatformAdminSystemRoleReplacement, TenantPrismaTransaction>();
 
     constructor(@Optional() tenantDb?: TenantPrismaService) {
         this.prisma = tenantDb?.client ?? new PrismaClient();
         this.tenantDb = tenantDb ?? new TenantPrismaService(this.prisma);
     }
 
-    private async runActorAuthorizedSerializableMutation<T>(
-        tenantId: string,
-        operation: (tx: TenantPrismaTransaction) => Promise<T>,
+    /** Trusted internal wrapper. Target authorization owns the final ordered lock
+     * set; the policy extension reads it without acquiring late identity locks.
+     */
+    async runCurrentMutation<A, T>(
+        options: CurrentMutationOptions,
+        authorize: (tx: TenantPrismaTransaction, actor: CurrentMutationActor) => Promise<A>,
+        operation: (tx: TenantPrismaTransaction, authority: A, assertCurrent: () => void,
+            actor: CurrentMutationActor) => Promise<T>,
+        recovery?: {
+            isRecoverable: (error: unknown) => boolean;
+            operation: (tx: TenantPrismaTransaction, authority: A, assertCurrent: () => void,
+                actor: CurrentMutationActor, error: unknown) => Promise<T>;
+        },
     ): Promise<T> {
-        return runSerializableMutationWithRetry(
-            () => this.tenantDb.withTenant(tenantId, operation, { isolationLevel: 'Serializable' }),
-            { conflictMessage: 'Authorization or access state changed concurrently; retry the request' },
-        );
+        const actor = freezeMutationActor(options.actor);
+        const permission = canonicalPermissionKey(options.requiredPermission);
+        if (!permission) throw new ForbiddenException('A current mutation permission is required');
+        const scope = options.scope;
+        const isRecoverable = recovery?.isRecoverable;
+        const recover = recovery?.operation;
+        // Trusted owners may retain their finite domain transaction budget.
+        // Capture it before any await; callers cannot replace isolation or
+        // extend the final retry after an outside MFA observation.
+        const transactionOptions: { isolationLevel: 'Serializable'; maxWait?: number; timeout?: number } = {
+            isolationLevel: 'Serializable',
+        };
+        for (const key of ['maxWait', 'timeout'] as const) {
+            const value = options.transactionOptions?.[key];
+            if (value === undefined) continue;
+            if (!Number.isInteger(value) || value < 1 || value > 60_000) {
+                throw new ForbiddenException('Current mutation transaction budgets must be between 1 and 60000 milliseconds');
+            }
+            transactionOptions[key] = value;
+        }
+        Object.freeze(transactionOptions);
+        const observerOwner = options.mfaObserver;
+        const observe = observerOwner?.observeSessionMfa;
+        const observer = typeof observe === 'function'
+            ? { observeSessionMfa: observe.bind(observerOwner) } : undefined;
+        const retry = { conflictMessage: options.conflictMessage
+            ?? 'Authorization or access state changed concurrently; retry the request',
+            isConflict: options.isConflict };
+        const transaction = <R>(callback: (tx: TenantPrismaTransaction) => Promise<R>) => scope === 'platform'
+            ? this.tenantDb.withPlatformAdmin(callback, transactionOptions)
+            : this.tenantDb.withTenant(actor.tenantId, callback, transactionOptions);
+        const preflight = await runSerializableMutationWithRetry(() => transaction(async tx => {
+            await this.authorizeActorMutationInTransaction(tx, actor, permission);
+            return captureCurrentMutationPolicy(tx, actor,
+                await this.currentMutationPermissionsInTransaction(tx, actor, permission));
+        }), retry);
+        const observation = await observeCurrentMutationMfa(preflight, observer);
+        assertCurrentMutationPolicy(preflight, observation);
+        const finalTransaction = (callback: typeof operation) => transaction(async tx => {
+            const authority = await authorize(tx, actor);
+            const policy = await captureCurrentMutationPolicy(tx, actor,
+                await this.currentMutationPermissionsInTransaction(tx, actor, permission));
+            const assertCurrent = () => assertCurrentMutationPolicy(policy, observation);
+            assertCurrent();
+            const result = await callback(tx, authority, assertCurrent, actor);
+            assertCurrent();
+            return result;
+        });
+        try {
+            return await runSerializableMutationWithRetry(() => finalTransaction(operation), retry);
+        } catch (error) {
+            if (!isRecoverable || !recover || !isRecoverable(error)) throw error;
+            // One fresh authorized receipt-read callback after the failed
+            // transaction has ended, using the original finite MFA proof.
+            // Recovery errors propagate; no recursive retry or observation.
+            return finalTransaction((tx, authority, assertCurrent, selectedActor) =>
+                recover(tx, authority, assertCurrent, selectedActor, error));
+        }
+    }
+
+    private async currentMutationPermissionsInTransaction(
+        tx: TenantPrismaTransaction,
+        actor: CurrentMutationActor,
+        requiredPermission: string,
+    ): Promise<string[]> {
+        const assignments = await tx.roleAssignment.findMany({
+            where: { tenantId: actor.tenantId, userId: actor.userId,
+                role: { tenantId: actor.tenantId, deletedAt: null } },
+            include: { role: { include: { rolePermissions: { include: { permission: true } } } } },
+            orderBy: [{ userId: 'asc' }, { roleId: 'asc' }],
+        });
+        const permissions = [...new Set(assignments.flatMap(assignment => assignment.role.rolePermissions
+            .map(grant => canonicalPermissionKey(grant.permission.key))))].sort();
+        if (!permissions.includes(requiredPermission)) {
+            throw new ForbiddenException(`${requiredPermission} permission is no longer active for this account`);
+        }
+        return permissions;
+    }
+
+    async authorizeActorMutationInTransaction(
+        tx: TenantPrismaTransaction,
+        actorInput: CurrentMutationActor,
+        requiredPermission: string,
+        additionalUserIds: string[] = [],
+    ): Promise<void> {
+        const actor = freezeMutationActor(actorInput);
+        await this.lockRoleMutationTenants(tx, [actor.tenantId]);
+        await this.lockRoleMutationUsers(tx, actor.tenantId, [actor.userId, ...additionalUserIds]);
+        const user = await tx.user.findFirst({
+            where: { id: actor.userId, tenantId: actor.tenantId, deletedAt: null, suspendedAt: null },
+            select: { id: true, lockedUntil: true, pinLockedUntil: true },
+        });
+        if (!user || user.id !== actor.userId) throw new ForbiddenException('Administrator account is inactive');
+        this.assertMutationActorUnlocked(user);
+        await this.lockAndValidateActorSession(tx, actor.userId, actor.sessionId);
+        await this.lockRoleMutationAssignments(tx, actor.tenantId, [actor.userId]);
+        const assignments = await tx.roleAssignment.findMany({
+            where: { tenantId: actor.tenantId, userId: actor.userId },
+            select: { userId: true, roleId: true }, orderBy: [{ userId: 'asc' }, { roleId: 'asc' }],
+        });
+        const roleIds = assignments.map(assignment => assignment.roleId);
+        await this.lockTenantRolesForAssignmentMutation(tx, actor.tenantId, roleIds);
+        await this.lockRoleMutationPermissions(tx, roleIds);
+        await this.currentMutationPermissionsInTransaction(tx, actor, canonicalPermissionKey(requiredPermission));
     }
 
     private assertMutationActorUnlocked(
@@ -673,11 +795,9 @@ export class RbacService {
             throw new ConflictException('User tenant changed before authorization completed');
         }
 
-        if (tenantLockMode === 'key-share') {
+        if (tenantLockMode === 'key-share' || !expectedTenantId) {
             await this.lockRoleMutationTenants(
-                tx,
-                [actorTenantId, targetIdentity.tenantId],
-                'key-share',
+                tx, [actorTenantId, targetIdentity.tenantId], tenantLockMode,
             );
         }
         if (lockTargetSchedulingMutations) {
@@ -801,7 +921,7 @@ export class RbacService {
             targetUserIdRaw,
             actorInput,
             expectedTargetTenantId,
-            'key-share',
+            'update',
             options.lockTargetSchedulingMutations === true,
         );
         const lockedAssignments = await this.lockPlatformRoleMutationAssignments(
@@ -1376,7 +1496,16 @@ export class RbacService {
     }
 
     async getEffectiveAccess(userId: string, tenantId: string): Promise<EffectiveAccess> {
-        const assignments = await this.tenantDb.withTenant(tenantId, (tx) => tx.roleAssignment.findMany({
+        return this.tenantDb.withTenant(tenantId, (tx) =>
+            this.getEffectiveAccessInTransaction(tx, userId, tenantId));
+    }
+
+    async getEffectiveAccessInTransaction(
+        tx: TenantPrismaTransaction,
+        userId: string,
+        tenantId: string,
+    ): Promise<EffectiveAccess> {
+        const assignments = await tx.roleAssignment.findMany({
             where: {
                 tenantId,
                 userId,
@@ -1396,7 +1525,7 @@ export class RbacService {
                     },
                 },
             },
-        }));
+        });
 
         const permissions = new Set<string>();
         const roles = assignments.map((assignment) => {
@@ -1423,7 +1552,6 @@ export class RbacService {
     }
 
     async listRolesForTenant(tenantId: string) {
-        await this.ensureTenantRoles(tenantId);
         const roles = await this.tenantDb.withTenant(tenantId, (tx) => tx.role.findMany({
             where: { tenantId, deletedAt: null },
             include: {
@@ -1448,7 +1576,6 @@ export class RbacService {
     }
 
     async listPermissions() {
-        await this.ensurePermissionCatalog();
         return this.prisma.permission.findMany({
             orderBy: [
                 { category: 'asc' },
@@ -1462,21 +1589,18 @@ export class RbacService {
         input: { name: string; description?: string; permissionKeys: string[] },
         options: RoleMutationOptions,
     ) {
+        options = { ...options };
         const name = this.normalizeRoleName(input.name);
         const description = this.normalizeDescription(input.description);
         const permissionKeys = this.normalizePermissionKeys(input.permissionKeys).sort();
         const slugBase = this.slugify(name);
         const slug = slugBase || `role-${Date.now().toString(36)}`;
 
-        const role = await this.runActorAuthorizedSerializableMutation(tenantId, async (tx) => {
-            await this.lockRoleMutationTenants(tx, [tenantId]);
-            await this.ensureTenantRoles(tenantId, tx);
-            const permissionIds = await this.resolvePermissionIdsForMutation(
-                tx,
-                tenantId,
-                permissionKeys,
-                options,
-            );
+        const role = await this.runCurrentMutation({
+            actor: { userId: options.actorUserId, tenantId, sessionId: options.actorSessionId },
+            requiredPermission: 'roles:write', mfaObserver: options.mfaObserver,
+        }, (tx) => this.resolvePermissionIdsForMutation(tx, tenantId, permissionKeys, options),
+        async (tx, permissionIds, assertCurrent, actor) => {
             const customRoleCount = await tx.role.count({
                 where: { tenantId, isSystem: false, deletedAt: null },
             });
@@ -1485,6 +1609,7 @@ export class RbacService {
                     'A tenant may configure at most ' + MAX_CUSTOM_ROLES_PER_TENANT + ' custom roles',
                 );
             }
+            assertCurrent();
             const created = await tx.role.create({
                 data: {
                     tenantId,
@@ -1504,11 +1629,12 @@ export class RbacService {
                     },
                 },
             });
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId,
-                    userId: options.actorUserId,
-                    actorUserId: options.actorUserId,
+                    userId: actor.userId,
+                    actorUserId: actor.userId,
                     actorTenantId: tenantId,
                     ipAddress: options.ipAddress ?? null,
                     userAgent: options.userAgent ?? null,
@@ -1531,18 +1657,16 @@ export class RbacService {
         input: { name: string; description?: string; permissionKeys: string[] },
         options: RoleMutationOptions,
     ) {
+        options = { ...options };
         const name = this.normalizeRoleName(input.name);
         const description = this.normalizeDescription(input.description);
         const permissionKeys = this.normalizePermissionKeys(input.permissionKeys).sort();
 
-        return this.runActorAuthorizedSerializableMutation(tenantId, async (tx) => {
-            const permissionIds = await this.resolvePermissionIdsForMutation(
-                tx,
-                tenantId,
-                permissionKeys,
-                options,
-                [roleId],
-            );
+        return this.runCurrentMutation({
+            actor: { userId: options.actorUserId, tenantId, sessionId: options.actorSessionId },
+            requiredPermission: 'roles:write', mfaObserver: options.mfaObserver,
+        }, (tx) => this.resolvePermissionIdsForMutation(tx, tenantId, permissionKeys, options, [roleId]),
+        async (tx, permissionIds, assertCurrent, actor) => {
             const role = await tx.role.findFirst({
                 where: { id: roleId, tenantId, deletedAt: null },
                 select: {
@@ -1558,7 +1682,9 @@ export class RbacService {
                 throw new ForbiddenException('System roles cannot be modified');
             }
 
+            assertCurrent();
             await tx.rolePermission.deleteMany({ where: { roleId } });
+            assertCurrent();
             const updated = await tx.role.update({
                 where: { id: roleId },
                 data: {
@@ -1579,11 +1705,12 @@ export class RbacService {
                     },
                 },
             });
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId,
-                    userId: options.actorUserId,
-                    actorUserId: options.actorUserId,
+                    userId: actor.userId,
+                    actorUserId: actor.userId,
                     actorTenantId: tenantId,
                     ipAddress: options.ipAddress ?? null,
                     userAgent: options.userAgent ?? null,
@@ -1605,12 +1732,16 @@ export class RbacService {
     }
 
     async deleteRole(tenantId: string, roleId: string, options: RoleMutationOptions) {
+        options = { ...options };
         const actorUserId = options.actorUserId?.trim();
         if (!actorUserId) {
             throw new ForbiddenException('A live actor identity is required to delete roles');
         }
-        return this.runActorAuthorizedSerializableMutation(tenantId, async (tx) => {
-            await this.resolvePermissionIdsForMutation(tx, tenantId, [], options, [roleId]);
+        return this.runCurrentMutation({
+            actor: { userId: actorUserId, tenantId, sessionId: options.actorSessionId },
+            requiredPermission: 'roles:write', mfaObserver: options.mfaObserver,
+        }, (tx) => this.resolvePermissionIdsForMutation(tx, tenantId, [], options, [roleId]),
+        async (tx, _permissionIds, assertCurrent) => {
             const role = await tx.role.findFirst({
                 where: { id: roleId, tenantId, deletedAt: null },
                 select: { id: true, isSystem: true, name: true },
@@ -1627,10 +1758,12 @@ export class RbacService {
                 );
             }
 
+            assertCurrent();
             await tx.role.update({
                 where: { id: roleId },
                 data: { deletedAt: new Date() },
             });
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId,
@@ -1655,6 +1788,7 @@ export class RbacService {
         user: { id: string; role: UserRole },
         tenantId: string,
         requestedRoleIds: string[],
+        assertCurrent: () => void = () => {},
     ): Promise<RoleReplacementResult> {
         const roles = await tx.role.findMany({
             where: {
@@ -1681,6 +1815,7 @@ export class RbacService {
             throw new BadRequestException('One or more roles are invalid for this tenant');
         }
 
+        assertCurrent();
         await tx.roleAssignment.deleteMany({
             where: {
                 tenantId,
@@ -1688,6 +1823,7 @@ export class RbacService {
             },
         });
         if (validRoleIds.length > 0) {
+            assertCurrent();
             await tx.roleAssignment.createMany({
                 data: validRoleIds.map((roleId) => ({ tenantId, userId: user.id, roleId })),
                 skipDuplicates: true,
@@ -1696,6 +1832,7 @@ export class RbacService {
 
         const legacyRole = this.reconciledLegacyRole(roles);
         if (user.role !== legacyRole) {
+            assertCurrent();
             await tx.user.update({
                 where: { id: user.id },
                 data: { role: legacyRole },
@@ -1712,6 +1849,7 @@ export class RbacService {
         userId: string,
         tenantId: string,
         roleIds: string[],
+        assertCurrent: () => void = () => {},
     ): Promise<RoleReplacementResult> {
         const requestedRoleIds = this.normalizeRoleIds(roleIds);
         await this.lockRoleMutationTenants(tx, [tenantId]);
@@ -1741,6 +1879,7 @@ export class RbacService {
             user,
             tenantId,
             requestedRoleIds,
+            assertCurrent,
         );
     }
 
@@ -1815,13 +1954,13 @@ export class RbacService {
         };
     }
 
-    async replaceLegacySystemRoleForPlatformAdminActorInTransaction(
+    async prepareLegacySystemRoleForPlatformAdminActorInTransaction(
         tx: TenantPrismaTransaction,
         userId: string,
         tenantId: string,
         legacyRole: UserRole,
         actor: PlatformAdminMutationActor,
-    ): Promise<PlatformAdminSystemRoleReplacementResult> {
+    ): Promise<PreparedPlatformAdminSystemRoleReplacement> {
         const definition = DEFAULT_ROLE_DEFINITIONS.find((candidate) => candidate.legacyRole === legacyRole);
         if (!definition) {
             throw new BadRequestException('Selected role is invalid');
@@ -1915,23 +2054,44 @@ export class RbacService {
                 && assignment.userId === context.targetUserId)
             .map((assignment) => assignment.roleId)
             .sort();
-        const replacement = await this.replaceRolesForLockedUserInTransaction(
-            tx,
-            context.target,
-            context.targetTenantId,
-            [lockedTargetRole.id],
-        );
-        const changed = context.target.role !== replacement.legacyRole
-            || previousRoleIds.length !== 1
-            || previousRoleIds[0] !== lockedTargetRole.id;
+        const plan = Object.freeze({ target: Object.freeze({ ...context.target }),
+            targetTenantId: context.targetTenantId, roleId: lockedTargetRole.id,
+            previousRoleIds: Object.freeze([...previousRoleIds]) });
+        this.platformRolePlans.set(plan, tx);
+        return plan;
+    }
 
-        return {
-            ...replacement,
-            changed,
-            previousLegacyRole: context.target.role,
-            previousRoleIds,
-            roleId: lockedTargetRole.id,
-        };
+    async applyPreparedPlatformAdminSystemRoleReplacementInTransaction(
+        tx: TenantPrismaTransaction,
+        plan: PreparedPlatformAdminSystemRoleReplacement,
+        assertCurrent: () => void = () => {},
+    ): Promise<PlatformAdminSystemRoleReplacementResult> {
+        if (this.platformRolePlans.get(plan) !== tx) {
+            throw new ForbiddenException('Role replacement authorization does not belong to this transaction');
+        }
+        this.platformRolePlans.delete(plan);
+        const replacement = await this.replaceRolesForLockedUserInTransaction(
+            tx, plan.target, plan.targetTenantId, [plan.roleId], assertCurrent,
+        );
+        const previousRoleIds = [...plan.previousRoleIds];
+        const changed = plan.target.role !== replacement.legacyRole
+            || previousRoleIds.length !== 1 || previousRoleIds[0] !== plan.roleId;
+        return { ...replacement, changed, previousLegacyRole: plan.target.role,
+            previousRoleIds, roleId: plan.roleId };
+    }
+
+    async replaceLegacySystemRoleForPlatformAdminActorInTransaction(
+        tx: TenantPrismaTransaction,
+        userId: string,
+        tenantId: string,
+        legacyRole: UserRole,
+        actor: PlatformAdminMutationActor,
+        assertCurrent: () => void = () => {},
+    ): Promise<PlatformAdminSystemRoleReplacementResult> {
+        const plan = await this.prepareLegacySystemRoleForPlatformAdminActorInTransaction(
+            tx, userId, tenantId, legacyRole, actor,
+        );
+        return this.applyPreparedPlatformAdminSystemRoleReplacementInTransaction(tx, plan, assertCurrent);
     }
 
     async assignRolesToUser(userId: string, tenantId: string, roleIds: string[]) {
@@ -1946,6 +2106,7 @@ export class RbacService {
         tenantId: string,
         request: UserRoleReplacementRequest,
     ): Promise<UserRoleReplacementResult> {
+        request = { ...request, roleIds: request.roleIds ? [...request.roleIds] : undefined };
         const actorUserId = request.actorUserId?.trim();
         const targetUserId = request.targetUserId?.trim();
         if (!actorUserId) {
@@ -1955,7 +2116,11 @@ export class RbacService {
             throw new NotFoundException('User not found');
         }
 
-        return this.runActorAuthorizedSerializableMutation(tenantId, async (tx) => {
+        if (actorUserId === targetUserId) throw new ForbiddenException(request.selfMutationMessage);
+        return this.runCurrentMutation({
+            actor: { userId: actorUserId, tenantId, sessionId: request.actorSessionId },
+            requiredPermission: request.requiredPermission, mfaObserver: request.mfaObserver,
+        }, async (tx) => {
             if (actorUserId === targetUserId) {
                 throw new ForbiddenException(request.selfMutationMessage);
             }
@@ -2100,17 +2265,21 @@ export class RbacService {
                 .filter((assignment) => assignment.userId === targetUserId)
                 .map((assignment) => assignment.roleId)
                 .sort();
+            return { target, requestedRoleIds, beforeRoleIds };
+        }, async (tx, { target, requestedRoleIds, beforeRoleIds }, assertCurrent) => {
             const replacement = await this.replaceRolesForLockedUserInTransaction(
                 tx,
                 target,
                 tenantId,
                 requestedRoleIds,
+                assertCurrent,
             );
             if (!SCHEDULABLE_USER_ROLES.includes(replacement.legacyRole)) {
                 await unassignEditableShiftsForIneligibleUser(
                     tx,
                     tenantId,
                     targetUserId,
+                    assertCurrent,
                 );
             }
             const afterRoleIds = [...requestedRoleIds].sort();
@@ -2119,6 +2288,7 @@ export class RbacService {
             const changed = assignmentsChanged || target.role !== replacement.legacyRole;
             let sessionsRevoked = 0;
             if (changed) {
+                assertCurrent();
                 const revoked = await tx.session.updateMany({
                     where: { userId: targetUserId, revokedAt: null },
                     data: { revokedAt: new Date() },
@@ -2126,6 +2296,7 @@ export class RbacService {
                 sessionsRevoked = revoked.count;
             }
 
+            assertCurrent();
             await tx.auditLog.create({
                 data: {
                     tenantId,

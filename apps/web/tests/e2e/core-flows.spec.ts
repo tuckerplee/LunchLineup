@@ -2,33 +2,87 @@ import { expect, test, type Page } from '@playwright/test';
 
 type FormSubmission = { url: string; body: string | null };
 
+type TurnstileFixtureSnapshot = {
+  active: Array<{ id: string; generation: number; solved: boolean }>;
+  events: Array<{ type: string; id: string; generation: number; token?: string }>;
+};
+type TurnstileFixtureControl = {
+  snapshot: () => TurnstileFixtureSnapshot;
+  solve: (id: string, generation: number, token: string) => void;
+};
+
 async function installTurnstileStub(page: Page) {
   await page.addInitScript(() => {
-    const tokens = ['turnstile-send-token', 'turnstile-verify-token'];
-    let nextTokenIndex = 0;
-    let activeOptions: { callback?: (token: string) => void } | null = null;
+    let nextWidgetId = 0;
+    const widgets = new Map<string, { generation: number; solved: boolean; callback: (token: string) => void }>();
+    const events: TurnstileFixtureSnapshot['events'] = [];
+    const issuedTokens = new Set<string>();
     const testWindow = window as Window & {
       turnstile: {
         render: (container: Element, options: { callback: (token: string) => void }) => string;
-        reset: () => void;
-        remove: () => void;
+        reset: (id?: string) => void;
+        remove: (id?: string) => void;
       };
+      __turnstileFixture?: TurnstileFixtureControl;
     };
-
+    const requireWidget = (id: string | undefined) => {
+      const widget = id ? widgets.get(id) : undefined;
+      if (!id || !widget) throw new Error('Unknown or removed Turnstile fixture widget.');
+      return { id, widget };
+    };
     testWindow.turnstile = {
       render: (_container, options) => {
-        activeOptions = options;
-        window.setTimeout(() => options.callback(tokens[nextTokenIndex++] ?? 'turnstile-extra-token'), 0);
-        return 'test-turnstile-widget';
+        const id = `test-turnstile-widget-${++nextWidgetId}`;
+        widgets.set(id, { generation: 0, solved: false, callback: options.callback });
+        events.push({ type: 'render', id, generation: 0 });
+        return id;
       },
-      reset: () => {
-        window.setTimeout(() => activeOptions?.callback?.(tokens[nextTokenIndex++] ?? 'turnstile-reset-token'), 0);
+      reset: (id) => {
+        const current = requireWidget(id);
+        current.widget.generation += 1;
+        current.widget.solved = false;
+        events.push({ type: 'reset', id: current.id, generation: current.widget.generation });
       },
-      remove: () => {
-        activeOptions = null;
+      remove: (id) => {
+        const current = requireWidget(id);
+        events.push({ type: 'remove', id: current.id, generation: current.widget.generation });
+        widgets.delete(current.id);
+      },
+    };
+    testWindow.__turnstileFixture = {
+      snapshot: () => ({
+        active: Array.from(widgets, ([id, widget]) => ({ id, generation: widget.generation, solved: widget.solved })),
+        events: events.map(event => ({ ...event })),
+      }),
+      solve: (id, generation, token) => {
+        const current = requireWidget(id);
+        if (current.widget.generation !== generation || current.widget.solved || !token || issuedTokens.has(token)) {
+          throw new Error('A fresh token and the active unsolved widget generation are required.');
+        }
+        current.widget.solved = true;
+        issuedTokens.add(token);
+        events.push({ type: 'solve', id, generation, token });
+        current.widget.callback(token);
       },
     };
   });
+  const snapshot = () => page.evaluate(() => {
+    const fixture = (window as Window & { __turnstileFixture?: TurnstileFixtureControl }).__turnstileFixture;
+    if (!fixture) throw new Error('Turnstile fixture is not installed.');
+    return fixture.snapshot();
+  });
+  return {
+    snapshot,
+    async solve(token: string) {
+      const state = await snapshot();
+      expect(state.active).toHaveLength(1);
+      await page.evaluate(({ widget, token }) => {
+        const fixture = (window as Window & { __turnstileFixture?: TurnstileFixtureControl }).__turnstileFixture;
+        if (!fixture) throw new Error('Turnstile fixture is not installed.');
+        fixture.solve(widget.id, widget.generation, token);
+      }, { widget: state.active[0], token });
+    },
+  };
 }
 
 async function acceptOnboardingLegalAssent(page: Page) {
@@ -85,7 +139,7 @@ test.describe('Public SaaS entrypoints', () => {
     });
 
     await mockLoginResolve(page, {
-      flow: 'PIN',
+      flow: 'USERNAME_PIN',
       identifier: 'e2e.admin',
       pinResetRequired: false,
     });
@@ -294,7 +348,14 @@ test.describe('Onboarding smoke flow', () => {
   });
 
   test('open signup with Turnstile sends challenge tokens with OTP requests', { tag: '@turnstile' }, async ({ page }) => {
-    await installTurnstileStub(page);
+    const turnstile = await installTurnstileStub(page);
+    const sendPayloads: Record<string, unknown>[] = [];
+    const verifyPayloads: Record<string, unknown>[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && new URL(request.url()).pathname === '/api/v2/auth/email/send-otp') {
+        sendPayloads.push(request.postDataJSON() as Record<string, unknown>);
+      }
+    });
     let resolveVerifyPayload!: (payload: Record<string, unknown>) => void;
     const verifyPayloadPromise = new Promise<Record<string, unknown>>((resolve) => {
       resolveVerifyPayload = resolve;
@@ -302,6 +363,7 @@ test.describe('Onboarding smoke flow', () => {
 
     await page.route('**/api/v2/auth/email/verify-otp**', async (route) => {
       const payload = route.request().postDataJSON() as Record<string, unknown>;
+      verifyPayloads.push(payload);
       resolveVerifyPayload(payload);
       await route.fulfill({
         status: 200,
@@ -327,6 +389,16 @@ test.describe('Onboarding smoke flow', () => {
     await acceptOnboardingLegalAssent(page);
 
     await expect(page.getByText('Signup security check')).toBeVisible();
+    const verifyButton = page.getByRole('button', { name: 'Verify code and launch' });
+    await expect(verifyButton).toBeDisabled();
+    expect(sentOnboardingOtpPayload).toBeNull();
+    expect(sendPayloads).toHaveLength(0);
+    const initialWidget = (await turnstile.snapshot()).active;
+    expect(initialWidget).toHaveLength(1);
+    const sendResponse = page.waitForResponse(response => response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/api/v2/auth/email/send-otp');
+    await turnstile.solve('turnstile-send-token');
+    expect((await sendResponse).status()).toBe(200);
     await expect.poll(() => sentOnboardingOtpPayload).toMatchObject({
       email: 'manager@example.com',
       tenantName: 'Test Diner Corp',
@@ -334,8 +406,16 @@ test.describe('Onboarding smoke flow', () => {
       turnstileToken: 'turnstile-send-token',
     });
 
-    const verifyButton = page.getByRole('button', { name: 'Verify code and launch' });
+    await expect.poll(async () => (await turnstile.snapshot()).events.filter(event => event.type === 'reset').length).toBe(1);
+    const afterSend = await turnstile.snapshot();
+    expect(afterSend.active).toEqual([{ id: initialWidget[0].id, generation: initialWidget[0].generation + 1, solved: false }]);
+    expect(sendPayloads).toHaveLength(1);
+    await expect(verifyButton).toBeDisabled();
+    await turnstile.solve('turnstile-verify-token');
     await expect(verifyButton).toBeEnabled();
+    await test.info().attach('turnstile-widget-lifecycle', {
+      body: JSON.stringify(await turnstile.snapshot()), contentType: 'application/json',
+    });
     await page.getByPlaceholder('123456').fill('123456');
     const [verifyPayload] = await Promise.all([
       verifyPayloadPromise,
@@ -350,6 +430,8 @@ test.describe('Onboarding smoke flow', () => {
       code: '123456',
       turnstileToken: 'turnstile-verify-token',
     });
+    expect(sendPayloads).toHaveLength(1);
+    expect(verifyPayloads).toHaveLength(1);
   });
 
   test('open signup blocks when the Turnstile script is unavailable', { tag: '@turnstile' }, async ({ page }) => {

@@ -694,6 +694,7 @@ export async function loadPayrollPeriodSummaries(
   transaction: TenantTransaction,
   tenantId: string,
   periodIds: string[],
+  assertCurrent: () => void = () => {},
 ): Promise<Map<string, {
   cardCount: number;
   closedCardCount: number;
@@ -745,6 +746,7 @@ export async function loadPayrollPeriodSummaries(
       AND period."id" IN (${Prisma.join(periodIds)})
     GROUP BY period."id"
   `);
+  assertCurrent();
   return new Map(rows.map((row) => {
     const closedCardCount = countValue(row.closedCardCount);
     const approvedCardCount = countValue(row.approvedCardCount);
@@ -767,8 +769,9 @@ export async function loadPayrollPeriodSummary(
   transaction: TenantTransaction,
   tenantId: string,
   periodId: string,
+  assertCurrent: () => void = () => {},
 ) {
-  const summaries = await loadPayrollPeriodSummaries(transaction, tenantId, [periodId]);
+  const summaries = await loadPayrollPeriodSummaries(transaction, tenantId, [periodId], assertCurrent);
   return summaries.get(periodId) ?? {
     cardCount: 0,
     closedCardCount: 0,

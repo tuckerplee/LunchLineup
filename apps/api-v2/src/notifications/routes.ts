@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   NotificationListQuerySchema,
   NotificationListResponseSchema,
@@ -17,6 +18,7 @@ import type { NotificationService } from './notifications.service';
 export type NotificationRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   notifications: Pick<NotificationService, 'list' | 'markRead' | 'markAllRead'>;
 };
 
@@ -37,6 +39,7 @@ export async function registerNotificationRoutes(
   }, async (request, reply) => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['notifications:read']);
+    await dependencies.quota.consume('listNotifications', identity, reply);
     const response = await dependencies.notifications.list(identity, request.query);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -55,6 +58,7 @@ export async function registerNotificationRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['notifications:write']);
+    await dependencies.quota.consume('markNotificationRead', identity, reply);
     const response = await dependencies.notifications.markRead(identity, request.body.ids);
     reply.header('Cache-Control', 'private, no-store');
     return response;
@@ -72,6 +76,7 @@ export async function registerNotificationRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['notifications:write']);
+    await dependencies.quota.consume('markAllNotificationsRead', identity, reply);
     const response = await dependencies.notifications.markAllRead(identity);
     reply.header('Cache-Control', 'private, no-store');
     return response;

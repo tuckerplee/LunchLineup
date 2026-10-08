@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { performance } from 'node:perf_hooks';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
@@ -16,6 +18,45 @@ const { FeatureAccessService } = require('../../apps/api/src/billing/feature-acc
 const { MeteringService } = require('../../apps/api/src/billing/metering.service.ts');
 const { TenantPrismaService } = require('../../apps/api/src/database/tenant-prisma.service.ts');
 const { LunchBreaksService } = require('../../apps/api/src/lunch-breaks/lunch-breaks.service.ts');
+const { RbacService } = require('../../apps/api/src/auth/rbac.service.ts');
+
+// Source-only readiness: real scoped Session/current RBAC rows, with an
+// explicitly synthetic bounded MFA observer. No Redis/provider qualification.
+async function seedCurrentLunchAuthority(owner, fixture) {
+  const keys = ['lunch_breaks:read', 'lunch_breaks:write', 'shifts:write'];
+  await owner.$transaction(async tx => {
+    await tx.user.update({ where: { id: fixture.managerId }, data: { mfaEnabled: true } });
+    await tx.session.create({ data: {
+      id: `${fixture.managerId}-lunch-session`, userId: fixture.managerId,
+      refreshToken: `fixture-hash-${fixture.managerId}`, ipAddress: '127.0.0.1',
+      userAgent: 'retained-lunch-current-authority-fixture',
+      expiresAt: new Date(Date.now() + 8 * 60 * 60_000),
+    } });
+    const roleId = `${fixture.managerId}-lunch-role`;
+    await tx.role.create({ data: { id: roleId, tenantId: fixture.tenantId,
+      name: 'Scoped Lunch Manager', slug: 'scoped-lunch-manager', isSystem: false } });
+    for (const key of keys) {
+      const permission = await tx.permission.findUniqueOrThrow({ where: { key } });
+      await tx.rolePermission.create({ data: { roleId, permissionId: permission.id } });
+    }
+    await tx.roleAssignment.create({ data: { tenantId: fixture.tenantId, userId: fixture.managerId, roleId } });
+  });
+}
+function currentLunchDependencies(tenantDb, fixture) {
+  const transactionContext = new AsyncLocalStorage();
+  const withTenant = tenantDb.withTenant.bind(tenantDb);
+  tenantDb.withTenant = (tenantId, callback, options) => withTenant(tenantId,
+    tx => transactionContext.run(true, () => callback(tx)), options);
+  const observer = { observeSessionMfa: async identity => {
+    assert.notEqual(transactionContext.getStore(), true, 'trusted synthetic observation must occur outside its own DB callback');
+    assert.deepEqual(identity, { sub: fixture.managerId, tenantId: fixture.tenantId,
+      sessionId: `${fixture.managerId}-lunch-session` });
+    return { ...identity, expiresAtEpochMs: Date.now() + 60_000,
+      expiresAtMonotonicMs: performance.now() + 60_000 };
+  } };
+  return [new RbacService(tenantDb), observer];
+}
+
 
 const explicitIntent = {
   shifts: [{
@@ -92,14 +133,15 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
       });
     });
 
+    await seedCurrentLunchAuthority(ownerPrisma, fixture);
     const tenantDb = new TenantPrismaService(appPrisma);
     const featureAccess = new FeatureAccessService(new MeteringService(tenantDb), tenantDb);
-    const service = new LunchBreaksService(featureAccess, tenantDb);
+    const service = new LunchBreaksService(featureAccess, tenantDb, ...currentLunchDependencies(tenantDb, fixture));
 
     await t.test('unchanged intent succeeds after paid subscription restoration', async () => {
       const key = `subscription-restored-${runId}`;
       await assert.rejects(
-        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key),
+        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` }),
         (error) => error instanceof ForbiddenException && error.getStatus() === 403,
       );
       let request = await ownerPrisma.lunchBreakGenerationRequest.findFirstOrThrow({
@@ -114,7 +156,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
         where: { id: fixture.tenantId },
         data: { status: 'ACTIVE' },
       });
-      const response = await service.generateLunchBreaks(fixture.tenantId, explicitIntent, key);
+      const response = await service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
       request = await ownerPrisma.lunchBreakGenerationRequest.findUniqueOrThrow({ where: { id: request.id } });
 
       assert.equal(response.reused, false);
@@ -135,14 +177,14 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
       const ledgerBeforeControls = await ownerPrisma.creditTransaction.count({
         where: { tenantId: fixture.tenantId },
       });
-      await service.getPolicy(fixture.tenantId);
-      await service.listLunchBreaks(fixture.tenantId, { locationId: fixture.locationId });
-      await service.updatePolicy(fixture.tenantId, { lunchDurationMinutes: 35 });
+      await service.getPolicy(fixture.tenantId, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
+      await service.listLunchBreaks(fixture.tenantId, { locationId: fixture.locationId }, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
+      await service.updatePolicy(fixture.tenantId, { lunchDurationMinutes: 35 }, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
       assert.equal(await ownerPrisma.creditTransaction.count({
         where: { tenantId: fixture.tenantId },
       }), ledgerBeforeControls);
       await assert.rejects(
-        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key),
+        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` }),
         (error) => error instanceof ForbiddenException && error.getStatus() === 403,
       );
       let request = await ownerPrisma.lunchBreakGenerationRequest.findFirstOrThrow({
@@ -156,7 +198,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
         where: { id: fixture.tenantId },
         data: { usageCredits: 5 },
       });
-      const response = await service.generateLunchBreaks(fixture.tenantId, explicitIntent, key);
+      const response = await service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
       request = await ownerPrisma.lunchBreakGenerationRequest.findUniqueOrThrow({ where: { id: request.id } });
 
       assert.equal(response.reused, false);
@@ -185,7 +227,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
       };
 
       await assert.rejects(
-        service.generateLunchBreaks(fixture.tenantId, persistedIntent, key),
+        service.generateLunchBreaks(fixture.tenantId, persistedIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` }),
         /forced rolled-back persistence failure/,
       );
       let request = await ownerPrisma.lunchBreakGenerationRequest.findFirstOrThrow({
@@ -203,7 +245,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
         select: { revision: true },
       })).revision, 0);
 
-      const response = await service.generateLunchBreaks(fixture.tenantId, persistedIntent, key);
+      const response = await service.generateLunchBreaks(fixture.tenantId, persistedIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
       request = await ownerPrisma.lunchBreakGenerationRequest.findUniqueOrThrow({ where: { id: request.id } });
       assert.equal(response.persisted, true);
       assert.equal(response.reused, false);
@@ -226,7 +268,7 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
         data: { usageCredits: 0 },
       });
       await assert.rejects(
-        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key),
+        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` }),
         (error) => error instanceof ForbiddenException && error.getStatus() === 403,
       );
       const failed = await ownerPrisma.lunchBreakGenerationRequest.findFirstOrThrow({
@@ -242,25 +284,38 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
       let policyReached;
       const policyGate = new Promise((resolveGate) => { releasePolicy = resolveGate; });
       const reached = new Promise((resolveReached) => { policyReached = resolveReached; });
-      const fetchPolicyForTenant = service.fetchPolicyForTenant.bind(service);
+      const claimGenerationRequest = service.claimGenerationRequest.bind(service);
       let gateOnce = true;
-      service.fetchPolicyForTenant = async (...args) => {
-        if (gateOnce) {
+      service.claimGenerationRequest = async (...args) => {
+        const claim = await claimGenerationRequest(...args);
+        if (gateOnce && 'requestId' in claim) {
           gateOnce = false;
+          const committedClaim = await ownerPrisma.lunchBreakGenerationRequest.findUniqueOrThrow({ where: { id: claim.requestId } });
+          assert.equal(committedClaim.status, 'PENDING');
+          assert.equal(committedClaim.attempts, 2);
+          // claimGenerationRequest has returned after its transaction releases.
           policyReached();
           await policyGate;
         }
-        return fetchPolicyForTenant(...args);
+        return claim;
       };
 
-      const winner = service.generateLunchBreaks(fixture.tenantId, explicitIntent, key);
-      await reached;
-      await assert.rejects(
-        service.generateLunchBreaks(fixture.tenantId, explicitIntent, key),
-        (error) => error instanceof ConflictException && error.getStatus() === 409,
-      );
-      releasePolicy();
-      const response = await winner;
+      const winner = service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` });
+      let response;
+      try {
+        assert.equal(await Promise.race([reached.then(() => 'released-claim'),
+          winner.then(() => 'settled', () => 'settled')]), 'released-claim');
+        await assert.rejects(
+          service.generateLunchBreaks(fixture.tenantId, explicitIntent, key, { sub: fixture.managerId, tenantId: fixture.tenantId, sessionId: `${fixture.managerId}-lunch-session` }),
+          (error) => error instanceof ConflictException && error.getStatus() === 409,
+        );
+        releasePolicy();
+        response = await winner;
+      } finally {
+        releasePolicy();
+        service.claimGenerationRequest = claimGenerationRequest;
+        await Promise.allSettled([winner]);
+      }
       const request = await ownerPrisma.lunchBreakGenerationRequest.findUniqueOrThrow({ where: { id: failed.id } });
 
       assert.equal(response.reused, false);
@@ -288,6 +343,11 @@ test('real PostgreSQL reclaims only recoverable FAILED generation intents with o
       await tx.shift.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.schedule.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.location.deleteMany({ where: { tenantId: fixture.tenantId } });
+      // Explicit scoped authority-row cleanup: replica mode suppresses FK cascades.
+      await tx.session.deleteMany({ where: { id: `${fixture.managerId}-lunch-session`, userId: fixture.managerId } });
+      await tx.roleAssignment.deleteMany({ where: { tenantId: fixture.tenantId, userId: fixture.managerId, roleId: `${fixture.managerId}-lunch-role` } });
+      await tx.rolePermission.deleteMany({ where: { roleId: `${fixture.managerId}-lunch-role` } });
+      await tx.role.deleteMany({ where: { id: `${fixture.managerId}-lunch-role`, tenantId: fixture.tenantId } });
       await tx.user.deleteMany({ where: { tenantId: fixture.tenantId } });
       await tx.tenant.deleteMany({ where: { id: fixture.tenantId } });
     }).catch(() => {});

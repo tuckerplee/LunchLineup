@@ -99,6 +99,7 @@ const env = {
   JWT_SECRET: secret('jwt_'),
   JWT_REFRESH_SECRET: secret('refresh_'),
   SESSION_SECRET: secret('session_'),
+  OTP_HMAC_SECRET: secret('otp_'),
   MFA_SECRET_ENCRYPTION_KEY_CURRENT: randomBytes(32).toString('base64'),
   MFA_SECRET_ENCRYPTION_KEY_PREVIOUS: '',
   MFA_SECRET_ENCRYPTION_KEY: '',

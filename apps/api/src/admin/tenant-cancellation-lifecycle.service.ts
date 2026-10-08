@@ -1,6 +1,9 @@
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { RbacService } from '../auth/rbac.service';
+import { capturePlatformTenantActor, withPlatformTenantLifecycleAdmission } from './platform-tenant-lifecycle-authority';
 import type {
     StripeService,
     TenantSubscriptionCancellationCompensationResult,
@@ -16,7 +19,7 @@ import {
 } from './tenant-account-lifecycle';
 import type {
     TenantLifecycleActor,
-    TenantRetentionLegalHoldActor,
+    TenantPlatformArchiveActor,
 } from './tenant-account-lifecycle.service';
 
 export type TenantCancellationIntentKind =
@@ -91,12 +94,13 @@ type TenantCancellationProviderAttempt = {
 };
 
 type PrepareIntentInput = {
-    kind: TenantCancellationIntentKind;
     tenantId: string;
-    actor: TenantLifecycleActor | TenantRetentionLegalHoldActor;
     confirmation?: string;
     reason?: string | null;
-};
+} & (
+    | { kind: 'CUSTOMER_CANCELLATION'; actor: TenantLifecycleActor }
+    | { kind: 'PLATFORM_ARCHIVE'; actor: TenantPlatformArchiveActor }
+);
 
 export interface TenantCancellationIntentStore {
     prepare(input: PrepareIntentInput): Promise<PreparedTenantCancellationIntent>;
@@ -127,11 +131,18 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         private readonly tenantDb: TenantPrismaService,
         private readonly providerLeaseMs = DEFAULT_PROVIDER_LEASE_MS,
         private readonly now: () => Date = () => new Date(),
+        private readonly rbac?: RbacService,
+        private readonly mfaObserver?: MfaSessionObserver,
     ) {}
 
     async prepare(input: PrepareIntentInput): Promise<PreparedTenantCancellationIntent> {
-        return this.withIntentScope(input.kind, input.tenantId, async (tx) => {
-            await this.lockTenantLifecycle(tx, input.tenantId);
+        // Capture request authority before any lock wait; recovery methods never
+        // enter this admission wrapper or depend on the originating session.
+        if (input.kind === 'PLATFORM_ARCHIVE') {
+            input = { ...input, actor: capturePlatformTenantActor(input.actor) };
+        }
+        const prepare = async (tx: TenantPrismaTransaction, assertCurrent: () => void) => {
+            if (input.kind === 'CUSTOMER_CANCELLATION') await this.lockTenantLifecycle(tx, input.tenantId);
             const tenant = await this.findTenantSubject(tx, input.tenantId);
             if (input.confirmation !== undefined) {
                 assertTenantSlugConfirmation(input.confirmation, tenant.slug);
@@ -150,6 +161,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             ) {
                 const priorOutcome = parseCancellationOutcome(intent.providerResult);
                 const outcome = terminalizeCancellationOutcome(priorOutcome);
+                assertCurrent();
                 await this.recordFinalizedAudit(tx, intent, tenant, outcome);
                 intent = {
                     ...intent,
@@ -157,6 +169,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                     providerLeaseOwner: null,
                     providerLeaseExpiresAt: null,
                 };
+                assertCurrent();
                 await this.writeIntent(tx, intent);
                 return { intent, tenant, providerLeaseOwner: null };
             }
@@ -198,7 +211,8 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                     operationId,
                     providerSubscriptionId: tenant.stripeSubscriptionId?.trim() || null,
                     subscriptionFingerprint: fingerprint,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 await tx.auditLog.create({
                     data: {
                         tenantId: tenant.id,
@@ -245,13 +259,18 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                 providerLeaseExpiresAt: leaseExpiresAt,
                 providerAttempts: intent.providerAttempts + 1,
             };
+            assertCurrent();
             await this.writeIntent(tx, claimed);
             return {
                 intent: claimed,
                 tenant,
                 providerLeaseOwner,
             };
-        });
+        };
+        return input.kind === 'PLATFORM_ARCHIVE'
+            ? withPlatformTenantLifecycleAdmission(this.rbac ?? new RbacService(this.tenantDb), input.tenantId, input.actor,
+                this.mfaObserver, (tx, _actor, assertCurrent) => prepare(tx, assertCurrent))
+            : this.withIntentScope(input.kind, input.tenantId, (tx) => prepare(tx, () => undefined));
     }
 
     async markProviderApplied(
@@ -1036,6 +1055,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             providerSubscriptionId: string | null;
             subscriptionFingerprint: string;
         },
+        assertCurrent: () => void,
     ): Promise<TenantCancellationIntentRow> {
         const actorUserId = input.actor.userId?.trim();
         if (!actorUserId) {
@@ -1062,6 +1082,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             terminalReason: null,
             terminalizedAt: null,
         };
+        assertCurrent();
         await this.writeIntent(tx, intent);
         return intent;
     }
@@ -1436,15 +1457,20 @@ function parseProviderMutationOwnership(
 }
 
 export class TenantCancellationLifecycleService {
+    private readonly store: TenantCancellationIntentStore;
+
     constructor(
         tenantDb: TenantPrismaService,
         private readonly stripeBilling: () => Pick<
             StripeService,
             'cancelTenantSubscriptionAtPeriodEnd'
         > & Partial<Pick<StripeService, 'compensateTenantSubscriptionCancellation'>>,
-        private readonly store: TenantCancellationIntentStore =
-            new PrismaTenantCancellationIntentStore(tenantDb),
-    ) {}
+        store?: TenantCancellationIntentStore,
+        rbac?: RbacService,
+        mfaObserver?: MfaSessionObserver,
+    ) {
+        this.store = store ?? new PrismaTenantCancellationIntentStore(tenantDb, undefined, undefined, rbac, mfaObserver);
+    }
 
     async cancelCustomer(
         actor: TenantLifecycleActor,
@@ -1473,13 +1499,14 @@ export class TenantCancellationLifecycleService {
     }
 
     async archivePlatform(
-        actor: TenantRetentionLegalHoldActor,
+        actor: TenantPlatformArchiveActor,
         tenantId: string,
     ) {
+        const capturedActor = capturePlatformTenantActor(actor);
         const prepared = await this.store.prepare({
             kind: 'PLATFORM_ARCHIVE',
             tenantId,
-            actor,
+            actor: capturedActor,
         });
         const finalized = await this.reconcilePrepared(prepared);
         return {

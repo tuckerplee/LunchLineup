@@ -72,6 +72,7 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
     const [isCostLoading, setIsCostLoading] = useState(true);
     const [isChecking, setIsChecking] = useState(false);
     const [isApplying, setIsApplying] = useState(false);
+    const [isCancelling, setIsCancelling] = useState(false);
     const [applyComplete, setApplyComplete] = useState(false);
     const [pollCount, setPollCount] = useState(0);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -181,6 +182,32 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
     }, [checkStatus, clearPollTimer, jobId, jobStatus, pollCount, pollingExhausted]);
 
     const activeJob = Boolean(jobStatus && !isAvailabilityImportTerminal(jobStatus));
+    const cancelImport = async () => {
+        if (!job || disabled || isCancelling || !activeJob) return;
+        if (!window.confirm('Cancel this availability import? Any reserved usage credit will be refunded. A completed import cannot be cancelled.')) return;
+        clearPollTimer();
+        requestAbortRef.current?.abort();
+        const generation = ++lifecycleRef.current;
+        setIsChecking(false);
+        setIsCancelling(true);
+        setError(null);
+        try {
+            const payload = await fetchJsonWithSession<unknown>(`/availability-imports/${job.id}/cancel`, {
+                method: 'POST', signal: AbortSignal.timeout(15_000),
+            });
+            if (generation !== lifecycleRef.current) return;
+            const nextJob = parseAvailabilityImportJob(payload);
+            if (nextJob.id !== job.id || nextJob.userId !== userId) throw new Error("The cancellation response did not match this import.");
+            setJob(nextJob);
+        } catch (err) {
+            if (generation !== lifecycleRef.current) return;
+            setError(err instanceof Error ? `Cancellation could not be confirmed: ${err.message} Retry cancellation or check status.` : 'Cancellation could not be confirmed. Check status.');
+            setPollCount(0);
+        } finally {
+            if (generation === lifecycleRef.current) setIsCancelling(false);
+        }
+    };
+
     const parsedAvailability = useMemo(() => (
         jobStatus === 'SUCCEEDED' ? job?.parsedAvailability ?? null : null
     ), [job?.parsedAvailability, jobStatus]);
@@ -381,9 +408,12 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
                     </div>
                     <div style={{ fontSize: '0.77rem', lineHeight: 1.4 }}>{statusView.detail}</div>
                     <strong style={{ fontSize: '0.77rem', lineHeight: 1.4 }}>{statusView.creditDetail}</strong>
-                    {pollingExhausted ? (
+                    {activeJob ? <Button type="button" size="sm" variant="outline" onClick={() => void cancelImport()} disabled={disabled || isCancelling}>
+                        {isCancelling ? 'Cancelling...' : 'Cancel import'}
+                    </Button> : null}
+                    {pollingExhausted || (activeJob && error) ? (
                         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.65rem', flexWrap: 'wrap', marginTop: '0.25rem' }}>
-                            <span style={{ fontSize: '0.76rem' }}>Automatic status checks paused after one minute.</span>
+                            <span style={{ fontSize: '0.76rem' }}>{pollingExhausted ? 'Automatic status checks paused after one minute.' : 'Confirm the current import status before continuing.'}</span>
                             <Button type="button" size="sm" variant="outline" onClick={resumePolling} disabled={isChecking}>
                                 <RefreshCw aria-hidden="true" size={14} /> Check status
                             </Button>

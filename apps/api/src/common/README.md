@@ -39,6 +39,8 @@
 - `telemetry.ts`: early API OpenTelemetry bootstrap with queued OTLP trace export, query-safe Node HTTP and Undici fetch span attributes, and Node auto-instrumentation.
 - `guards/`: global and shared API guards.
 - `pipes/`: shared request validation pipes.
+- `redis-throttler.storage-availability-guard.spec.ts`: quota storage unavailability regressions through the retained guard and production filter with controlled dependencies.
+
 
 ## Notes
 

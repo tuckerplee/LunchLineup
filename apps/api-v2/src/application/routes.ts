@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   APPLICATION_API_OPERATIONS,
   CurrentSessionResponseSchema,
@@ -31,6 +32,8 @@ const commonResponses = {
   404: ProblemDetailsSchema,
   409: ProblemDetailsSchema,
   412: ProblemDetailsSchema,
+  413: ProblemDetailsSchema,
+  415: ProblemDetailsSchema,
   422: ProblemDetailsSchema,
   428: ProblemDetailsSchema,
   429: ProblemDetailsSchema,
@@ -42,6 +45,7 @@ const commonResponses = {
 export type ApplicationRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   retainedApplication: Pick<RetainedApplicationBridge, 'execute'>;
 };
 
@@ -137,6 +141,7 @@ export async function registerApplicationRoutes(
       handler: async (request, reply) => {
         if (operation.operationId === 'getCurrentSession') {
           const identity = await dependencies.identity.authenticate(request as FastifyRequest, reply);
+          await dependencies.quota.consume('getCurrentSession', identity, reply);
           reply.header('Cache-Control', 'private, no-store');
           return { user: browserSessionIdentity(identity, dependencies.config) } satisfies CurrentSessionResponse;
         }

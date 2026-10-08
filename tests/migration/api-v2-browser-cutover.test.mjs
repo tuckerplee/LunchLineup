@@ -66,7 +66,7 @@ test('API-01 uses one explicit shared route catalog and no wildcard compatibilit
   const routes = read('apps/api-v2/src/application/routes.ts');
   const operationCount = [...catalog.matchAll(/\{ operationId: '/g)].length;
 
-  assert.equal(operationCount, 121);
+  assert.equal(operationCount, 128);
   assert.match(routes, /APPLICATION_API_OPERATIONS/);
   assert.match(routes, /url: `\/v2\$\{operation\.path\}`/);
   assert.doesNotMatch(routes, /\/v2\/\*/);
@@ -150,6 +150,9 @@ test('API-02 owns People natively with public role/user UUIDs and native staff d
     'getStaffSchedulingProfile',
     'updateStaffSchedulingProfile',
     'getStaffMember',
+    'updateStaffIdentity',
+    'getStaffLifecycle',
+    'setStaffSuspension',
     'createStaffInvitation',
     'getStaffInvitation',
     'retryStaffInvitation',
@@ -165,10 +168,11 @@ test('API-02 owns People natively with public role/user UUIDs and native staff d
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
   assert.match(catalog, /operationId: 'deleteStaffMember'[^\n]*native: true/);
-  assert.match(server, /new PeopleService\(database, config\)/);
+  assert.match(server, /new PeopleService\(database, config, identity\)/);
   assert.match(server, /new PeopleIdentifierTranslator\(people\)/);
   assert.match(routes, /registerPeopleRoutes/);
-  assert.match(routes, /deactivate\(identity, request\.params\.userId\)/);
+  assert.match(routes, /remove\(identity, request\.params\.userId\)/);
+  assert.match(routes, /setSuspended\(identity, request\.params\.userId, request\.body\)/);
   assert.match(service, /publicId: true/);
   assert.match(service, /anonymizeDeletedUser/);
   assert.match(service, /deleteAvailabilityImportStorageKeys/);
@@ -204,8 +208,8 @@ test('API-02 owns Operations natively with public records and no retained applic
   ]) {
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
-  assert.match(server, /new OperationsService\(database\)/);
-  assert.match(server, /new LunchBreakService\(database\)/);
+  assert.match(server, /new OperationsService\(database, identity\)/);
+  assert.match(server, /new LunchBreakService\(database, identity\)/);
   assert.match(server, /registerOperationsRoutes/);
   assert.match(routes, /registerOperationsRoutes/);
   assert.match(contract, /LunchBreakGenerationRequestSchema/);
@@ -244,7 +248,7 @@ test('API-02 owns Time Cards natively with public records and no retained applic
   assert.match(schema, /model TimeCardBreak \{[\s\S]*?publicId\s+String\s+@unique/);
   assert.match(migration, /\['TimeCard', 'TimeCardBreak'\]/);
   assert.match(migration, /target_table \|\| '_publicId_key'/);
-  assert.match(server, /new TimeCardService\(database\)/);
+  assert.match(server, /new TimeCardService\(database, identity\)/);
   assert.match(server, /registerTimeCardRoutes/);
   assert.match(routes, /registerTimeCardRoutes/);
   assert.match(service, /publicId: true/);
@@ -325,7 +329,7 @@ test('API-02 owns Payroll natively with public immutable evidence and no retaine
   }
   assert.match(contract, /PayrollLockedEntrySchema/);
   assert.match(contract, /PayrollReconciliationReceiptSchema/);
-  assert.match(server, /new PayrollService\(database\)/);
+  assert.match(server, /new PayrollService\(database, identity\)/);
   assert.match(server, /registerPayrollRoutes/);
   assert.match(routes, /registerPayrollRoutes/);
   assert.match(routes, /assertUnsafeRequestSecurity/);
@@ -351,7 +355,7 @@ test('API-02 owns workspace settings natively with tenant RLS and a redacted sec
     assert.match(catalog, new RegExp(`operationId: '${operationId}'[^\\n]*native: true`));
   }
   assert.match(contract, /WorkspaceSettingsSchema/);
-  assert.match(server, /new WorkspaceSettingsService\(database, config\)/);
+  assert.match(server, /new WorkspaceSettingsService\(database, config, identity\)/);
   assert.match(server, /registerWorkspaceSettingsRoutes/);
   assert.match(routes, /registerWorkspaceSettingsRoutes/);
   assert.match(service, /tenantSetting\.upsert/);

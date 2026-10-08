@@ -12,6 +12,97 @@ const bash = process.platform === 'win32' && existsSync('C:\\Program Files\\Git\
   ? 'C:\\Program Files\\Git\\bin\\bash.exe'
   : 'bash';
 
+// A dead orphan can remain waitable briefly under a namespace subreaper.
+// Only an observed zombie may wait; every live/error/reused identity fails.
+// Success still requires kill(pid, 0) to report ESRCH for every original PID.
+function waitForProcessAbsence(pids, { kill, stat, now, pause }, budgetMs = 1_500) {
+  const deadline = now() + budgetMs;
+  const identities = new Map();
+  const observedAbsent = new Set();
+  if (!pids.length || !pids.every((pid) => Number.isSafeInteger(pid) && pid > 1)) throw new Error('invalid process IDs');
+  const absent = (pid) => {
+    try {
+      kill(pid, 0);
+      if (observedAbsent.has(pid)) throw new Error(`reused process ID ${pid}: reappeared after absence`);
+      return false;
+    } catch (error) {
+      if (error?.code === 'ESRCH') { observedAbsent.add(pid); return true; }
+      throw error;
+    }
+  };
+  while (true) {
+    let remaining = 0;
+    for (const pid of pids) {
+      if (absent(pid)) continue;
+      let text;
+      try { text = stat(pid); } catch (error) {
+        if (error?.code === 'ENOENT' && absent(pid)) continue;
+        throw error;
+      }
+      const fields = text.slice(text.lastIndexOf(')') + 2).trim().split(/\s+/);
+      const [state] = fields;
+      const startTicks = fields[19];
+      if (state !== 'Z') throw new Error(`live process ${pid}: state=${state}`);
+      if (!/^[0-9]+$/.test(startTicks ?? '')) throw new Error(`invalid process identity ${pid}`);
+      if (identities.has(pid) && identities.get(pid) !== startTicks) throw new Error(`reused process ID ${pid}`);
+      identities.set(pid, startTicks);
+      remaining += 1;
+    }
+    if (remaining === 0) return true;
+    if (now() >= deadline) return false;
+    pause(Math.min(10, deadline - now()));
+  }
+}
+
+function processAbsenceCheck(pids) {
+  const program = `
+const fs = require('node:fs');
+const clock = require('node:perf_hooks').performance;
+const gate = new Int32Array(new SharedArrayBuffer(4));
+const observations = new Map();
+const observedAt = clock.now();
+const note = (pid, fields) => {
+  if (!observations.has(pid) && observations.size >= 8) return;
+  observations.set(pid, { ...observations.get(pid), pid, atMs: Math.round(clock.now() - observedAt), ...fields });
+};
+const safeCode = (code) => /^[A-Z][A-Z0-9_]{0,31}$/.test(code ?? '') ? code : 'UNKNOWN';
+const report = () => console.error('process_absence_observation=' + JSON.stringify({ observations: [...observations.values()] }));
+const waitForProcessAbsence = ${waitForProcessAbsence.toString()};
+try {
+  const passed = waitForProcessAbsence(JSON.parse(process.argv[1]).map(Number), {
+    kill: (pid, signal) => {
+      try { process.kill(pid, signal); note(pid, { killStatus: 'present' }); }
+      catch (error) { note(pid, { killStatus: safeCode(error?.code) }); throw error; }
+    },
+    stat: (pid) => {
+      let fd;
+      try {
+        fd = fs.openSync('/proc/' + pid + '/stat', 'r');
+        const bytes = Buffer.alloc(4097);
+        const length = fs.readSync(fd, bytes, 0, bytes.length, 0);
+        if (length > 4096) throw new Error('process stat exceeded bound');
+        const text = bytes.subarray(0, length).toString('utf8');
+        const fields = text.slice(text.lastIndexOf(')') + 2).trim().split(/\\s+/);
+        note(pid, { lastStatState: /^[RSDZTtXxKWPI]$/.test(fields[0] ?? '') ? fields[0] : 'UNKNOWN', lastStatStartTicks: /^[0-9]{1,32}$/.test(fields[19] ?? '') ? fields[19] : 'INVALID', statErrorCode: null });
+        return text;
+      } catch (error) { note(pid, { statErrorCode: safeCode(error?.code) }); throw error; }
+      finally { if (fd !== undefined) fs.closeSync(fd); }
+    },
+    now: () => clock.now(),
+    pause: (ms) => Atomics.wait(gate, 0, 0, ms),
+  });
+  if (!passed) report();
+  process.exitCode = passed ? 0 : 1;
+} catch { report(); process.exitCode = 1; }
+`;
+  const result = spawnSync(process.execPath, ['-e', program, JSON.stringify(pids)], {
+    encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL',
+  });
+  if (result.status !== 0 && result.stderr) process.stderr.write(result.stderr.slice(0, 4_096));
+  return result;
+}
+
+
 function commandWorks(command, args) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 5_000 });
   return result.status === 0;
@@ -54,6 +145,52 @@ function serviceBlock(compose, serviceName) {
   }
   return block.join('\n');
 }
+
+test('PITR process absence requires actual ESRCH and rejects live, unknown, or reused identities', () => {
+  const missing = () => Object.assign(new Error('gone'), { code: 'ESRCH' });
+  const statText = (state, start = '100') => `17 (fixture) ${[state, '1', '17', '17', ...Array(15).fill('0'), start].join(' ')}`;
+  const probe = (states, options = {}) => {
+    let elapsed = 0;
+    let pauses = 0;
+    let index = 0;
+    const state = () => states[Math.min(index, states.length - 1)];
+    return {
+      run: () => waitForProcessAbsence([17], {
+        kill: () => { if (state() === null) throw missing(); if (options.killError) throw options.killError; },
+        stat: () => { if (options.statError) throw options.statError; return statText(state(), options.reused && index > 0 ? '101' : '100'); },
+        now: () => elapsed,
+        pause: (ms) => { elapsed += ms; pauses += 1; index += 1; },
+      }, 30),
+      pauses: () => pauses,
+    };
+  };
+  assert.equal(probe([null]).run(), true);
+  assert.equal(probe(['Z', null]).run(), true, 'zombie must actually disappear');
+  assert.equal(probe(['Z']).run(), false, 'permanent zombie never passes');
+  for (const state of ['R', 'S', 'D', 'T']) {
+    const control = probe([state, null]);
+    assert.throws(control.run, /live process/);
+    assert.equal(control.pauses(), 0, 'live process must not receive a grace period');
+  }
+  assert.throws(probe(['Z', 'S']).run, /live process/);
+  assert.throws(probe(['Z', 'Z'], { reused: true }).run, /reused process ID/);
+  // PID17 is gone while PID18 still awaits reaping, then PID17 reappears.
+  // Even if both would disappear on a later poll, that known reuse must fail.
+  let reuseRound = 0;
+  let reuseElapsed = 0;
+  const reuseStates = [[null, 'Z'], ['Z', null], [null, null]];
+  assert.throws(() => waitForProcessAbsence([17, 18], {
+    kill: (pid) => { if (reuseStates[reuseRound][pid - 17] === null) throw missing(); },
+    stat: (pid) => statText('Z', pid === 17 ? '999' : '100'),
+    now: () => reuseElapsed,
+    pause: (ms) => { reuseElapsed += ms; reuseRound += 1; },
+  }, 30), /reused process ID 17: reappeared after absence/);
+  assert.equal(reuseRound, 1, 'refuse the first reappearance without another wait');
+
+  assert.throws(probe(['Z'], { killError: Object.assign(new Error('denied'), { code: 'EPERM' }) }).run, /denied/);
+  assert.throws(probe(['Z'], { statError: Object.assign(new Error('stat gone but PID present'), { code: 'ENOENT' }) }).run, /stat gone but PID present/);
+
+});
 
 test('Compose wires remote-confirmed WAL archiving and isolated PITR services', () => {
   const compose = read('docker-compose.yml');
@@ -330,10 +467,7 @@ wait "$child"
     assert.equal(readFileSync(configMode, 'utf8').trim(), '600');
     const parentPid = readFileSync(parentPidFile, 'utf8').trim();
     const childPid = readFileSync(childPidFile, 'utf8').trim();
-    const processCheck = spawnSync(bash, [
-      '-c', 'for pid in "$@"; do ! kill -0 "$pid" 2>/dev/null || exit 1; done',
-      'pitr-process-check', parentPid, childPid,
-    ], { encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL' });
+    const processCheck = processAbsenceCheck([parentPid, childPid]);
     assert.equal(processCheck.status, 0, `PITR provider process survived: parent=${parentPid} child=${childPid}`);
     rmSync(delayedOutput, { force: true });
     const delayedRewriteWindow = spawnSync(bash, ['-c', 'sleep 2'], {

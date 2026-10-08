@@ -12,19 +12,39 @@ require('ts-node/register/transpile-only');
 const { TimeCardService } = require('../../apps/api-v2/src/time/time-cards.service.ts');
 const { TenantDatabase } = require('../../apps/api-v2/src/platform/database.ts');
 
-function identity(tenantId, user, role, permissions) {
+function identity(tenantId, user, role, permissions, authority) {
   return {
     sub: user.id,
     publicUserId: user.publicId,
     tenantId,
-    sessionId: `time-card-session-${randomUUID()}`,
+    sessionId: authority.sessionId,
     role,
     legacyRole: role,
-    roles: [{ id: randomUUID(), name: role === 'STAFF' ? 'Staff' : 'Manager', isSystem: true, legacyRole: role }],
+    roles: [{ id: authority.role.publicId, name: authority.role.name, isSystem: false, legacyRole: null }],
     permissions,
     mfaVerified: true,
     mfaRequired: false,
   };
+}
+
+async function seedAuthority(owner, tenantId, user, permissions, runId) {
+  return owner.$transaction(async tx => {
+    const catalog = await tx.permission.findMany({ where: { key: { in: permissions } }, select: { id: true, key: true } });
+    assert.deepEqual(catalog.map(row => row.key).sort(), [...permissions].sort(), 'Required existing permission catalog must be complete');
+    const role = await tx.role.create({ data: {
+      id: `api-v2-time-role-${user.id}`, tenantId, name: `Time fixture ${user.id}`, slug: `time-${runId}-${user.role.toLowerCase()}`,
+      isSystem: false, isDefault: false, legacyRole: null,
+      rolePermissions: { create: catalog.map(permission => ({ permissionId: permission.id })) },
+    } });
+    await tx.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: role.id } });
+    const session = await tx.session.create({ data: {
+      id: `api-v2-time-session-${user.id}`, userId: user.id,
+      refreshToken: createHash(tenantId, `time-authority-${user.id}-${runId}`),
+      ipAddress: '127.0.0.1', userAgent: 'controlled-native-time-fixture',
+      expiresAt: new Date(Date.now() + 30 * 60_000),
+    } });
+    return { userId: user.id, tenantId, sessionId: session.id, role };
+  });
 }
 
 function iso(value) {
@@ -42,7 +62,16 @@ test('native API v2 Time Cards use public IDs, tenant RLS, exact clock-in replay
     staffId: `api-v2-time-staff-${runId}`,
     locationId: `api-v2-time-location-${runId}`,
   };
-  const timeCards = new TimeCardService(new TenantDatabase(app));
+  const authorities = [];
+  // This is a scoped synthetic proof source, never a real Redis verification.
+  // Ordinary fixture grants do not themselves require MFA; capability remains
+  // explicit if current user/workspace policy requests a proof.
+  const observer = { observeSessionMfa: async selected => {
+    assert.ok(authorities.some(row => row.userId === selected.sub && row.tenantId === selected.tenantId
+      && row.sessionId === selected.sessionId), 'Synthetic observer only admits exact seeded fixture Sessions');
+    return { ...selected, expiresAtEpochMs: Date.now() + 60_000, expiresAtMonotonicMs: performance.now() + 60_000 };
+  } };
+  const timeCards = new TimeCardService(new TenantDatabase(app), observer);
 
   try {
     const tenant = await owner.tenant.create({
@@ -116,16 +145,14 @@ test('native API v2 Time Cards use public IDs, tenant RLS, exact clock-in replay
       },
     });
 
-    const managerIdentity = identity(tenant.id, manager, 'MANAGER', [
-      'time_cards:read',
-      'time_cards:write',
-      'users:read',
-      'shifts:read',
-    ]);
-    const staffIdentity = identity(tenant.id, staff, 'STAFF', [
-      'time_cards:read',
-      'time_cards:write',
-    ]);
+    const managerPermissions = ['time_cards:read', 'time_cards:write', 'users:read', 'shifts:read'];
+    const staffPermissions = ['time_cards:read', 'time_cards:write'];
+    const managerAuthority = await seedAuthority(owner, tenant.id, manager, managerPermissions, runId);
+    authorities.push(managerAuthority);
+    const staffAuthority = await seedAuthority(owner, tenant.id, staff, staffPermissions, runId);
+    authorities.push(staffAuthority);
+    const managerIdentity = identity(tenant.id, manager, 'MANAGER', managerPermissions, managerAuthority);
+    const staffIdentity = identity(tenant.id, staff, 'STAFF', staffPermissions, staffAuthority);
     const firstClockInAt = new Date(Date.now() - 120 * 60_000);
     const firstClockOutAt = new Date(Date.now() - 40 * 60_000);
     const clockInKey = `api-v2-time-clock-in-${runId}`;
@@ -213,6 +240,11 @@ test('native API v2 Time Cards use public IDs, tenant RLS, exact clock-in replay
     await owner.$transaction(async (transaction) => {
       await transaction.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
       const tenantIds = [fixture.tenantId, fixture.otherTenantId];
+      const userIds = authorities.map(row => row.userId), roleIds = authorities.map(row => row.role.id);
+      await transaction.session.deleteMany({ where: { id: { in: authorities.map(row => row.sessionId) }, userId: { in: userIds } } });
+      await transaction.roleAssignment.deleteMany({ where: { tenantId: fixture.tenantId, userId: { in: userIds }, roleId: { in: roleIds } } });
+      await transaction.rolePermission.deleteMany({ where: { roleId: { in: roleIds } } });
+      await transaction.role.deleteMany({ where: { tenantId: fixture.tenantId, id: { in: roleIds } } });
       await transaction.auditLog.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.creditTransaction.deleteMany({ where: { tenantId: { in: tenantIds } } });
       await transaction.timeCardBreak.deleteMany({ where: { tenantId: { in: tenantIds } } });

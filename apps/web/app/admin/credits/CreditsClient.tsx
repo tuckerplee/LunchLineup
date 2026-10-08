@@ -1,6 +1,10 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import styles from './credits.module.css';
+import { creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue } from './credit-grant-estimate';
+import { createCreditReadOwner, type CreditReadLane, type CreditReadPending } from './credit-read-owner';
+import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
 import {
@@ -21,6 +25,7 @@ type CreditTenant = {
     slug: string;
     planTier: string;
     usageCredits: number;
+    creditDebt: number;
 };
 
 type CreditHistoryRow = {
@@ -28,7 +33,7 @@ type CreditHistoryRow = {
     amount: number;
     reason: string;
     createdAt: string;
-    tenant: CreditTenant | null;
+    tenant: Pick<CreditTenant, 'id' | 'name' | 'slug'> | null;
 };
 
 type CreditsPayload = {
@@ -83,12 +88,12 @@ function jsonWriteInit(
     }, idempotencyKey);
 }
 
-async function writeJson<T>(
+async function writeJson(
     path: string,
     method: 'POST' | 'PUT' | 'DELETE',
     payload: unknown,
     idempotencyKey: string,
-): Promise<T> {
+): Promise<CreditGrantAcknowledgement> {
     const response = await fetchWithSession(path, jsonWriteInit(method, payload, idempotencyKey));
     const responsePayload = await response.json().catch(() => ({} as Record<string, unknown>));
     if (!response.ok) {
@@ -97,7 +102,7 @@ async function writeJson<T>(
             : `Request failed (${response.status})`;
         throw new Error(message);
     }
-    return responsePayload as T;
+    return parseCreditGrantAcknowledgement(response.status, responsePayload);
 }
 
 function badgeStyle(color: string, bg: string, border: string) {
@@ -155,16 +160,19 @@ function parseAmount(value: string): number {
 export function CreditsClient() {
     const [tenants, setTenants] = useState<CreditTenant[]>([]);
     const [history, setHistory] = useState<CreditHistoryRow[]>([]);
-    const [loading, setLoading] = useState(true);
-    const [saving, setSaving] = useState<string | null>(null);
+    const [readPending, setReadPending] = useState<CreditReadPending>({ replacement: true, tenants: false, history: false, ready: false });
+    const [readErrors, setReadErrors] = useState<Record<CreditReadLane, string | null>>({ replacement: null, tenants: null, history: null });
+    const [grantSaving, setGrantSaving] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
     const [query, setQuery] = useState('');
-    const [appliedQuery, setAppliedQuery] = useState('');
     const [tenantPagination, setTenantPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [historyPagination, setHistoryPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
     const [form, setForm] = useState<CreditGrantForm>({ tenantId: '', amount: '', reason: '' });
     const grantSubmission = useRef(createCreditGrantSubmissionState());
+    const readOwner = useRef(createCreditReadOwner());
+    const loading = readPending.replacement;
+    const visibleError = error ?? readErrors.replacement ?? readErrors.tenants ?? readErrors.history;
 
     const loadCredits = useCallback(async (options: {
         tenantCursor?: string | null;
@@ -173,60 +181,67 @@ export function CreditsClient() {
         appendHistory?: boolean;
         search?: string;
     } = {}) => {
-        const operation = options.appendTenants
-            ? 'load-more-tenants'
+        const owner = readOwner.current;
+        const ticket = options.appendTenants
+            ? owner.beginAppend('tenants', options.tenantCursor)
             : options.appendHistory
-                ? 'load-more-history'
-                : 'load';
-        setError(null);
-        setSaving(operation);
-        if (!options.appendTenants && !options.appendHistory) setLoading(true);
+                ? owner.beginAppend('history', options.historyCursor)
+                : owner.beginReplacement(options.search);
+        if (!ticket) return;
+        const publishPending = () => setReadPending((current) => owner.isActiveVisit(ticket.visit) ? owner.snapshot() : current);
+        publishPending();
+        setReadErrors((current) => {
+            if (!owner.owns(ticket)) return current;
+            return ticket.lane === 'replacement'
+                ? { replacement: null, tenants: null, history: null }
+                : { ...current, [ticket.lane]: null };
+        });
         try {
             const path = buildAdminListPath('/admin/credits', {
                 tenantLimit: 50,
-                tenantCursor: options.tenantCursor,
-                q: options.search,
+                tenantCursor: ticket.lane === 'tenants' ? ticket.cursor : undefined,
+                q: ticket.query,
                 historyLimit: 50,
-                historyCursor: options.historyCursor,
+                historyCursor: ticket.lane === 'history' ? ticket.cursor : undefined,
             });
             const next = parseCreditsPayload(await fetchJsonWithSession<unknown>(path));
-            if (options.appendTenants) {
-                setTenants((current) => mergeAdminListPage(current, next.tenants, true));
-                setTenantPagination(next.tenantPagination);
-            } else if (options.appendHistory) {
-                setHistory((current) => mergeAdminListPage(current, next.history, true));
-                setHistoryPagination(next.historyPagination);
+            if (!owner.accept(ticket, {
+                tenants: next.tenantPagination.hasMore ? next.tenantPagination.nextCursor : null,
+                history: next.historyPagination.hasMore ? next.historyPagination.nextCursor : null,
+            })) return;
+            if (ticket.lane === 'tenants') {
+                setTenants((current) => owner.canPublish(ticket) ? mergeAdminListPage(current, next.tenants, true) : current);
+                setTenantPagination((current) => owner.canPublish(ticket) ? next.tenantPagination : current);
+            } else if (ticket.lane === 'history') {
+                setHistory((current) => owner.canPublish(ticket) ? mergeAdminListPage(current, next.history, true) : current);
+                setHistoryPagination((current) => owner.canPublish(ticket) ? next.historyPagination : current);
             } else {
-                setTenants(next.tenants);
-                setHistory(next.history);
-                setTenantPagination(next.tenantPagination);
-                setHistoryPagination(next.historyPagination);
-                setForm((current) => ({
+                setTenants((current) => owner.canPublish(ticket) ? next.tenants : current);
+                setHistory((current) => owner.canPublish(ticket) ? next.history : current);
+                setTenantPagination((current) => owner.canPublish(ticket) ? next.tenantPagination : current);
+                setHistoryPagination((current) => owner.canPublish(ticket) ? next.historyPagination : current);
+                setForm((current) => owner.canPublish(ticket) ? ({
                     ...current,
                     tenantId: next.tenants.some((tenant) => tenant.id === current.tenantId)
                         ? current.tenantId
                         : next.tenants[0]?.id ?? '',
-                }));
+                }) : current);
             }
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to load credit balances');
+            if (owner.owns(ticket)) setReadErrors((current) => owner.owns(ticket)
+                ? { ...current, [ticket.lane]: err instanceof Error ? err.message : 'Failed to load credit balances' }
+                : current);
         } finally {
-            if (!options.appendTenants && !options.appendHistory) setLoading(false);
-            setSaving((current) => (current === operation ? null : current));
+            if (owner.finish(ticket)) publishPending();
         }
     }, []);
 
     useEffect(() => {
-        void loadCredits({ search: appliedQuery });
-    }, [appliedQuery, loadCredits]);
-
-    useEffect(() => {
-        if (form.tenantId) return;
-        setForm((current) => ({
-            ...current,
-            tenantId: tenants[0]?.id ?? '',
-        }));
-    }, [form.tenantId, tenants]);
+        const owner = readOwner.current;
+        owner.activate();
+        void loadCredits();
+        return () => owner.deactivate();
+    }, [loadCredits]);
 
     const visibleTenants = useMemo(
         () => [...tenants].sort((a, b) => b.usageCredits - a.usageCredits),
@@ -244,11 +259,11 @@ export function CreditsClient() {
         const maxBalance = tenants.length > 0 ? Math.max(...tenants.map((tenant) => tenant.usageCredits)) : 0;
 
         return [
-            { value: tenants.length, subtitle: 'balances loaded', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
-            { value: formatCredits(totalCredits), subtitle: 'credits in loaded rows', icon: 'C', color: '#166534', bg: '#e9fbf1' },
-            { value: historyCount, subtitle: 'ledger rows loaded', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
-            { value: formatCredits(maxBalance), subtitle: 'largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
-            { value: positiveCount, subtitle: 'grants in loaded rows', icon: '+', color: '#166534', bg: '#e9fbf1' },
+            { value: tenants.length, subtitle: 'Loaded balances', icon: 'T', color: '#1d4ed8', bg: '#edf3ff' },
+            { value: formatCredits(totalCredits), subtitle: 'Loaded credits', icon: 'C', color: '#166534', bg: '#e9fbf1' },
+            { value: historyCount, subtitle: 'Loaded ledger rows', icon: 'L', color: '#b4233f', bg: '#ffeef2' },
+            { value: formatCredits(maxBalance), subtitle: 'Largest loaded balance', icon: 'M', color: '#7c4a03', bg: '#fff4e2' },
+            { value: positiveCount, subtitle: 'Positive history rows loaded', icon: '+', color: '#166534', bg: '#e9fbf1' },
         ];
     }, [history, tenants]);
 
@@ -257,18 +272,13 @@ export function CreditsClient() {
         [form.tenantId, tenants],
     );
     const parsedAmount = parseAmount(form.amount);
-    const projectedBalance = selectedTenant && Number.isInteger(parsedAmount) && parsedAmount > 0
-        ? selectedTenant.usageCredits + parsedAmount
+    const grantEstimate = selectedTenant
+        ? estimateCreditGrant(selectedTenant.usageCredits, selectedTenant.creditDebt, parsedAmount)
         : null;
 
     function applySearch(event: FormEvent<HTMLFormElement>) {
         event.preventDefault();
-        const nextQuery = query.trim();
-        if (nextQuery === appliedQuery) {
-            void loadCredits({ search: nextQuery });
-        } else {
-            setAppliedQuery(nextQuery);
-        }
+        void loadCredits({ search: query.trim() });
     }
 
     async function grantCredits(event: FormEvent<HTMLFormElement>) {
@@ -283,7 +293,7 @@ export function CreditsClient() {
         }
 
         const amount = parseAmount(form.amount);
-        if (!Number.isInteger(amount) || amount <= 0) {
+        if (!Number.isSafeInteger(amount) || amount <= 0) {
             setError('Amount must be a positive integer.');
             return;
         }
@@ -291,6 +301,10 @@ export function CreditsClient() {
         const reason = form.reason.trim();
         if (!reason) {
             setError('Reason is required.');
+            return;
+        }
+        if (reason.length > 500) {
+            setError('Reason must be 500 characters or fewer.');
             return;
         }
 
@@ -301,7 +315,8 @@ export function CreditsClient() {
         }
 
         const confirmed = window.confirm(
-            `Grant ${formatCredits(amount)} credits to ${selected.name}? New balance: ${formatCredits(selected.usageCredits + amount)} credits.`,
+            creditGrantConfirmation(selected.name, amount,
+                estimateCreditGrant(selected.usageCredits, selected.creditDebt, amount)),
         );
         if (!confirmed) return;
 
@@ -310,30 +325,36 @@ export function CreditsClient() {
             amount,
             reason,
         };
-        setSaving('grant');
+        const owner = readOwner.current;
+        const visit = owner.visit();
+        setGrantSaving(true);
         try {
             const result = await submitCreditGrant(
                 grantSubmission.current,
                 payload,
-                (requestPayload, idempotencyKey) => writeJson<{ success?: boolean; newBalance?: number }>(
+                (requestPayload, idempotencyKey) => writeJson(
                     '/admin/credits/grant',
                     'POST',
                     requestPayload,
                     idempotencyKey,
                 ),
             );
-            if (!result.submitted) return;
-            setNotice('Credits granted.');
-            await loadCredits({ search: appliedQuery });
+            if (!result.submitted || !owner.isActiveVisit(visit)) return;
+            setNotice((current) => owner.isActiveVisit(visit) ? 'Credits granted.' : current);
+            // Read the synchronously applied current query, not this submit's
+            // captured render scope. A newer search may have completed meanwhile.
+            await loadCredits();
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Failed to grant credits');
+            if (owner.isActiveVisit(visit)) setError((current) => owner.isActiveVisit(visit)
+                ? err instanceof Error ? err.message : 'Failed to grant credits'
+                : current);
         } finally {
-            setSaving((current) => (current === 'grant' ? null : current));
+            if (owner.isActiveVisit(visit)) setGrantSaving((current) => owner.isActiveVisit(visit) ? false : current);
         }
     }
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+        <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
             <section
                 className="surface-card"
                 style={{
@@ -355,7 +376,7 @@ export function CreditsClient() {
                         </p>
                     </div>
 
-                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                    <form onSubmit={applySearch} className={styles.tenantSearch} style={{ flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
                         <label className="form-group" style={{ flex: 1 }}>
                             <span className="form-label">Tenant search</span>
                             <input
@@ -366,19 +387,21 @@ export function CreditsClient() {
                                 maxLength={100}
                             />
                         </label>
-                        <button className="btn btn-sm btn-secondary" type="submit" disabled={saving === 'load'}>
+                        <button className="btn btn-sm btn-secondary" type="submit">
                             Search
                         </button>
                     </form>
                 </div>
             </section>
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <section className={styles.summaryGrid} aria-label="Loaded credit summary">
                 {summary.map((item) => (
-                    <article key={item.subtitle} className="surface-card" style={{ padding: '0.95rem', background: item.bg }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
-                            <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{item.subtitle}</span>
+                    <article key={item.subtitle} className={`surface-card ${styles.summaryCard}`} style={{ background: item.bg }}>
+                        <div className={styles.summaryHeading}>
+                            <span className={styles.summaryLabel}>{item.subtitle}</span>
                             <span
+                                className={styles.summaryIcon}
+                                aria-hidden="true"
                                 style={{
                                     width: 33,
                                     height: 33,
@@ -393,13 +416,12 @@ export function CreditsClient() {
                                 {item.icon}
                             </span>
                         </div>
-                        <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
-                        <div style={{ fontSize: '0.72rem', fontWeight: 700, color: item.color }}>Real-time credit control</div>
+                        <div className={styles.summaryValue}>{item.value}</div>
                     </article>
                 ))}
             </section>
 
-            {error ? (
+            {visibleError ? (
                 <div
                     style={{
                         padding: '0.8rem 0.95rem',
@@ -411,7 +433,7 @@ export function CreditsClient() {
                         fontSize: '0.86rem',
                     }}
                 >
-                    {error}
+                    {visibleError}
                 </div>
             ) : null}
 
@@ -431,36 +453,37 @@ export function CreditsClient() {
                 </div>
             ) : null}
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.25fr) minmax(320px, 0.75fr)', gap: '0.85rem', alignItems: 'start' }}>
+            <section className={styles.balanceGrantGrid}>
                 <article
                     className="surface-card"
                     aria-label="Tenant credit balances table"
                     tabIndex={0}
                     style={{ overflowX: 'auto' }}
                 >
-                    <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div className={styles.balanceHeader} style={{ padding: '0.95rem 1rem 0.55rem' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Balances</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                                Balances are loaded from the admin credits API.
+                                Spendable balances shown below.
                             </div>
                         </div>
 
                         <button
                             className="btn btn-sm btn-secondary"
-                            onClick={() => void loadCredits({ search: appliedQuery })}
-                            disabled={saving === 'load'}
+                            onClick={() => void loadCredits()}
+                            disabled={readPending.replacement}
                             type="button"
                         >
-                            {saving === 'load' ? 'Refreshing...' : 'Refresh'}
+                            {readPending.replacement ? 'Refreshing...' : 'Refresh'}
                         </button>
                     </div>
 
-                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 900 }}>
-                        <thead>
-                            <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
+                    <table className={styles.balanceTable} role="table">
+                        <thead role="rowgroup">
+                            <tr role="row" style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
                                 {['Tenant', 'Plan', 'Balance', 'Actions'].map((header) => (
                                     <th
+                                        role="columnheader"
                                         key={header}
                                         style={{
                                             textAlign: 'left',
@@ -477,26 +500,27 @@ export function CreditsClient() {
                                 ))}
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody role="rowgroup">
                             {visibleTenants.map((tenant, index) => {
                                 const planStyle = PLAN_COLORS[tenant.planTier] ?? PLAN_COLORS.FREE;
                                 return (
                                     <tr
+                                        role="row"
                                         key={tenant.id}
                                         style={{
                                             borderBottom: index < visibleTenants.length - 1 ? '1px solid var(--border)' : 'none',
                                         }}
                                     >
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
                                             <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <span className="badge" style={badgeStyle(planStyle.color, planStyle.bg, planStyle.border)}>
                                                 {tenant.planTier}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <div style={{ display: 'flex', alignItems: 'baseline', gap: '0.35rem' }}>
                                                 <span style={{ fontSize: '1.2rem', fontWeight: 800, color: '#7c4a03', letterSpacing: 0 }}>
                                                     {formatCredits(tenant.usageCredits)}
@@ -504,7 +528,7 @@ export function CreditsClient() {
                                                 <span style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>credits</span>
                                             </div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" style={{ padding: '0.9rem 1rem' }}>
                                             <button
                                                 className="btn btn-sm btn-secondary"
                                                 type="button"
@@ -518,8 +542,8 @@ export function CreditsClient() {
                             })}
 
                             {!loading && visibleTenants.length === 0 ? (
-                                <tr>
-                                    <td colSpan={4} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                                <tr role="row">
+                                    <td role="cell" colSpan={4} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                         No tenant balances match the current filter.
                                     </td>
                                 </tr>
@@ -531,30 +555,26 @@ export function CreditsClient() {
                             <button
                                 className="btn btn-sm btn-secondary"
                                 type="button"
-                                disabled={saving === 'load-more-tenants' || !tenantPagination.nextCursor}
+                                disabled={!readPending.ready || readPending.replacement || readPending.tenants || !tenantPagination.nextCursor}
                                 onClick={() => void loadCredits({
                                     tenantCursor: tenantPagination.nextCursor,
                                     appendTenants: true,
-                                    search: appliedQuery,
                                 })}
                             >
-                                {saving === 'load-more-tenants' ? 'Loading...' : 'Load more tenant balances'}
+                                {readPending.tenants ? 'Loading...' : 'Load more tenant balances'}
                             </button>
                         </div>
                     ) : null}
                 </article>
 
-                <article className="surface-card" style={{ padding: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
+                <article className={`surface-card ${styles.grantPanel}`} style={{ padding: '1rem' }}>
+                    <div className={styles.grantHeader} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Grant Credits</h2>
                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                                Writes a ledger entry and updates the tenant balance immediately.
+                                Repays outstanding debt first, then adds remaining credits to the spendable balance.
                             </div>
                         </div>
-                        <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
-                            POST /admin/credits/grant
-                        </span>
                     </div>
 
                     <form onSubmit={(event) => void grantCredits(event)} style={{ display: 'grid', gap: '0.78rem' }}>
@@ -588,13 +608,18 @@ export function CreditsClient() {
                         </label>
 
                         <label className="form-group">
-                            <span className="form-label">Reason</span>
+                            <span id="credit-grant-reason-label" className="form-label">Reason</span>
                             <input
                                 className="form-input"
                                 value={form.reason}
                                 onChange={(event) => setForm((current) => ({ ...current, reason: event.target.value }))}
                                 placeholder="Customer success grant"
+                                aria-labelledby="credit-grant-reason-label"
+                                aria-describedby="credit-grant-reason-help"
                             />
+                            <span id="credit-grant-reason-help" style={{ fontSize: '0.8125rem', color: 'var(--text-secondary)' }}>
+                                Use 1–500 characters. Leading and trailing spaces are ignored.
+                            </span>
                         </label>
 
                         <div
@@ -612,15 +637,28 @@ export function CreditsClient() {
                                 Selected tenant: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant?.name ?? 'None'}</strong>
                             </div>
                             <div>
-                                Current balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant ? formatCredits(selectedTenant.usageCredits) : '-'}</strong>
+                                Loaded spendable balance: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant && isCreditBalanceValue(selectedTenant.usageCredits) ? formatCredits(selectedTenant.usageCredits) : '-'}</strong>
                             </div>
                             <div>
-                                Projected balance: <strong style={{ color: 'var(--text-primary)' }}>{projectedBalance === null ? '-' : formatCredits(projectedBalance)}</strong>
+                                Loaded outstanding debt: <strong style={{ color: 'var(--text-primary)' }}>{selectedTenant && isCreditBalanceValue(selectedTenant.creditDebt) ? formatCredits(selectedTenant.creditDebt) : 'Unavailable'}</strong>
                             </div>
+                            <div>
+                                Estimated debt repayment: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.repaidDebt) : '-'}</strong>
+                            </div>
+                            <div>
+                                Estimated spendable balance: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.newBalance) : '-'}</strong>
+                            </div>
+                            <div>
+                                Estimated remaining debt: <strong style={{ color: 'var(--text-primary)' }}>{grantEstimate ? formatCredits(grantEstimate.debtAfter) : '-'}</strong>
+                            </div>
+                            <div>Estimates use loaded balances. Actual grants repay current outstanding debt first.</div>
+                            {selectedTenant && (!isCreditBalanceValue(selectedTenant.creditDebt) || !isCreditBalanceValue(selectedTenant.usageCredits)) ? (
+                                <div>Balance details are unavailable. Refresh balances to show an estimate. You can still grant credits; the server settles debt first.</div>
+                            ) : null}
                         </div>
 
-                        <button className="btn" type="submit" disabled={saving === 'grant' || tenants.length === 0}>
-                            {saving === 'grant' ? 'Granting...' : 'Grant Credits'}
+                        <button className={`btn ${styles.grantSubmit}`} type="submit" disabled={grantSaving || tenants.length === 0}>
+                            {grantSaving ? 'Granting...' : 'Grant Credits'}
                         </button>
                     </form>
 
@@ -652,13 +690,13 @@ export function CreditsClient() {
                 <div style={{ padding: '0.95rem 1rem 0.55rem' }}>
                     <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Transaction History</h2>
                     <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                        Recent credit ledger entries from the admin API.
+                        Spendable balance changes and reasons.
                     </div>
                 </div>
                 <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 860 }}>
                     <thead>
                         <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
-                            {['Time', 'Tenant', 'Amount', 'Reason'].map((header) => (
+                            {['Time', 'Tenant', 'Spendable change', 'Reason'].map((header) => (
                                 <th
                                     key={header}
                                     style={{
@@ -723,14 +761,13 @@ export function CreditsClient() {
                         <button
                             className="btn btn-sm btn-secondary"
                             type="button"
-                            disabled={saving === 'load-more-history' || !historyPagination.nextCursor}
+                            disabled={!readPending.ready || readPending.replacement || readPending.history || !historyPagination.nextCursor}
                             onClick={() => void loadCredits({
                                 historyCursor: historyPagination.nextCursor,
                                 appendHistory: true,
-                                search: appliedQuery,
                             })}
                         >
-                            {saving === 'load-more-history' ? 'Loading...' : 'Load more ledger history'}
+                            {readPending.history ? 'Loading...' : 'Load more ledger history'}
                         </button>
                     </div>
                 ) : null}

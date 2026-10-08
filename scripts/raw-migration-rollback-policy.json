@@ -326,6 +326,46 @@
       "requiresOldReleaseProof": true,
       "rationale": "The additive dated-availability table, constraints, index, and RLS policy remain unused by the old-release during rollback; isolated old-release smoke proof is mandatory before beta mutation, and destructive removal waits until after the rollback window."
     },
+    "packages/db/prisma/migrations/20260908_overnight_start_day_ownership.sql": {
+      "sha256": "2868aace2f4c3773ec0baf1ab3a11869c4f71b9bb7ca6821a35a5f9e1498ad18",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Replaces schedule-window triggers with start-day ownership and a 24-hour duration bound while retaining candidate schema during rollback; old-release proof must cover existing supported writes, candidate-created overnight rows, demand ownership and schedule edits before compatibility is accepted."
+    },
+    "packages/db/prisma/migrations/20261001_webhook_terminal_payload_contract.sql": {
+      "sha256": "daa061800b59c111e7ff9520e592b9741100e26eaaadcbdfee973f43e8b94248",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Forward-only repair of the webhook terminal text-presence CHECK remains during rollback: restoring the historical strict CHECK rejects irreversibly erased terminal ciphertext. Historical SQL receipts and the terminal-erasure trigger/CHECK are retained; isolated old-release proof of terminalization, active-row rejection and replay is required before production mutation."
+    },
+    "packages/db/prisma/migrations/20261004_durable_mfa_enrollment.sql": {
+      "sha256": "74d51b708e7d771b2ccac5568a4f891d08f89f2fdeecf0257672327caed8fae2",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain exact-Session durable encrypted MFA enrollment columns, lifecycle/revocation invalidation triggers, pair/envelope checks and bounded retention during rollback; isolated old-release proof must cover original Session/User writers and Redis-only enrollment behavior before compatibility is accepted, with coordinated enrollment-owner rollout required."
+    },
+    "packages/db/prisma/migrations/20261004_legacy_import_retry_receipts.sql": {
+      "sha256": "103f376e42f8c91eaec0a12abd13401607f5b632790619f891579d42e7d9c7f1",
+      "phase": "expand",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain the private owner-only legacy import receipt catalog, immutable mappings, generation and admission/count guards during rollback; isolated old-release proof must cover public application writes, lifecycle purge and owner/ACL isolation while old code ignores private receipts, whose destructive removal waits until after the rollback window."
+    },
+    "packages/db/prisma/migrations/20261004_notification_outbox_failure_budget.sql": {
+      "sha256": "04b20ca630b199328170b168b221eb2441a1f560d68507dc9cb2c3524f6802e0",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain the notification failureCount bounded CHECK during rollback without resetting counters, statuses, generations or payloads; isolated old-release proof must cover old claims, failed/terminal transitions, expired-lease recovery and candidate-created rows while the old client ignores the new counter before compatibility is accepted."
+    },
     "packages/db/prisma/migrations/pre_20260715_availability_import_lifecycle.sql": {
       "sha256": "1563895292cca5540c95b88ffa22c99b82923a5f2ea295886f779f550367e70f",
       "phase": "expand",
@@ -429,6 +469,22 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "time-card and break public identifier backfills and old-writer-compatible defaults remain during rollback; isolated old-release proof is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20261001_webhook_terminal_payload_contract.sql": {
+      "sha256": "daa061800b59c111e7ff9520e592b9741100e26eaaadcbdfee973f43e8b94248",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Forward-only repair of the webhook terminal text-presence CHECK remains during rollback: restoring the historical strict CHECK rejects irreversibly erased terminal ciphertext. Historical SQL receipts and the terminal-erasure trigger/CHECK are retained; isolated old-release proof of terminalization, active-row rejection and replay is required before production mutation."
+    },
+    "packages/db/prisma/migrations/pre_20261004_notification_outbox_failure_budget.sql": {
+      "sha256": "4f8facfcf3ab16f8eed57c64d89ce9aad4fc3ae1ad4dbad8d4de59ed3b58127d",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "compatibility-proven-inline",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain the pre-schema notification failure budget column, NULL-only historical backfill and default/nonNULL transition during rollback; isolated old-release proof must cover old outbox claims, retry/terminal/read-marker behavior and fresh/pre-schema ordering without resetting known counters before compatibility is accepted."
     }
   }
 }

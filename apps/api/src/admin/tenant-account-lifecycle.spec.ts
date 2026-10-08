@@ -264,7 +264,11 @@ describe('applyDormantSessionRetention', () => {
 
     it('dry-runs the explicit expired and revoked cutoffs without deleting sessions', async () => {
         const tx = {
-            $queryRaw: vi.fn().mockResolvedValue([{ eligibleCount: 7n }]),
+            $queryRaw: vi.fn().mockImplementation(async (query) => (
+                query.strings.join(' ').includes('clear_expired_mfa_enrollments')
+                    ? [{ eligibleCount: 11n, clearedCount: 0n }]
+                    : [{ eligibleCount: 7n }]
+            )),
         };
 
         await expect(applyDormantSessionRetention(tx as any, asOf, true)).resolves.toEqual({
@@ -275,24 +279,101 @@ describe('applyDormantSessionRetention', () => {
             revokedBefore: '2026-06-14T12:00:00.000Z',
             eligibleCount: 7,
             purgedCount: 0,
+            pendingEnrollmentRetention: { batchLimit: 5_000, eligibleCount: 11, clearedCount: 0 },
         });
-        expect(tx.$queryRaw).toHaveBeenCalledOnce();
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+        expect(tx.$queryRaw.mock.calls[0][0].strings.join(' ')).toContain('"expiresAt"');
+        expect(tx.$queryRaw.mock.calls[0][0].values).toEqual([
+            new Date('2026-07-13T12:00:00.000Z'), new Date('2026-06-14T12:00:00.000Z'),
+        ]);
+        expect(tx.$queryRaw.mock.calls[1][0].values).toEqual([asOf.toISOString(), 5_000, true]);
+        expect(tx.$queryRaw.mock.calls[1][0].strings.join(' ')).toContain("::timestamptz AT TIME ZONE 'UTC'");
+        expect(tx.$queryRaw.mock.calls.some(([query]) => query.strings.join(' ').includes('purge_dormant_sessions'))).toBe(false);
     });
 
     it('executes one bounded database purge batch after counting eligible sessions', async () => {
         const tx = {
             $queryRaw: vi.fn()
                 .mockResolvedValueOnce([{ eligibleCount: 7n }])
+                .mockResolvedValueOnce([{ eligibleCount: 11n, clearedCount: 9n }])
                 .mockResolvedValueOnce([{ purgedCount: 5n }]),
         };
 
         const result = await applyDormantSessionRetention(tx as any, asOf, false);
 
         expect(result).toMatchObject({ eligibleCount: 7, purgedCount: 5, batchLimit: 5_000 });
-        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
-        const purgeQuery = tx.$queryRaw.mock.calls[1][0];
+        expect(result.pendingEnrollmentRetention).toEqual({ batchLimit: 5_000, eligibleCount: 11, clearedCount: 9 });
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(3);
+        const pendingQuery = tx.$queryRaw.mock.calls[1][0];
+        expect(pendingQuery.strings.join(' ')).toContain('clear_expired_mfa_enrollments');
+        expect(pendingQuery.values).toEqual([asOf.toISOString(), 5_000, false]);
+        expect(pendingQuery.strings.join(' ')).toContain("::timestamptz AT TIME ZONE 'UTC'");
+        const purgeQuery = tx.$queryRaw.mock.calls[2][0];
         expect(purgeQuery.strings.join(' ')).toContain('purge_dormant_sessions');
         expect(purgeQuery.values).toEqual([asOf, 5_000]);
+    });
+
+    it('clears pending-only eligibility even when no dormant Session can be deleted', async () => {
+        const attempted: string[] = [];
+        const tx = { $queryRaw: vi.fn().mockImplementation(async (query) => {
+            const text = query.strings.join(' ');
+            attempted.push(text);
+            if (text.includes('clear_expired_mfa_enrollments')) {
+                expect(query.values).toEqual([asOf.toISOString(), 5_000, false]);
+                return [{ eligibleCount: 3n, clearedCount: 2n }];
+            }
+            if (text.includes('COUNT(*)') && text.includes('"Session"')) return [{ eligibleCount: 0n }];
+            throw new Error('Unexpected retention query');
+        }) };
+
+        const result = await applyDormantSessionRetention(tx as any, asOf, false);
+
+        expect(result).toMatchObject({ eligibleCount: 0, purgedCount: 0,
+            pendingEnrollmentRetention: { eligibleCount: 3, clearedCount: 2, batchLimit: 5_000 } });
+        expect(attempted).toHaveLength(2);
+        expect(attempted.some(text => text.includes('purge_dormant_sessions'))).toBe(false);
+    });
+
+    it('does not proceed with dormant deletion when pending capability cleanup refuses', async () => {
+        const refusal = Object.assign(new Error('MFA enrollment retention requires platform admin capability'), { code: '42501' });
+        const tx = { $queryRaw: vi.fn().mockImplementation(async (query) => {
+            if (query.strings.join(' ').includes('clear_expired_mfa_enrollments')) throw refusal;
+            return [{ eligibleCount: 7n }];
+        }) };
+
+        await expect(applyDormantSessionRetention(tx as any, asOf, false)).rejects.toBe(refusal);
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+        ['missing receipt', [], false],
+        ['non-array receipt', null, false],
+        ['duplicate receipt', [{ eligibleCount: 0n, clearedCount: 0n }, { eligibleCount: 0n, clearedCount: 0n }], false],
+        ['negative eligible count', [{ eligibleCount: -1n, clearedCount: 0n }], false],
+        ['unsafe eligible count', [{ eligibleCount: '9007199254740992', clearedCount: 0n }], false],
+        ['missing clear count', [{ eligibleCount: 1n }], false],
+        ['null eligible count', [{ eligibleCount: null, clearedCount: 0n }], false],
+        ['empty eligible count', [{ eligibleCount: '', clearedCount: 0n }], false],
+        ['boolean clear count', [{ eligibleCount: 1n, clearedCount: false }], false],
+        ['fractional clear count', [{ eligibleCount: 1n, clearedCount: 0.5 }], false],
+        ['negative clear count', [{ eligibleCount: 1n, clearedCount: -1n }], false],
+        ['over-limit clear count', [{ eligibleCount: 6_000n, clearedCount: 5_001n }], false],
+        ['dry-run write count', [{ eligibleCount: 1n, clearedCount: 1n }], true],
+    ])('refuses %s instead of reporting a successful cleanup', async (_label, rows, dryRun) => {
+        const tx = { $queryRaw: vi.fn()
+            .mockResolvedValueOnce([{ eligibleCount: 7n }])
+            .mockResolvedValueOnce(rows) };
+        await expect(applyDormantSessionRetention(tx as any, asOf, dryRun as boolean)).rejects.toThrow();
+        expect(tx.$queryRaw).toHaveBeenCalledTimes(2);
+    });
+
+    it('keeps independent count snapshots when eligibility grows before the bounded clear', async () => {
+        const tx = { $queryRaw: vi.fn()
+            .mockResolvedValueOnce([{ eligibleCount: 0n }])
+            .mockResolvedValueOnce([{ eligibleCount: 1n, clearedCount: 2n }]) };
+        const result = await applyDormantSessionRetention(tx as any, asOf, false);
+        expect(result.pendingEnrollmentRetention).toEqual({ batchLimit: 5_000, eligibleCount: 1, clearedCount: 2 });
+        expect(result.purgedCount).toBe(0);
     });
 });
 

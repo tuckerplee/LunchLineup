@@ -1,4 +1,5 @@
-import { randomBytes, randomInt, scryptSync, timingSafeEqual } from 'node:crypto';
+import { profileVersion } from './profile-version';
+import { createHash, randomBytes, randomInt, scrypt, scryptSync, timingSafeEqual } from 'node:crypto';
 import { Prisma, type UserRole } from '@prisma/client';
 import type {
   AccessCatalogResponse,
@@ -14,6 +15,9 @@ import type {
   StaffInvitationResponse,
   StaffLegacyRole,
   StaffMember,
+  StaffLifecycleRequest,
+  StaffLifecycleResponse,
+  StaffIdentityRequest,
   StaffAvailabilityException,
   StaffSchedulingProfile,
   StaffSchedulingProfileRequest,
@@ -39,6 +43,8 @@ import {
 } from './access';
 import { anonymizeDeletedUser, deleteAvailabilityImportStorageKeys } from './deactivation';
 import { InvitationOutbox } from './invitation-outbox';
+import type { MfaSessionObserver, MfaVerificationObservation } from '@lunchlineup/rbac';
+import { assertCurrentMutation, authorizeCurrentMutation, mutationIdentity, type CurrentMutationAuthority } from './mutation-authority';
 
 const DEFAULT_LIST_LIMIT = 50;
 const MAX_LIST_LIMIT = 200;
@@ -51,6 +57,11 @@ const EMAIL = /^[a-z0-9.!#$%*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?
 const PIN = /^\d{4,8}$/;
 const SYSTEM_EMAIL_DOMAIN = 'staff.lunchlineup.local';
 const WORKSPACE_SETTINGS_KEY = 'workspace_settings';
+// Shared with username/PIN login: five failures lock the account for 15 minutes.
+const MAX_PIN_ATTEMPTS = 5;
+const PIN_LOCK_MS = 15 * 60_000;
+const MAX_PIN_ROTATION_KDFS = 4;
+let activePinRotationKdfs = 0;
 
 type UserCursor = { timestamp: string; publicId: string };
 type AvailabilityWindow = {
@@ -74,6 +85,10 @@ function problem(status: number, code: string, detail: string, title?: string): 
   return new ProblemError(status, code, detail, title ?? 'Request could not be completed');
 }
 
+function identityVersion(row: { name: string; email: string | null; username: string | null }): string {
+  return createHash('sha256').update(JSON.stringify([row.name, row.email ?? '', row.username ?? ''])).digest('hex');
+}
+
 function publicUser(row: {
   publicId: string;
   name: string;
@@ -82,9 +97,12 @@ function publicUser(row: {
   role: UserRole;
   pinHash: string | null;
   pinResetRequired: boolean;
+  suspendedAt?: Date | null;
 }, roles: readonly RoleWithPermissions[]): StaffMember {
   return {
     id: row.publicId,
+    identityVersion: identityVersion(row),
+    suspendedAt: row.suspendedAt?.toISOString() ?? null,
     name: row.name,
     email: safeEmail(row.email),
     username: row.username ?? '',
@@ -206,6 +224,32 @@ function verifiesPin(pin: string, storedHash: string): boolean {
   const left = Buffer.from(hash, 'utf8');
   const right = Buffer.from(computed, 'utf8');
   return left.length === right.length && timingSafeEqual(left, right);
+}
+
+async function deriveRotationPin(pin: string, salt: string): Promise<Buffer> {
+  // Reject excess work instead of building an unbounded KDF queue. No database
+  // transaction or account lock is held while the thread pool derives a PIN.
+  if (activePinRotationKdfs >= MAX_PIN_ROTATION_KDFS) {
+    throw problem(503, 'pin_rotation_busy', 'PIN rotation is busy. Retry shortly.', 'Service unavailable');
+  }
+  activePinRotationKdfs += 1;
+  try {
+    return await new Promise<Buffer>((resolve, reject) => {
+      scrypt(pin, salt, 64, (error, derivedKey) => {
+        if (error) reject(error);
+        else resolve(derivedKey);
+      });
+    });
+  } finally {
+    activePinRotationKdfs -= 1;
+  }
+}
+
+async function verifiesRotationPin(pin: string, storedHash: string): Promise<boolean> {
+  const [salt, hash, extra] = storedHash.split(':');
+  if (!salt || salt.length > 256 || !hash || !/^[0-9a-f]{128}$/.test(hash) || extra !== undefined) return false;
+  const computed = await deriveRotationPin(pin, salt);
+  return timingSafeEqual(Buffer.from(hash, 'hex'), computed);
 }
 
 function pinData(pin: string, pinResetRequired: boolean, now: Date) {
@@ -428,6 +472,7 @@ async function invalidateAffectedDraftSchedules(
   changedSkills: string[],
   changedAvailability: AvailabilityScope[],
   changedAvailabilityDates: AvailabilityDateScope[] = [],
+  assertCurrent: () => void = () => {},
 ): Promise<void> {
   const predicates: Prisma.Sql[] = [];
   if (changedSkills.length > 0) predicates.push(Prisma.sql`TRUE`);
@@ -476,6 +521,7 @@ async function invalidateAffectedDraftSchedules(
   `);
   const ids = rows.map((row) => row.id);
   if (ids.length > 0) {
+    assertCurrent();
     await transaction.schedule.updateMany({
       where: { id: { in: ids }, tenantId, status: 'DRAFT', deletedAt: null },
       data: { revision: { increment: 1 } },
@@ -494,8 +540,49 @@ export class PeopleService {
   constructor(
     private readonly database: Pick<TenantDatabase, 'withTenant'>,
     config: Pick<ApiV2Config, 'staffInvitationOutboxEnabled' | 'staffInvitationOutboxEncryptionKey' | 'staffInvitationMaxAttempts'>,
+    private readonly mfaObserver?: Partial<MfaSessionObserver>,
   ) {
     this.invitationOutbox = new InvitationOutbox(config);
+  }
+
+  private async observeAuthority(authority: CurrentMutationAuthority): Promise<MfaVerificationObservation | null> {
+    if (!authority.requiresMfa) return null;
+    try {
+      if (!this.mfaObserver?.observeSessionMfa) throw new Error('MFA observer unavailable');
+      return await this.mfaObserver.observeSessionMfa({ ...authority.identity });
+    } catch {
+      throw problem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+    }
+  }
+
+  private async withCurrentMutation<T>(
+    identity: SessionIdentity,
+    permission: string,
+    operation: (transaction: TenantTransaction,
+      authorize: (options?: Parameters<typeof authorizeMutation>[3]) => Promise<CurrentMutationAuthority>,
+      assertCurrent: () => void) => Promise<T>,
+  ): Promise<T> {
+    const preflight = await withSerializable(this.database, identity.tenantId,
+      transaction => authorizeCurrentMutation(transaction, identity, permission));
+    const observation = await this.observeAuthority(preflight);
+    assertCurrentMutation(preflight, observation);
+    return withSerializable(this.database, identity.tenantId, async transaction => {
+      let authority: CurrentMutationAuthority | undefined;
+      const assertCurrent = () => {
+        if (!authority) throw new Error('Mutation authority was not established');
+        assertCurrentMutation(authority, observation);
+      };
+      const authorize = async (options: Parameters<typeof authorizeMutation>[3] = {}) => {
+        if (authority) throw new Error('Mutation authority was already established');
+        authority = await authorizeCurrentMutation(transaction, identity, permission, options);
+        assertCurrent();
+        return authority;
+      };
+      // Resolve the target before one ordered actor/target authority lock set.
+      const result = await operation(transaction, authorize, assertCurrent);
+      assertCurrent();
+      return result;
+    });
   }
 
   async list(identity: SessionIdentity, query: StaffDirectoryQuery): Promise<StaffDirectoryResponse> {
@@ -525,6 +612,7 @@ export class PeopleService {
           role: true,
           pinHash: true,
           pinResetRequired: true,
+          suspendedAt: true,
         },
       });
       const hasMore = rows.length > limit;
@@ -608,12 +696,59 @@ export class PeopleService {
         where: { tenantId: identity.tenantId, publicId: userPublicId, deletedAt: null },
         select: {
           id: true, publicId: true, name: true, email: true, username: true,
-          role: true, pinHash: true, pinResetRequired: true,
+          role: true, pinHash: true, pinResetRequired: true, suspendedAt: true,
         },
       });
       if (!user) throw problem(404, 'staff_not_found', 'The selected staff member was not found.', 'Staff member not found');
       const roles = await this.assignedRolesForUsers(transaction, identity.tenantId, [user.id]);
       return publicUser(user, roles.get(user.id) ?? []);
+    });
+  }
+
+  async updateIdentity(identity: SessionIdentity, userPublicId: string, body: StaffIdentityRequest): Promise<StaffMember> {
+    identity = mutationIdentity(identity);
+    const name = body.name.trim();
+    const email = body.email.trim().toLowerCase();
+    const username = body.username.trim().toLowerCase();
+    if (!name || (email && !EMAIL.test(email)) || (username && !USERNAME.test(username)) || Boolean(email) === Boolean(username)) {
+      throw problem(422, 'invalid_staff', 'Provide a name and one valid login identity.', 'Staff validation failed');
+    }
+    return this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorize({ targetUserId: internalId });
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'Use account settings to edit your own identity.');
+      const user = await transaction.user.findFirst({ where: { id: internalId, tenantId: identity.tenantId, deletedAt: null } });
+      if (!user) throw problem(404, 'staff_not_found', 'Staff member was not found.', 'Staff member not found');
+      const unchanged = user.name === name && (user.email ?? '') === email && (user.username ?? '') === username;
+      if (!unchanged && body.expectedVersion !== identityVersion(user)) {
+        throw problem(409, 'staff_identity_conflict', 'This identity changed. Reload the saved identity before applying your edits.', 'Staff conflict');
+      }
+      if (Boolean(user.username) !== Boolean(username)) throw problem(422, 'login_method_change', 'Keep the existing login method when editing identity.', 'Staff validation failed');
+      if ((user.email ?? '') !== email) throw problem(422, 'email_reverification_required', 'Email sign-in changes require a verified account recovery flow.', 'Staff validation failed');
+      const loginChanged = (user.username ?? '') !== username;
+      if (loginChanged && user.oidcSubject) throw problem(409, 'external_identity_managed', 'This login is managed by your identity provider. Update it there.', 'Staff conflict');
+      if (loginChanged) {
+        const duplicate = await transaction.user.findFirst({ where: {
+          tenantId: identity.tenantId, id: { not: internalId }, ...(email ? { email } : { username }),
+        }, select: { id: true } });
+        if (duplicate) throw problem(409, 'staff_already_exists', 'A staff member already uses this login identity.', 'Staff conflict');
+      }
+      assertCurrent();
+      const saved = unchanged ? user : await transaction.user.update({ where: { id: internalId }, data: { name, email: email || null, username: username || null } });
+      if (!unchanged) {
+        assertCurrent();
+        const sessions = loginChanged ? await transaction.session.updateMany({ where: { userId: internalId, revokedAt: null }, data: { revokedAt: new Date() } }) : { count: 0 };
+        if (loginChanged) await this.invalidateReactivatedCredentials(transaction, identity.tenantId, internalId, new Date(), assertCurrent);
+        assertCurrent();
+        await transaction.auditLog.create({ data: {
+          tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
+          action: 'USER_IDENTITY_UPDATED', resource: 'User', resourceId: internalId,
+          oldValue: { name: user.name, email: user.email, username: user.username },
+          newValue: { name, email: email || null, username: username || null, sessionsRevoked: sessions.count },
+        } });
+      }
+      const roles = await this.assignedRolesForUsers(transaction, identity.tenantId, [internalId]);
+      return publicUser(saved, roles.get(internalId) ?? []);
     });
   }
 
@@ -668,6 +803,7 @@ export class PeopleService {
         throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
       }
       return {
+        version: profileVersion(user.id, skills.map(row => row.skill), availability, availabilityExceptions),
         user: { id: user.publicId, name: user.name },
         skills: skills.map((row) => row.skill),
         availability: availability.map((row) => ({
@@ -687,7 +823,7 @@ export class PeopleService {
         availabilityConfigured: availability.length > 0
           || availabilityExceptions.some((row) => row.kind === 'AVAILABLE'),
       };
-    });
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
   }
 
   async replaceSchedulingProfile(
@@ -695,14 +831,16 @@ export class PeopleService {
     userPublicId: string,
     body: StaffSchedulingProfileRequest,
   ): Promise<StaffSchedulingProfile> {
+    identity = mutationIdentity(identity);
     const profile = normalizedProfile(body);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    if (!body.expectedVersion) throw problem(428, 'profile_version_required', 'Reload this profile before saving.', 'Profile version required');
+    return this.withCurrentMutation(identity, 'users:write', async (transaction, authorize, assertCurrent) => {
       const user = await transaction.user.findFirst({
         where: { tenantId: identity.tenantId, publicId: userPublicId, deletedAt: null },
         select: { id: true, publicId: true, name: true },
       });
       if (!user) throw problem(404, 'staff_not_found', 'The selected staff member was not found.', 'Staff member not found');
-      await authorizeMutation(transaction, identity, 'users:write', { targetUserId: user.id });
+      await authorize({ targetUserId: user.id });
       await transaction.$executeRaw(Prisma.sql`
         SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${identity.tenantId}`}, 0))
       `);
@@ -781,6 +919,10 @@ export class PeopleService {
       if (existingAvailabilityExceptions.length > MAX_AVAILABILITY_EXCEPTIONS) {
         throw problem(422, 'scheduling_profile_too_large', 'The staff scheduling profile has too many dated exceptions.', 'Scheduling profile is too large');
       }
+      const currentVersion = profileVersion(user.id, existingSkills.map(row => row.skill), existingAvailability, existingAvailabilityExceptions);
+      if (body.expectedVersion !== currentVersion) {
+        throw problem(409, 'scheduling_profile_changed', 'This profile changed while you were editing. Your draft has not been saved. Reload the current profile before making your changes again.', 'Scheduling profile changed');
+      }
       const exceptionReplacement = requestedExceptionReplacement ?? existingAvailabilityExceptions.map((row) => ({
         locationId: row.locationId,
         localDate: row.localDate,
@@ -801,23 +943,30 @@ export class PeopleService {
         requestedExceptionReplacement === undefined
           ? []
           : availabilityDateScopes(existingAvailabilityExceptions, exceptionReplacement),
+        assertCurrent,
       );
+      assertCurrent();
       await transaction.staffAvailability.deleteMany({ where: { tenantId: identity.tenantId, userId: user.id } });
+      assertCurrent();
       await transaction.staffSkill.deleteMany({ where: { tenantId: identity.tenantId, userId: user.id } });
       if (requestedExceptionReplacement !== undefined) {
+        assertCurrent();
         await transaction.staffAvailabilityException.deleteMany({
           where: { tenantId: identity.tenantId, userId: user.id },
         });
       }
       if (profile.skills.length > 0) {
+        assertCurrent();
         await transaction.staffSkill.createMany({ data: profile.skills.map((skill) => ({ tenantId: identity.tenantId, userId: user.id, skill })) });
       }
       if (replacement.length > 0) {
+        assertCurrent();
         await transaction.staffAvailability.createMany({
           data: replacement.map((window) => ({ tenantId: identity.tenantId, userId: user.id, ...window })),
         });
       }
       if (requestedExceptionReplacement && requestedExceptionReplacement.length > 0) {
+        assertCurrent();
         await transaction.staffAvailabilityException.createMany({
           data: requestedExceptionReplacement.map((window) => ({
             tenantId: identity.tenantId,
@@ -835,6 +984,7 @@ export class PeopleService {
         endTimeMinutes: row.endTimeMinutes,
       }));
       return {
+        version: profileVersion(user.id, profile.skills, replacement, exceptionReplacement),
         user: { id: user.publicId, name: user.name },
         skills: profile.skills,
         availability: profile.availability,
@@ -845,7 +995,8 @@ export class PeopleService {
     });
   }
 
-  async invite(identity: SessionIdentity, body: StaffInvitationRequest): Promise<StaffInvitationResponse> {
+  async invite(identity: SessionIdentity, body: StaffInvitationRequest, idempotencyKey?: string): Promise<StaffInvitationResponse> {
+    identity = mutationIdentity(identity);
     const name = body.name.trim();
     const email = body.email?.trim().toLowerCase() ?? '';
     const username = body.username?.trim().toLowerCase() ?? '';
@@ -856,7 +1007,32 @@ export class PeopleService {
     if (username && !USERNAME.test(username)) throw problem(422, 'invalid_staff', 'Username is invalid.', 'Staff validation failed');
     if (requestedPin && !PIN.test(requestedPin)) throw problem(422, 'invalid_pin', 'PIN must be 4 through 8 numeric digits.', 'Staff validation failed');
     if (email && username) throw problem(422, 'invalid_staff', 'Choose email login or username login, not both.', 'Staff validation failed');
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+    if (idempotencyKey && (idempotencyKey.length > 255 || /[^\x20-\x7E]/.test(idempotencyKey))) {
+      throw problem(422, 'invalid_idempotency_key', 'Invalid request key.', 'Staff validation failed');
+    }
+    if (idempotencyKey && username && !requestedPin) {
+      throw problem(422, 'invalid_pin', 'Choose a PIN before submitting a recoverable staff request.', 'Staff validation failed');
+    }
+    const receiptKey = idempotencyKey ? `staff-create:${createHash('sha256').update(JSON.stringify([identity.sub, idempotencyKey])).digest('hex')}` : null;
+    // Never persist the PIN or a fast hash of it in a recovery receipt.
+    const fingerprint = createHash('sha256').update(JSON.stringify([name, email, username, body.roleId ?? null, body.role ?? null])).digest('hex');
+    return this.withCurrentMutation(identity, 'users:write', async (transaction, authorize, assertCurrent) => {
+      if (receiptKey) {
+        const receipt = await transaction.tenantSetting.findUnique({
+          where: { tenantId_key: { tenantId: identity.tenantId, key: receiptKey } },
+        });
+        if (receipt) {
+          const saved = receipt.value as unknown as { fingerprint: string; userId: string; response: StaffInvitationResponse };
+          if (saved.fingerprint !== fingerprint) throw problem(409, 'staff_request_conflict', 'Retry with the original staff details.', 'Staff conflict');
+          const authority = await authorize({ targetUserId: saved.userId });
+          assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot recover your own invitation.');
+          const user = await transaction.user.findFirst({ where: { id: saved.userId, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null } });
+          if (!user || (username && (!user.pinHash || user.username !== username || !verifiesPin(requestedPin, user.pinHash)))) {
+            throw problem(409, 'staff_request_changed', 'The created account has changed. Review its current access before continuing.', 'Staff conflict');
+          }
+          return { ...saved.response, temporaryPin: username ? requestedPin : null };
+        }
+      }
       const existing = await transaction.user.findFirst({
         where: { tenantId: identity.tenantId, ...(email ? { email } : { username }), },
         select: { id: true, deletedAt: true },
@@ -864,7 +1040,7 @@ export class PeopleService {
       if (existing && !existing.deletedAt) {
         throw problem(409, 'staff_already_exists', 'A staff member already uses this login identity.', 'Staff conflict');
       }
-      const authority = await authorizeMutation(transaction, identity, 'users:write', {
+      const authority = await authorize({
         ...(existing ? { targetUserId: existing.id, allowDeletedTarget: true } : {}),
       });
       if (authority.target && authority.targetAccess) {
@@ -918,7 +1094,7 @@ export class PeopleService {
       }
       const now = new Date();
       const generatedPin = username ? (requestedPin || temporaryPin()) : null;
-      const credentials = generatedPin ? pinData(generatedPin, !requestedPin, now) : {
+      const credentials = generatedPin ? pinData(generatedPin, true, now) : {
         pinHash: null, pinSetAt: null, pinResetRequired: false, pinLoginAttempts: 0, pinLockedUntil: null,
       };
       const data = {
@@ -937,15 +1113,19 @@ export class PeopleService {
         lastLoginAt: null,
         ...credentials,
       };
+      assertCurrent();
       const user = existing
         ? await transaction.user.update({ where: { id: existing.id }, data: { ...data, deletedAt: null } })
         : await transaction.user.create({ data: { tenantId: identity.tenantId, ...data } });
+      assertCurrent();
       await transaction.roleAssignment.deleteMany({ where: { tenantId: identity.tenantId, userId: user.id } });
+      assertCurrent();
       await transaction.roleAssignment.create({ data: { tenantId: identity.tenantId, userId: user.id, roleId: selected.id } });
-      if (existing) await this.invalidateReactivatedCredentials(transaction, identity.tenantId, user.id, now);
+      if (existing) await this.invalidateReactivatedCredentials(transaction, identity.tenantId, user.id, now, assertCurrent);
       const invitationDelivery = email
-        ? await this.invitationOutbox.enqueue(transaction, { tenantId: identity.tenantId, userId: user.id, recipient: email })
+        ? await this.invitationOutbox.enqueue(transaction, { tenantId: identity.tenantId, userId: user.id, recipient: email }, assertCurrent)
         : { status: 'NOT_APPLICABLE' as const, attempts: 0, canRetry: false, canReissue: false };
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
@@ -956,12 +1136,20 @@ export class PeopleService {
           resourceId: user.id,
         },
       });
-      return {
+      const response: StaffInvitationResponse = {
         ...publicUser(user, [selected]),
-        temporaryPin: generatedPin,
+        temporaryPin: null,
         invitationDelivery,
         status: 'INVITED',
       };
+      if (receiptKey) {
+        assertCurrent();
+        await transaction.tenantSetting.create({ data: {
+          tenantId: identity.tenantId, key: receiptKey,
+          value: { fingerprint, userId: user.id, response } as unknown as Prisma.InputJsonValue,
+        } });
+      }
+      return { ...response, temporaryPin: generatedPin };
     });
   }
 
@@ -973,13 +1161,14 @@ export class PeopleService {
   }
 
   async retryInvitation(identity: SessionIdentity, userPublicId: string): Promise<StaffInvitationDeliveryResponse> {
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    return this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
-      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      const authority = await authorize({ targetUserId: internalId });
       assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot retry your own invitation delivery.');
       return { invitationDelivery: await this.invitationOutbox.retry(transaction, {
         tenantId: identity.tenantId, userId: internalId, actorUserId: identity.sub,
-      }) };
+      }, assertCurrent) };
     });
   }
 
@@ -988,22 +1177,24 @@ export class PeopleService {
     userPublicId: string,
     idempotencyKey: string | undefined,
   ): Promise<StaffInvitationDeliveryResponse> {
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    return this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
-      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      const authority = await authorize({ targetUserId: internalId });
       assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot reissue your own invitation delivery.');
       return { invitationDelivery: await this.invitationOutbox.reissue(transaction, {
         tenantId: identity.tenantId, userId: internalId, actorUserId: identity.sub, idempotencyKey,
-      }) };
+      }, assertCurrent) };
     });
   }
 
   async resetPin(identity: SessionIdentity, userPublicId: string, requestedPin?: string): Promise<ResetStaffPinResponse> {
+    identity = mutationIdentity(identity);
     const newPin = requestedPin?.trim() || temporaryPin();
     if (!PIN.test(newPin)) throw problem(422, 'invalid_pin', 'PIN must be 4 through 8 numeric digits.', 'PIN validation failed');
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+    return this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
-      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      const authority = await authorize({ targetUserId: internalId });
       assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'Use the self-service PIN rotation route for your own account.');
       const target = await transaction.user.findFirst({
         where: { id: internalId, tenantId: identity.tenantId, deletedAt: null },
@@ -1018,11 +1209,15 @@ export class PeopleService {
         username = await this.uniqueUsername(transaction, identity.tenantId, target.name);
       }
       const now = new Date();
+      const credentials = pinData(newPin, true, now);
+      assertCurrent();
       await transaction.user.updateMany({
         where: { id: target.id, tenantId: identity.tenantId, deletedAt: null },
-        data: { username, ...pinData(newPin, true, now) },
+        data: { username, ...credentials },
       });
+      assertCurrent();
       const sessions = await transaction.session.updateMany({ where: { userId: target.id, revokedAt: null }, data: { revokedAt: now } });
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
@@ -1035,14 +1230,15 @@ export class PeopleService {
   }
 
   async replaceOwnPin(identity: SessionIdentity, currentPin: string, newPin: string): Promise<void> {
+    identity = mutationIdentity(identity);
     if (!PIN.test(currentPin) || !PIN.test(newPin)) {
       throw problem(422, 'invalid_pin', 'PIN must be 4 through 8 numeric digits.', 'PIN validation failed');
     }
     if (currentPin === newPin) {
       throw problem(422, 'invalid_pin', 'New PIN must differ from the current PIN.', 'PIN validation failed');
     }
-    await withSerializable(this.database, identity.tenantId, async (transaction) => {
-      const authority = await authorizeMutation(transaction, identity, 'auth:login_pin');
+    const proof = await withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const authority = await authorizeCurrentMutation(transaction, identity, 'auth:login_pin', { allowPinRecovery: true });
       const user = await transaction.user.findFirst({
         where: { id: authority.actor.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
         select: { id: true, username: true, pinHash: true },
@@ -1050,15 +1246,59 @@ export class PeopleService {
       if (!user || !user.username || !user.pinHash) {
         throw problem(403, 'pin_rotation_unavailable', 'PIN rotation is only available for username accounts.', 'Forbidden');
       }
-      if (!verifiesPin(currentPin, user.pinHash)) {
-        throw problem(401, 'invalid_current_pin', 'Current PIN is invalid.', 'Unauthorized');
+      if (authority.expiresAtEpochMs <= Date.now()) throw problem(403, 'permission_denied', 'Administrator session is no longer active.', 'Forbidden');
+      return { id: user.id, username: user.username, pinHash: user.pinHash, role: authority.actor.role, authority };
+    });
+    const observation = await this.observeAuthority(proof.authority);
+    assertCurrentMutation(proof.authority, observation);
+    const validPin = await verifiesRotationPin(currentPin, proof.pinHash);
+    const salt = validPin ? randomBytes(16).toString('hex') : null;
+    const replacementHash = salt ? `${salt}:${(await deriveRotationPin(newPin, salt)).toString('hex')}` : null;
+    const outcome = await withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const authority = await authorizeCurrentMutation(transaction, identity, 'auth:login_pin', { allowPinRecovery: true });
+      const assertCurrent = () => assertCurrentMutation(authority, observation);
+      assertCurrent();
+      const user = await transaction.user.findFirst({
+        where: { id: authority.actor.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
+        select: { id: true, username: true, pinHash: true, pinLoginAttempts: true },
+      });
+      if (!user || user.id !== proof.id || user.username !== proof.username || user.pinHash !== proof.pinHash
+        || authority.actor.role !== proof.role) {
+        throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
       }
       const now = new Date();
-      await transaction.user.updateMany({
-        where: { id: user.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null },
-        data: pinData(newPin, false, now),
+      const credentialWhere = {
+        id: user.id, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null,
+        username: proof.username, pinHash: proof.pinHash, role: proof.role,
+      };
+      if (!validPin) {
+        const attempts = user.pinLoginAttempts + 1;
+        assertCurrent();
+        const charged = await transaction.user.updateMany({
+          where: credentialWhere,
+          data: {
+            pinLoginAttempts: attempts,
+            pinLockedUntil: attempts >= MAX_PIN_ATTEMPTS ? new Date(now.getTime() + PIN_LOCK_MS) : null,
+          },
+        });
+        if (charged.count !== 1) throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
+        // Throwing here would roll back the shared account guessing budget.
+        // Authority expiry instead rolls back this attempt, including its charge.
+        assertCurrent();
+        return 'invalid' as const;
+      }
+      assertCurrent();
+      const updated = await transaction.user.updateMany({
+        where: credentialWhere,
+        data: {
+          pinHash: replacementHash!, pinSetAt: now, pinResetRequired: false,
+          pinLoginAttempts: 0, pinLockedUntil: null,
+        },
       });
+      if (updated.count !== 1) throw problem(409, 'pin_rotation_changed', 'Account access or PIN changed. Retry the request.', 'Conflict');
+      assertCurrent();
       const sessions = await transaction.session.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: now } });
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: user.id, ...requestAudit(identity),
@@ -1066,28 +1306,94 @@ export class PeopleService {
           newValue: { pinResetRequired: false, sessionsRevoked: sessions.count },
         },
       });
+      assertCurrent();
+      return 'rotated' as const;
+    });
+    if (outcome === 'invalid') {
+      throw problem(401, 'invalid_current_pin', 'Current PIN is invalid.', 'Unauthorized');
+    }
+  }
+
+  async lifecycle(identity: SessionIdentity, userPublicId: string): Promise<StaffLifecycleResponse> {
+    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot change your own account state.');
+      return this.lifecycleResponse(transaction, identity.tenantId, internalId);
     });
   }
 
+  async setSuspended(identity: SessionIdentity, userPublicId: string, body: StaffLifecycleRequest): Promise<StaffLifecycleResponse> {
+    identity = mutationIdentity(identity);
+    return this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
+      const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
+      const authority = await authorize({ targetUserId: internalId });
+      const target = authority.target!;
+      assertCanAdministerTarget(authority.actor, authority.actorAccess, target, authority.targetAccess!, 'You cannot change your own account state.');
+      const currentlySuspended = Boolean(target.suspendedAt);
+      // An unchanged retry is safe, but cannot reverse a newer state transition.
+      if (currentlySuspended !== body.suspended) {
+        if (body.expectedSuspendedAt !== (target.suspendedAt?.toISOString() ?? null)) {
+          throw problem(409, 'staff_state_changed', 'This account state changed. Review it before trying again.', 'Staff conflict');
+        }
+        if (!body.suspended) await this.assertUserCapacity(transaction, identity.tenantId);
+        await transaction.$executeRaw(Prisma.sql`SELECT pg_advisory_xact_lock(hashtextextended(${`lunchlineup:scheduling:${identity.tenantId}`}, 0))`);
+        const now = new Date();
+        assertCurrent();
+        await transaction.user.update({ where: { id: internalId }, data: { suspendedAt: body.suspended ? now : null } });
+        // Revoke sessions on both transitions; no old session can revive on reactivation.
+        await this.invalidateReactivatedCredentials(transaction, identity.tenantId, internalId, now, assertCurrent);
+        // Eligibility affects scheduling drafts, but never rewrite published history or assignments.
+        await invalidateAffectedDraftSchedules(transaction, identity.tenantId, ['account-eligibility'], [], [], assertCurrent);
+        assertCurrent();
+        await transaction.auditLog.create({ data: {
+          tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
+          action: body.suspended ? 'USER_SUSPENDED' : 'USER_REACTIVATED', resource: 'User', resourceId: internalId,
+          oldValue: { suspendedAt: target.suspendedAt?.toISOString() ?? null },
+          newValue: { suspendedAt: body.suspended ? now.toISOString() : null },
+        } });
+      }
+      return this.lifecycleResponse(transaction, identity.tenantId, internalId);
+    });
+  }
+
+  private async lifecycleResponse(transaction: TenantTransaction, tenantId: string, userId: string): Promise<StaffLifecycleResponse> {
+    const user = await transaction.user.findFirstOrThrow({ where: { id: userId, tenantId, deletedAt: null } });
+    const where = { tenantId, userId, deletedAt: null, endTime: { gt: new Date() } };
+    const [roles, futureAssignmentCount, shifts] = await Promise.all([
+      this.assignedRolesForUsers(transaction, tenantId, [userId]),
+      transaction.shift.count({ where }),
+      transaction.shift.findMany({ where, take: 100, orderBy: [{ startTime: 'asc' }, { id: 'asc' }],
+        select: { publicId: true, startTime: true, endTime: true,
+          location: { select: { name: true, timezone: true } }, schedule: { select: { status: true } } } }),
+    ]);
+    return { user: publicUser(user, roles.get(userId) ?? []), futureAssignmentCount,
+      futureAssignments: shifts.map(shift => ({ id: shift.publicId, startTime: shift.startTime.toISOString(),
+        endTime: shift.endTime.toISOString(), locationName: shift.location.name, timezone: shift.location.timezone,
+        scheduleStatus: shift.schedule?.status ?? null })) };
+  }
+
   /**
-   * Deactivates one staff account through the native People transaction. The
+   * Permanently removes one staff account through the native People transaction. The
    * cleanup preserves immutable operational history, clears editable schedule
    * assignments, settles abandoned availability-import credits, tombstones
    * credentials/PII, and removes only validated local source files after the
    * transaction commits.
    */
-  async deactivate(identity: SessionIdentity, userPublicId: string): Promise<void> {
-    const storageKeys = await withSerializable(this.database, identity.tenantId, async (transaction) => {
+  async remove(identity: SessionIdentity, userPublicId: string): Promise<void> {
+    identity = mutationIdentity(identity);
+    const storageKeys = await this.withCurrentMutation(identity, 'users:admin', async (transaction, authorize, assertCurrent) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
-      const authority = await authorizeMutation(transaction, identity, 'users:admin', { targetUserId: internalId });
+      const authority = await authorize({ targetUserId: internalId });
       assertCanAdministerTarget(
         authority.actor,
         authority.actorAccess,
         authority.target!,
         authority.targetAccess!,
-        'You cannot deactivate your own account.',
+        'You cannot permanently remove your own account.',
       );
-      const cleanup = await anonymizeDeletedUser(transaction, identity.tenantId, internalId, new Date());
+      const cleanup = await anonymizeDeletedUser(transaction, identity.tenantId, internalId, new Date(), assertCurrent);
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
@@ -1133,10 +1439,11 @@ export class PeopleService {
     userPublicId: string,
     rolePublicIds: unknown,
   ): Promise<ReplaceStaffAccessResponse> {
+    identity = mutationIdentity(identity);
     const requested = normalizedRoleIds(rolePublicIds);
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
+    return this.withCurrentMutation(identity, 'roles:assign', async (transaction, authorize, assertCurrent) => {
       const internalId = await this.resolveUser(transaction, identity.tenantId, userPublicId);
-      const authority = await authorizeMutation(transaction, identity, 'roles:assign', { targetUserId: internalId });
+      const authority = await authorize({ targetUserId: internalId });
       assertCanAdministerTarget(authority.actor, authority.actorAccess, authority.target!, authority.targetAccess!, 'You cannot change your own access roles.');
       const mapping = await resolveTenantRolePublicIds(transaction, identity.tenantId, requested);
       if (mapping.size !== requested.length) {
@@ -1156,8 +1463,10 @@ export class PeopleService {
       if (roles.some((role) => !canDelegateRole(authority.actorAccess, role))) {
         throw problem(403, 'permission_denied', 'You cannot grant one or more selected access roles.', 'Forbidden');
       }
+      assertCurrent();
       await transaction.roleAssignment.deleteMany({ where: { tenantId: identity.tenantId, userId: internalId } });
       if (roleIds.length > 0) {
+        assertCurrent();
         await transaction.roleAssignment.createMany({
           data: roleIds.map((roleId) => ({ tenantId: identity.tenantId, userId: internalId, roleId })),
           skipDuplicates: true,
@@ -1168,7 +1477,9 @@ export class PeopleService {
           ? role.legacyRole
           : current
       ), 'STAFF');
+      assertCurrent();
       await transaction.user.update({ where: { id: internalId }, data: { role: legacyRole } });
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
@@ -1181,11 +1492,12 @@ export class PeopleService {
   }
 
   async createRole(identity: SessionIdentity, body: { name: string; description?: string; permissionKeys: string[] }): Promise<AccessRoleResponse> {
+    identity = mutationIdentity(identity);
     const name = normalizedRoleName(body.name);
     const description = normalizedDescription(body.description);
     const permissionKeys = canonicalPermissions(body.permissionKeys);
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
-      const authority = await authorizeMutation(transaction, identity, 'roles:write');
+    return this.withCurrentMutation(identity, 'roles:write', async (transaction, authorize, assertCurrent) => {
+      const authority = await authorize();
       assertCanGrantPermissions(authority.actorAccess, permissionKeys);
       const permissions = permissionKeys.length === 0 ? [] : await transaction.permission.findMany({
         where: { key: { in: permissionKeys } }, select: { id: true, key: true },
@@ -1197,6 +1509,7 @@ export class PeopleService {
       if (count >= MAX_CUSTOM_ROLES_PER_TENANT) {
         throw problem(422, 'role_limit_reached', `A workspace may configure at most ${MAX_CUSTOM_ROLES_PER_TENANT} custom roles.`, 'Role validation failed');
       }
+      assertCurrent();
       const role = await transaction.role.create({
         data: {
           tenantId: identity.tenantId,
@@ -1208,6 +1521,7 @@ export class PeopleService {
         },
         select: { ...this.roleSelection(), _count: { select: { assignments: true } } },
       }) as RoleWithPermissions;
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
@@ -1225,11 +1539,12 @@ export class PeopleService {
     rolePublicId: string,
     body: { name: string; description?: string; permissionKeys: string[] },
   ): Promise<AccessRoleResponse> {
+    identity = mutationIdentity(identity);
     const name = normalizedRoleName(body.name);
     const description = normalizedDescription(body.description);
     const permissionKeys = canonicalPermissions(body.permissionKeys);
-    return withSerializable(this.database, identity.tenantId, async (transaction) => {
-      const authority = await authorizeMutation(transaction, identity, 'roles:write');
+    return this.withCurrentMutation(identity, 'roles:write', async (transaction, authorize, assertCurrent) => {
+      const authority = await authorize();
       assertCanGrantPermissions(authority.actorAccess, permissionKeys);
       const role = await transaction.role.findFirst({
         where: { tenantId: identity.tenantId, publicId: rolePublicId, deletedAt: null },
@@ -1246,7 +1561,9 @@ export class PeopleService {
       if (permissions.length !== permissionKeys.length) {
         throw problem(422, 'invalid_permission_keys', 'One or more permissions are invalid.', 'Role validation failed');
       }
+      assertCurrent();
       await transaction.rolePermission.deleteMany({ where: { roleId: role.id } });
+      assertCurrent();
       const updated = await transaction.role.update({
         where: { id: role.id },
         data: {
@@ -1256,6 +1573,7 @@ export class PeopleService {
         },
         select: { ...this.roleSelection(), _count: { select: { assignments: true } } },
       }) as RoleWithPermissions;
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
@@ -1269,8 +1587,9 @@ export class PeopleService {
   }
 
   async deleteRole(identity: SessionIdentity, rolePublicId: string): Promise<void> {
-    await withSerializable(this.database, identity.tenantId, async (transaction) => {
-      await authorizeMutation(transaction, identity, 'roles:write');
+    identity = mutationIdentity(identity);
+    await this.withCurrentMutation(identity, 'roles:write', async (transaction, authorize, assertCurrent) => {
+      await authorize();
       const role = await transaction.role.findFirst({
         where: { tenantId: identity.tenantId, publicId: rolePublicId, deletedAt: null },
         select: { id: true, name: true, isSystem: true },
@@ -1284,7 +1603,9 @@ export class PeopleService {
       if (assignments > 0) {
         throw problem(409, 'role_in_use', `Role cannot be deleted while ${assignments} ${assignments === 1 ? 'assignment exists' : 'assignments exist'}.`, 'Role conflict');
       }
+      assertCurrent();
       await transaction.role.update({ where: { id: role.id }, data: { deletedAt: new Date() } });
+      assertCurrent();
       await transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId, userId: identity.sub, ...requestAudit(identity),
@@ -1428,13 +1749,18 @@ export class PeopleService {
     tenantId: string,
     userId: string,
     now: Date,
+    assertCurrent: () => void = () => {},
   ): Promise<void> {
+    assertCurrent();
     await transaction.session.updateMany({ where: { userId, revokedAt: null }, data: { revokedAt: now } });
+    assertCurrent();
     await transaction.passwordResetToken.updateMany({ where: { tenantId, userId, consumedAt: null }, data: { consumedAt: now } });
+    assertCurrent();
     await transaction.passwordResetEmailOutbox.updateMany({
       where: { tenantId, userId, status: { in: ['PENDING', 'SENDING', 'FAILED'] } },
       data: { status: 'DEAD_LETTERED', deadLetteredAt: now, leaseUntil: null, lastError: 'User credentials reprovisioned' },
     });
+    assertCurrent();
     await transaction.mfaTotpClaim.deleteMany({ where: { tenantId, userId } });
   }
 

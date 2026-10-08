@@ -1,3 +1,4 @@
+import type { NativeQuotaAdapter } from '../platform/native-quota';
 import {
   WorkspaceGeneralSettingsUpdateSchema,
   WorkspaceSecuritySettingsUpdateSchema,
@@ -18,6 +19,7 @@ import type { WorkspaceSettingsService } from './settings.service';
 export type WorkspaceSettingsRouteDependencies = {
   config: ApiV2Config;
   identity: IdentityAdapter;
+  quota: Pick<NativeQuotaAdapter, 'consume'>;
   settings: Pick<WorkspaceSettingsService, 'get' | 'updateGeneral' | 'updateTeam' | 'updateSecurity'>;
 };
 
@@ -37,6 +39,7 @@ export async function registerWorkspaceSettingsRoutes(
   }, async (request, reply): Promise<WorkspaceSettings> => {
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['settings:read']);
+    await dependencies.quota.consume('getWorkspaceSettings', identity, reply);
     const settings = await dependencies.settings.get(identity);
     reply.header('Cache-Control', 'private, no-store');
     return settings;
@@ -55,6 +58,7 @@ export async function registerWorkspaceSettingsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['settings:write']);
+    await dependencies.quota.consume('updateGeneralSettings', identity, reply);
     const settings = await dependencies.settings.updateGeneral(identity, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return settings;
@@ -73,6 +77,7 @@ export async function registerWorkspaceSettingsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['settings:write']);
+    await dependencies.quota.consume('updateTeamSettings', identity, reply);
     const settings = await dependencies.settings.updateTeam(identity, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return settings;
@@ -91,6 +96,7 @@ export async function registerWorkspaceSettingsRoutes(
     assertUnsafeRequestSecurity(request, dependencies.config);
     const identity = await dependencies.identity.authenticate(request, reply);
     requirePermissions(identity, ['settings:write']);
+    await dependencies.quota.consume('updateSecuritySettings', identity, reply);
     const settings = await dependencies.settings.updateSecurity(identity, request.body);
     reply.header('Cache-Control', 'private, no-store');
     return settings;

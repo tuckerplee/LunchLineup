@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 export const requiredInteractionProofCases = new Map([
   ['interaction-desktop', [
     'click, slight movement, outside drop, Escape, and pointercancel issue no move request',
-    'valid drag announces and commits the exact proposed employee and time with local Saved and Undo when exposed',
+    'valid drag announces and commits the exact proposed employee and time with local Saved and Undo with persisted reversal',
     'failed move restores only that shift and keyboard editing remains an exact fallback',
     'overnight values survive Calendar and Lunch while Lunch and Time Cards expose only supported explicit actions',
   ]],

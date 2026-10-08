@@ -14,6 +14,7 @@ type LocationsWorkspaceProps = {
 
 type ApiLocation = {
     id: string;
+    updatedAt?: string;
     name: string;
     address?: string | null;
     timezone?: string | null;
@@ -67,6 +68,25 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
     const [showCreate, setShowCreate] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    // A list response may only commit within the read/mutation interval that
+    // issued it. Mutation completion also fences reads started mid-write.
+    const listRequestRef = useRef(0);
+    const mutationEpochRef = useRef(0);
+    const activeMutationsRef = useRef(0);
+    const [pendingMutations, setPendingMutations] = useState(0);
+    const beginMutation = useCallback(() => {
+        mutationEpochRef.current += 1;
+        activeMutationsRef.current += 1;
+        setPendingMutations(activeMutationsRef.current);
+        let finished = false;
+        return () => {
+            if (finished) return;
+            finished = true;
+            mutationEpochRef.current += 1;
+            activeMutationsRef.current -= 1;
+            setPendingMutations(activeMutationsRef.current);
+        };
+    }, []);
     const createAttemptRef = useRef<IdempotentRequestAttempt | null>(null);
 
     const [name, setName] = useState('');
@@ -75,8 +95,11 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
 
     const loadLocations = useCallback(async (cursor?: string) => {
         const append = Boolean(cursor);
-        if (append) setIsLoadingMore(true);
-        else setIsLoading(true);
+        const request = ++listRequestRef.current;
+        const epoch = mutationEpochRef.current;
+        const beganDuringMutation = activeMutationsRef.current > 0;
+        setIsLoadingMore(append);
+        setIsLoading(!append);
         setError(null);
         try {
             const params = new URLSearchParams({ limit: String(LOCATION_PAGE_SIZE) });
@@ -95,18 +118,24 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
             if (payload.pagination?.hasMore === true && (typeof continuation !== 'string' || !continuation)) {
                 throw new Error('Location list did not provide a continuation cursor.');
             }
+            if (request !== listRequestRef.current || epoch !== mutationEpochRef.current
+                || beganDuringMutation || activeMutationsRef.current > 0) return;
             setLocations((current) => append ? mergeLocationRows(current, rows) : rows);
             setNextCursor(continuation ?? null);
         } catch (err) {
-            setError(err instanceof Error ? err.message : 'Unable to load locations.');
+            // A current request's real error remains visible even across a write.
+            if (request === listRequestRef.current) setError(err instanceof Error ? err.message : 'Unable to load locations.');
         } finally {
-            if (append) setIsLoadingMore(false);
-            else setIsLoading(false);
+            if (request === listRequestRef.current) {
+                setIsLoadingMore(false);
+                setIsLoading(false);
+            }
         }
     }, []);
 
     useEffect(() => {
         void loadLocations();
+        return () => { listRequestRef.current += 1; };
     }, [loadLocations]);
 
     const submitCreate = useCallback(async () => {
@@ -121,6 +150,7 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
 
         const attempt = idempotentRequestAttempt(payload, createAttemptRef.current);
         createAttemptRef.current = attempt;
+        const finishMutation = beginMutation();
         setIsCreating(true);
         setError(null);
         setNotice(null);
@@ -147,9 +177,10 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to add location.');
         } finally {
+            finishMutation();
             setIsCreating(false);
         }
-    }, [address, canWrite, name, timezone]);
+    }, [address, beginMutation, canWrite, name, timezone]);
 
     const total = useMemo(() => locations.length, [locations.length]);
 
@@ -166,7 +197,7 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
                     </div>
 
                     <div style={{ display: 'flex', gap: '0.5rem', maxWidth: '100%', flexWrap: 'wrap' }}>
-                        <button className="btn btn-secondary" onClick={() => void loadLocations()} disabled={isLoading || isLoadingMore || isCreating}>
+                        <button className="btn btn-secondary" onClick={() => void loadLocations()} disabled={isLoading || isLoadingMore || isCreating || pendingMutations > 0}>
                             Refresh
                         </button>
                         {canWrite ? (
@@ -269,6 +300,7 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
                                 location={location}
                                 canWrite={canWrite}
                                 canDelete={canDelete}
+                                onMutationStart={beginMutation}
                                 onUpdated={(updated) => setLocations((current) => current.map((candidate) => (
                                     candidate.id === updated.id ? updated : candidate
                                 )))}
@@ -289,7 +321,7 @@ export function LocationsWorkspace({ canWrite, canDelete }: LocationsWorkspacePr
                         type="button"
                         className="btn btn-secondary"
                         onClick={() => void loadLocations(nextCursor)}
-                        disabled={isLoading || isLoadingMore || isCreating}
+                        disabled={isLoading || isLoadingMore || isCreating || pendingMutations > 0}
                     >
                         {isLoadingMore ? 'Loading...' : 'Load more locations'}
                     </button>

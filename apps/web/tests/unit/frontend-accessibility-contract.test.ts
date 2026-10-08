@@ -24,17 +24,19 @@ describe('public-launch frontend accessibility contracts', () => {
         expect(source).toContain('if (error) errorRef.current?.focus();');
     });
 
-    it('keeps the mobile sign-out control icon-only and fixed at 32 pixels', () => {
+    it('keeps the mobile sign-out control icon-only and fixed at 44 pixels', () => {
         const layoutSource = readWebFile('app/dashboard/layout.tsx');
         const styles = readWebFile('styles/globals.css');
         const mobileClassIndex = layoutSource.indexOf('className="workspace-mobile-signout');
-        const mobileLinkStart = layoutSource.lastIndexOf('<Link', mobileClassIndex);
-        const mobileLinkEnd = layoutSource.indexOf('</Link>', mobileClassIndex);
-        const mobileSignOut = layoutSource.slice(mobileLinkStart, mobileLinkEnd + '</Link>'.length);
+        const mobileLinkStart = layoutSource.lastIndexOf('<a', mobileClassIndex);
+        const mobileLinkEnd = layoutSource.indexOf('</a>', mobileClassIndex);
+        const mobileSignOut = layoutSource.slice(mobileLinkStart, mobileLinkEnd + '</a>'.length);
         const styleStart = styles.indexOf('.workspace-mobile-signout {');
         const mobileSignOutStyles = styles.slice(styleStart, styles.indexOf('}', styleStart) + 1);
 
         expect(mobileClassIndex).toBeGreaterThan(-1);
+        expect(mobileLinkStart).toBeGreaterThan(-1);
+        expect(mobileLinkEnd).toBeGreaterThan(mobileClassIndex);
         expect(mobileSignOut).toContain('aria-label="Sign out"');
         expect(mobileSignOut).toContain('title="Sign out"');
         expect(mobileSignOut).toContain('<LogOut size={16} aria-hidden="true" />');

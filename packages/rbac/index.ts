@@ -15,3 +15,4 @@ export const POLICY_PATH = packageFilePath('policy.csv');
 
 export * from 'casbin';
 export * from './permissions';
+export * from './mfa-session';

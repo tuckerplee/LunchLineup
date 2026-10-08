@@ -3,7 +3,11 @@ import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
+  chownSync,
+  constants,
+  copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -35,6 +39,34 @@ function digest(bytes) {
   return createHash('sha256').update(bytes).digest('hex');
 }
 
+function copyRootProviderRuntime(targetDirectory) {
+  assert.deepEqual([process.getuid?.(), process.geteuid?.()], [0, 0],
+    'Only actual fixture root may create the provider runtime.');
+  const directory = lstatSync(targetDirectory);
+  assert.equal(directory.isDirectory(), true);
+  assert.equal(directory.uid, 0);
+  assert.equal(directory.mode & 0o022, 0);
+  assert.equal(realpathSync(targetDirectory), targetDirectory);
+  const source = realpathSync(process.execPath);
+  const sourceInfo = lstatSync(source);
+  assert.equal(sourceInfo.isFile(), true);
+  assert.notEqual(sourceInfo.mode & 0o111, 0);
+  const expected = digest(readFileSync(source));
+  const copiedRuntime = join(targetDirectory, 'provider-node');
+  // Host-root Node can appear as unmapped UID65534 inside the real root namespace.
+  // Create a separate fixture-owned inode; never chown or relax its host input.
+  copyFileSync(source, copiedRuntime, constants.COPYFILE_EXCL);
+  chownSync(copiedRuntime, 0, 0);
+  chmodSync(copiedRuntime, 0o755);
+  const copied = lstatSync(copiedRuntime);
+  assert.equal(copied.isFile(), true);
+  assert.deepEqual([copied.uid, copied.gid, copied.mode & 0o7777, copied.nlink], [0, 0, 0o755, 1]);
+  assert.equal(realpathSync(copiedRuntime), copiedRuntime);
+  assert.equal(digest(readFileSync(source)), expected, 'Runner Node changed while copying.');
+  assert.equal(digest(readFileSync(copiedRuntime)), expected, 'Fixture Node bytes changed.');
+  return copiedRuntime;
+}
+
 function providerRuntimePath(targetDirectory) {
   if (process.platform === 'win32') return process.execPath;
   for (const candidate of ['/usr/bin/node', '/usr/local/bin/node', process.execPath]) {
@@ -46,6 +78,7 @@ function providerRuntimePath(targetDirectory) {
       // Try the next runner-provided Node executable.
     }
   }
+  if (process.getuid?.() === 0) return copyRootProviderRuntime(targetDirectory);
   const copiedRuntime = join(targetDirectory, 'provider-node');
   const install = spawnSync('sudo', [
     '--non-interactive',
@@ -332,6 +365,27 @@ function finalizeHarness(fixture, evidenceUri = 'https://github.com/tuckerplee/L
     '--output', fixture.proof,
   ], { cwd: root, encoding: 'utf8' });
 }
+
+test('fixture-owned provider Node preserves exact bytes and real root metadata without sudo', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-provider-node-copy-'));
+  try {
+    if (process.getuid?.() !== 0) {
+      assert.throws(() => copyRootProviderRuntime(scratch), /Only actual fixture root/);
+      assert.equal(existsSync(join(scratch, 'provider-node')), false);
+    } else {
+      const before = digest(readFileSync(realpathSync(process.execPath)));
+      const runtime = copyRootProviderRuntime(scratch);
+      const info = lstatSync(runtime);
+      assert.deepEqual([info.uid, info.gid, info.mode & 0o7777, info.nlink], [0, 0, 0o755, 1]);
+      assert.equal(digest(readFileSync(runtime)), before);
+      assert.equal(digest(readFileSync(realpathSync(process.execPath))), before);
+      assert.throws(() => copyRootProviderRuntime(scratch), { code: 'EEXIST' });
+      assert.equal(digest(readFileSync(runtime)), before, 'Existing fixture runtime must not be overwritten.');
+    }
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
 
 test('CI harness accepts only machine-bound isolated schema and smoke evidence', () => {
   const fixture = createFixture();

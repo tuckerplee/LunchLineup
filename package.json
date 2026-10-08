@@ -9,7 +9,7 @@
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
-    "lint": "turbo run lint",
+    "lint": "eslint \"**/*.{ts,tsx}\"",
     "postinstall": "npm run generate --workspace @lunchlineup/db",
     "test": "turbo run test",
     "test:migration": "node scripts/run-migration-tests.mjs",
@@ -21,38 +21,41 @@
     "clean": "turbo run clean"
   },
   "devDependencies": {
-    "@nestjs/common": "^11.1.24",
-    "@nestjs/core": "^11.1.24",
+    "@nestjs/common": "^11.2.6",
+    "@nestjs/core": "^11.2.6",
     "@typescript-eslint/eslint-plugin": "^8.60.1",
     "@typescript-eslint/parser": "^8.60.1",
-    "@vitest/browser": "^4.1.10",
-    "@vitest/coverage-v8": "^4.1.10",
+    "@vitest/browser": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.11",
     "ajv": "^8.18.0",
     "eslint": "^10.4.1",
     "file-type": "^21.3.1",
     "license-checker": "25.0.1",
-    "postcss": "^8.5.15",
-    "qs": "^6.15.3",
+    "postcss": "^8.5.23",
+    "qs": "^6.16.0",
     "turbo": "latest",
-    "vitest": "^4.1.10"
+    "vitest": "^4.1.11"
   },
   "optionalDependencies": {
-    "@next/swc-darwin-arm64": "^16.2.7",
-    "@next/swc-darwin-x64": "^16.2.7",
-    "@next/swc-linux-arm64-gnu": "^16.2.7",
-    "@next/swc-linux-arm64-musl": "^16.2.7",
-    "@next/swc-linux-x64-gnu": "^16.2.7",
-    "@next/swc-linux-x64-musl": "^16.2.7",
-    "@next/swc-win32-arm64-msvc": "^16.2.7",
-    "@next/swc-win32-x64-msvc": "^16.2.7"
+    "@next/swc-darwin-arm64": "16.3.3",
+    "@next/swc-darwin-x64": "16.3.3",
+    "@next/swc-linux-arm64-gnu": "16.3.3",
+    "@next/swc-linux-arm64-musl": "16.3.3",
+    "@next/swc-linux-x64-gnu": "16.3.3",
+    "@next/swc-linux-x64-musl": "16.3.3",
+    "@next/swc-win32-arm64-msvc": "16.3.3",
+    "@next/swc-win32-x64-msvc": "16.3.3"
   },
   "dependencies": {
     "pg": "8.16.3"
   },
   "overrides": {
-    "postcss": "$postcss",
+    "postcss": "^8.5.23",
     "minimatch@>=10": {
       "brace-expansion": "5.0.9"
+    },
+    "casbin": {
+      "csv-parse": "7.0.2"
     }
   }
 }

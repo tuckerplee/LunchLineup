@@ -3,6 +3,9 @@ import { ConfigService } from '@nestjs/config';
 import { Prisma, TenantStatus } from '@prisma/client';
 import { StripeService } from '../billing/stripe.service';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import type { RbacService } from '../auth/rbac.service';
+import type { AdminUserLifecycleActor } from './admin-user-lifecycle.service';
 import { TenantCancellationLifecycleService } from './tenant-cancellation-lifecycle.service';
 import { TenantDeletionBillingService } from './tenant-deletion-billing.service';
 import {
@@ -46,6 +49,8 @@ export type TenantRetentionLegalHoldActor = {
     userAgent: string | null;
 };
 
+export type TenantPlatformArchiveActor = AdminUserLifecycleActor;
+
 type CancelTenantAccountBody = {
     confirmation?: unknown;
     reason?: unknown;
@@ -70,6 +75,8 @@ export class TenantAccountLifecycleService {
         private readonly tenantDb: TenantPrismaService,
         private stripeBilling?: TenantSubscriptionCanceller,
         tenantCancellationLifecycle?: TenantCancellationLifecycleService,
+        rbac?: RbacService,
+        mfaObserver?: MfaSessionObserver,
     ) {
         this.tenantDeletionBilling = new TenantDeletionBillingService(
             this.tenantDb,
@@ -79,6 +86,9 @@ export class TenantAccountLifecycleService {
             ?? new TenantCancellationLifecycleService(
                 this.tenantDb,
                 () => this.getStripeBilling(),
+                undefined,
+                rbac,
+                mfaObserver,
             );
     }
 
@@ -88,7 +98,7 @@ export class TenantAccountLifecycleService {
 
     async archiveTenant(
         tenantId: string,
-        actor: TenantRetentionLegalHoldActor,
+        actor: TenantPlatformArchiveActor,
     ) {
         return this.tenantCancellationLifecycle.archivePlatform(actor, tenantId);
     }

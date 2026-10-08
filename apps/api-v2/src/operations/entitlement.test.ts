@@ -1,15 +1,20 @@
+import type { Tenant } from '@prisma/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { assertFeatureEntitled } from './entitlement';
+
+type EntitlementTenant = Pick<Tenant, 'planTier' | 'status' | 'stripeSubscriptionId'
+  | 'stripeSubscriptionCurrentPeriodEnd' | 'trialEndsAt' | 'usageCredits' | 'creditDebt'>;
 
 function transaction(metadata: unknown) {
   return {
     $queryRaw: vi.fn(async () => []),
     tenant: {
-      findFirst: vi.fn(async () => ({
+      findFirst: vi.fn(async (): Promise<EntitlementTenant> => ({
         planTier: 'GROWTH',
         status: 'ACTIVE',
         stripeSubscriptionId: 'sub_paid',
         stripeSubscriptionCurrentPeriodEnd: new Date('2099-01-01T00:00:00.000Z'),
+        trialEndsAt: null,
         usageCredits: 4,
         creditDebt: 0,
       })),

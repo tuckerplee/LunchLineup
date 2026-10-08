@@ -1,5 +1,7 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { payrollWorkedMinutes } from './payroll-csv';
 import { isHistoricalPayrollCardInWindow } from './payroll-period-cards';
@@ -12,7 +14,7 @@ import {
     serializePayrollLockedEntry,
     serializePayrollPeriod,
 } from './payroll-records';
-import type { PayrollActor } from './payroll-transaction';
+import { runCurrentPayrollMutation, type PayrollActor } from './payroll-transaction';
 import {
     MAX_PAYROLL_CARD_PAGE_SIZE,
     MAX_PAYROLL_EXPORT_LINE_PAGE_SIZE,
@@ -24,7 +26,11 @@ import {
 
 @Injectable()
 export class PayrollReadService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async getPeriod(
         actor: PayrollActor,
@@ -34,6 +40,7 @@ export class PayrollReadService {
         lineLimitRaw?: unknown,
         lineCursorRaw?: unknown,
     ) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const cardLimit = parseBoundedLimit(cardLimitRaw, {
             field: 'cardLimit',
@@ -44,8 +51,9 @@ export class PayrollReadService {
         const lineLimit = this.lineLimit(lineLimitRaw);
         const lineCursor = parseOpaqueCursor(lineCursorRaw, 'lineCursor');
 
-        return this.tenantDb.withTenant(actor.tenantId, async (tx) => {
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read', async (tx, assertCurrent, actor) => {
             const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
+            assertCurrent();
             if (!period) throw new NotFoundException('Payroll period not found.');
 
             const rows = await tx.timeCard.findMany({
@@ -84,6 +92,7 @@ export class PayrollReadService {
                     user: { select: { id: true, name: true, username: true } },
                 },
             });
+            assertCurrent();
             const page = rows.slice(0, cardLimit);
             const approvals = page.length === 0 ? [] : await tx.payrollTimeCardApproval.findMany({
                 where: {
@@ -97,20 +106,23 @@ export class PayrollReadService {
                 orderBy: [{ timeCardId: 'asc' }],
                 take: page.length,
             });
+            assertCurrent();
             const currentDecision = new Map(
                 approvals.map((approval) => [`${approval.timeCardId}:${approval.timeCardRevision}`, approval]),
             );
-            const lockedEntries = await this.lockedEntries(tx, actor.tenantId, period.id);
-            const amendments = await this.amendments(tx, actor.tenantId, period, lockedEntries.map((row) => row.id));
+            const lockedEntries = await this.lockedEntries(tx, actor.tenantId, period.id, assertCurrent);
+            const amendments = await this.amendments(tx, actor.tenantId, period, lockedEntries.map((row) => row.id), assertCurrent);
             const exportBatch = await this.exportForPeriod(
                 tx,
                 actor.tenantId,
                 period.id,
                 lineLimit,
                 lineCursor,
+                assertCurrent,
             );
-            const summary = await loadPayrollPeriodSummary(tx, actor.tenantId, period.id);
+            const summary = await loadPayrollPeriodSummary(tx, actor.tenantId, period.id, assertCurrent);
 
+            assertCurrent();
             return {
                 period: {
                     ...serializePayrollPeriod(period),
@@ -153,24 +165,27 @@ export class PayrollReadService {
     }
 
     async getExport(actor: PayrollActor, batchIdRaw: unknown, lineLimitRaw?: unknown, lineCursorRaw?: unknown) {
+        actor = Object.freeze({ ...actor });
         const batchId = requiredId(batchIdRaw, 'exportId');
         const lineLimit = this.lineLimit(lineLimitRaw);
         const lineCursor = parseOpaqueCursor(lineCursorRaw, 'lineCursor');
-        return this.tenantDb.withTenant(actor.tenantId, async (tx) => {
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:read', async (tx, assertCurrent, selected) => {
             const batch = await tx.payrollExportBatch.findFirst({
-                where: { id: batchId, tenantId: actor.tenantId },
+                where: { id: batchId, tenantId: selected.tenantId },
             });
+            assertCurrent();
             if (!batch) throw new NotFoundException('Payroll export not found.');
-            return this.serializeExportPage(tx, actor.tenantId, batch, lineLimit, lineCursor);
+            return this.serializeExportPage(tx, selected.tenantId, batch, lineLimit, lineCursor, assertCurrent);
         });
     }
 
-    private async lockedEntries(tx: TenantPrismaTransaction, tenantId: string, periodId: string) {
+    private async lockedEntries(tx: TenantPrismaTransaction, tenantId: string, periodId: string, assertCurrent: () => void) {
         const rows = await tx.payrollLockedEntry.findMany({
             where: { tenantId, periodId },
             orderBy: [{ sequence: 'asc' }, { id: 'asc' }],
             take: MAX_PAYROLL_LOCK_ENTRIES + 1,
         });
+        assertCurrent();
         if (rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
             throw new ConflictException('Stored payroll locked-entry count exceeds the supported limit.');
         }
@@ -181,6 +196,7 @@ export class PayrollReadService {
             take: employeeIds.length,
             select: { id: true, name: true },
         });
+        assertCurrent();
         const names = new Map(users.map((user) => [user.id, user.name]));
         return rows.map((row) => ({
             id: row.id,
@@ -193,6 +209,7 @@ export class PayrollReadService {
         tenantId: string,
         period: { id: string; status: string },
         lockedEntryIds: string[],
+        assertCurrent: () => void,
     ) {
         const rows = await tx.payrollAmendment.findMany({
             where: period.status === 'LOCKED'
@@ -207,6 +224,7 @@ export class PayrollReadService {
             orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
             take: MAX_PAYROLL_LOCK_ENTRIES + 1,
         });
+        assertCurrent();
         if (rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
             throw new ConflictException('Stored payroll amendment count exceeds the supported limit.');
         }
@@ -215,6 +233,7 @@ export class PayrollReadService {
             orderBy: { amendmentId: 'asc' },
             take: rows.length,
         });
+        assertCurrent();
         const byAmendment = new Map(decisions.map((decision) => [decision.amendmentId, decision]));
         const sourceIds = [...new Set(rows.map((row) => row.lockedEntryId))];
         const sources = sourceIds.length === 0 ? [] : await tx.payrollLockedEntry.findMany({
@@ -223,6 +242,7 @@ export class PayrollReadService {
             take: sourceIds.length,
             select: { id: true, employeeId: true },
         });
+        assertCurrent();
         const sourceEmployeeByEntry = new Map(sources.map((source) => [source.id, source.employeeId]));
         return rows.map((row) => ({
             ...serializePayrollAmendment(row),
@@ -237,9 +257,11 @@ export class PayrollReadService {
         periodId: string,
         lineLimit: number,
         lineCursor: string | null,
+        assertCurrent: () => void,
     ) {
         const batch = await tx.payrollExportBatch.findFirst({ where: { tenantId, periodId } });
-        return batch ? this.serializeExportPage(tx, tenantId, batch, lineLimit, lineCursor) : null;
+        assertCurrent();
+        return batch ? this.serializeExportPage(tx, tenantId, batch, lineLimit, lineCursor, assertCurrent) : null;
     }
 
     private async serializeExportPage(
@@ -248,6 +270,7 @@ export class PayrollReadService {
         batch: any,
         lineLimit: number,
         lineCursor: string | null,
+        assertCurrent: () => void = () => {},
     ) {
         let afterLineNumber: number | null = null;
         if (lineCursor) {
@@ -255,6 +278,7 @@ export class PayrollReadService {
                 where: { id: lineCursor, tenantId, batchId: batch.id },
                 select: { lineNumber: true },
             });
+            assertCurrent();
             if (!cursor) throw new BadRequestException('lineCursor is invalid for this payroll export.');
             afterLineNumber = cursor.lineNumber;
         }
@@ -267,18 +291,21 @@ export class PayrollReadService {
             orderBy: [{ lineNumber: 'asc' }, { id: 'asc' }],
             take: lineLimit + 1,
         });
+        assertCurrent();
         const page = rows.slice(0, lineLimit);
         const states = page.length === 0 ? [] : await tx.payrollReconciliationLineState.findMany({
             where: { tenantId, batchId: batch.id, lineId: { in: page.map((line) => line.id) } },
             orderBy: { lineId: 'asc' },
             take: page.length,
         });
+        assertCurrent();
         const stateByLine = new Map(states.map((state) => [state.lineId, state]));
         const stateCounts = await tx.payrollReconciliationLineState.groupBy({
             by: ['status'],
             where: { tenantId, batchId: batch.id },
             _count: { _all: true },
         });
+        assertCurrent();
         const countByStatus = new Map(stateCounts.map((row) => [row.status, row._count._all]));
         const acceptedCount = countByStatus.get('ACCEPTED') ?? 0;
         const rejectedCount = countByStatus.get('REJECTED') ?? 0;
@@ -288,6 +315,7 @@ export class PayrollReadService {
             where: { tenantId, batchId: batch.id },
             orderBy: [{ receivedAt: 'desc' }, { id: 'desc' }],
         });
+        assertCurrent();
         return {
             ...serializePayrollExport(batch),
             lines: page.map((line) => serializePayrollExportLine(line, stateByLine.get(line.id))),

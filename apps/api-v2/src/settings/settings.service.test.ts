@@ -1,6 +1,7 @@
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { WorkspaceSettingsService } from './settings.service';
+import { verifiedSettingsObserver } from '../../../api/src/settings/settings-test-mfa.fixture';
 
 const identity: SessionIdentity = {
   sub: 'user-storage-id',
@@ -20,8 +21,34 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   const tenant = {
     name: 'Harbor & Main',
     slug: 'harbor-main',
+    status: 'ACTIVE',
+    deletedAt: null,
   };
   const transaction = {
+    user: { findFirst: vi.fn(async ({ where }: { where: unknown }) => {
+      expect(where).toMatchObject({ id: identity.sub, tenantId: identity.tenantId, deletedAt: null, suspendedAt: null });
+      return { pinResetRequired: false };
+    }) },
+    $executeRaw: vi.fn(async (sql: TemplateStringsArray, ...values: unknown[]) => {
+      expect(Array.from(sql).join('').replace(/\s+/g, ' ').trim())
+        .toBe('UPDATE "Tenant" SET "updatedAt" = "updatedAt" WHERE "id" =');
+      expect(values).toEqual([identity.tenantId]);
+      return 1;
+    }),
+    $queryRaw: vi.fn(async (sql: { strings: readonly string[] }) => {
+      const text = sql.strings.join('');
+      if (text.includes('FROM "User"')) return [{ id: identity.sub, role: 'ADMIN', deletedAt: null, suspendedAt: null }];
+      if (text.includes('FROM "Session"')) return [{ id: identity.sessionId, userId: identity.sub,
+        expiresAt: new Date(Date.now() + 60_000), revokedAt: null }];
+      return [{ id: identity.tenantId }];
+    }),
+    roleAssignment: { findMany: vi.fn(async () => [{ userId: identity.sub, roleId: 'role-1' }]) },
+    role: { findMany: vi.fn(async () => [{ id: 'role-1', publicId: 'role-public', name: 'Admin', isSystem: true,
+      legacyRole: 'ADMIN', rolePermissions: [{ permission: { key: 'settings:write' } }] }]) },
+    session: { findFirst: vi.fn(async ({ where }: { where: { id: string; userId: string } }) => {
+      expect(where).toEqual({ id: identity.sessionId, userId: identity.sub });
+      return { createdAt: new Date(), expiresAt: new Date(Date.now() + 60_000), revokedAt: null };
+    }) },
     tenant: {
       findUnique: vi.fn(async () => ({ ...tenant })),
       update: vi.fn(async ({ data }: { data: Partial<typeof tenant> }) => {
@@ -40,13 +67,30 @@ function harness(initialValue: unknown = null, oidcSsoAvailable = false) {
   };
   const withTenant = vi.fn(async (_tenantId: string, operation: (tx: unknown) => unknown) => operation(transaction));
   return {
-    instance: new WorkspaceSettingsService({ withTenant } as never, { oidcSsoAvailable } as never),
+    instance: new WorkspaceSettingsService({ withTenant } as never, { oidcSsoAvailable } as never, verifiedSettingsObserver),
     transaction,
     withTenant,
   };
 }
 
 describe('native API v2 workspace settings owner', () => {
+  it.each(['general', 'team', 'security'] as const)('does not read or write %s settings after its Tenant lock fails', async section => {
+    const { instance, transaction } = harness();
+    const failure = new Error('owned settings lock failure');
+    transaction.$queryRaw.mockRejectedValueOnce(failure);
+    const operation = section === 'general'
+      ? instance.updateGeneral(identity, { timezone: 'America/Chicago' })
+      : section === 'team'
+        ? instance.updateTeam(identity, { defaultInviteRole: 'MANAGER' })
+        : instance.updateSecurity(identity, { requireMfaForAll: true });
+    await expect(operation).rejects.toBe(failure);
+    expect(transaction.tenant.findUnique).not.toHaveBeenCalled();
+    expect(transaction.tenant.update).not.toHaveBeenCalled();
+    expect(transaction.tenantSetting.findUnique).not.toHaveBeenCalled();
+    expect(transaction.tenantSetting.upsert).not.toHaveBeenCalled();
+    expect(transaction.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('normalizes malformed stored JSON without allowing it to choose a tenant', async () => {
     const { instance, withTenant } = harness({
       general: { timezone: 'not-a-timezone' },

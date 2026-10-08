@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AdminController } from './admin.controller';
+import { RbacService } from '../auth/rbac.service';
+import { installAdminCompositionPolicy } from './admin-user-authority.fixture';
+import { installPlatformTenantAuthorityModel } from './platform-tenant-lifecycle-authority.fixture';
 import { BadRequestException, ConflictException, ForbiddenException } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
@@ -44,6 +47,9 @@ function addTransactionMock<T extends Record<string, any>>(prisma: T): T {
             return [{ eligibleCount: 5n }];
         }
         if (queryText.includes('purge_dormant_sessions')) return [{ purgedCount: 4n }];
+        if (queryText.includes('clear_expired_mfa_enrollments')) {
+            return [{ eligibleCount: 8n, clearedCount: query.values[2] ? 0n : 3n }];
+        }
         if (queryText.includes('COUNT(*)') && queryText.includes('PasswordResetToken')) {
             return [{ eligibleCount: 6n }];
         }
@@ -86,6 +92,23 @@ function buildController(
     config: Record<string, string> = {},
     tenantAccountLifecycle?: any,
 ) {
+    // Retained target callback stubs assert domain composition only. The real
+    // actor wrapper reads complete policy context; full target checks/rollback
+    // are separately exercised in admin-user-current-authority.spec.ts.
+    let observer: any = prisma.__platformTenantMfaObserver;
+    if (rbacService && typeof rbacService.runCurrentMutation !== 'function') {
+        observer = installAdminCompositionPolicy(prisma);
+        const oldCombinedRoleWriter = rbacService.replaceLegacySystemRoleForPlatformAdminActorInTransaction;
+        rbacService = Object.assign(new RbacService(new TenantPrismaService(prisma)), rbacService);
+        if (oldCombinedRoleWriter) {
+            rbacService.prepareLegacySystemRoleForPlatformAdminActorInTransaction = vi.fn(async (_tx: any,
+                userId: string, tenantId: string, legacyRole: string, actor: any) => ({
+                target: { id: userId, tenantId }, userId, tenantId, legacyRole, actor,
+            }));
+            rbacService.applyPreparedPlatformAdminSystemRoleReplacementInTransaction = vi.fn(async (tx: any, plan: any) =>
+                oldCombinedRoleWriter(tx, plan.userId, plan.tenantId, plan.legacyRole, plan.actor));
+        }
+    }
     const controller = new AdminController(
         { get: vi.fn((key: string) => config[key]) } as any,
         {} as any,
@@ -93,6 +116,7 @@ function buildController(
         new TenantPrismaService(prisma),
         stripeBilling,
         rbacService,
+        observer,
     );
     if (tenantAccountLifecycle) {
         (controller as any).tenantAccountLifecycle = tenantAccountLifecycle;
@@ -1136,7 +1160,7 @@ describe('AdminController tenant account lifecycle', () => {
 
 describe('AdminController platform billing lifecycle', () => {
     function buildPlatformPrisma(tenant: any): any {
-        return addTransactionMock({
+        const prisma = addTransactionMock({
             tenant: {
                 findUnique: vi.fn().mockResolvedValue(tenant),
                 update: vi.fn().mockResolvedValue({}),
@@ -1144,6 +1168,11 @@ describe('AdminController platform billing lifecycle', () => {
             session: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             auditLog: { create: vi.fn().mockResolvedValue({}) },
         });
+        const authority = installPlatformTenantAuthorityModel(prisma, {
+            userId: superAdminReq.user.sub, tenantId: superAdminReq.user.tenantId,
+            sessionId: superAdminReq.user.sessionId,
+        });
+        return Object.assign(prisma, { __platformTargetRead: authority.domainTenantRead });
     }
 
     it('delegates platform archive to the durable attributed lifecycle owner', async () => {
@@ -1334,7 +1363,7 @@ describe('AdminController platform billing lifecycle', () => {
             auditLogs: [{ id: 'barrier-race', action: 'TENANT_DELETION_BARRIER_COMMITTED' }],
         };
         const prisma = buildPlatformPrisma(ordinarySuspension);
-        prisma.tenant.findUnique
+        prisma.__platformTargetRead
             .mockResolvedValueOnce(ordinarySuspension)
             .mockResolvedValueOnce(pendingDeletion);
         const controller = buildController(prisma, { grantCredits: vi.fn() });
@@ -1342,7 +1371,7 @@ describe('AdminController platform billing lifecycle', () => {
         await expect(controller.restoreTenant(superAdminReq, ordinarySuspension.id))
             .rejects.toThrow(/deletion is irreversible/i);
 
-        expect(prisma.tenant.findUnique).toHaveBeenCalledTimes(2);
+        expect(prisma.__platformTargetRead).toHaveBeenCalledTimes(2);
         expect(prisma.tenant.update).not.toHaveBeenCalled();
         expect(prisma.session.updateMany).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
@@ -1665,6 +1694,7 @@ describe('AdminController retained-record expiry', () => {
             revokedRetentionDays: 30,
             eligibleCount: 5,
             purgedCount: 4,
+            pendingEnrollmentRetention: { batchLimit: 5_000, eligibleCount: 8, clearedCount: 3 },
         });
         expect(result.staffInvitationRetention).toMatchObject({
             retentionDays: 30,
@@ -2335,6 +2365,7 @@ describe('AdminController credits', () => {
                 slug: 'acme-dining',
                 planTier: 'STARTER',
                 usageCredits: 125,
+                creditDebt: 30,
                 createdAt: new Date('2026-03-21T09:00:00.000Z'),
             },
         ]);
@@ -2364,6 +2395,7 @@ describe('AdminController credits', () => {
                 slug: true,
                 planTier: true,
                 usageCredits: true,
+                creditDebt: true,
                 createdAt: true,
             },
         });
@@ -2388,6 +2420,7 @@ describe('AdminController credits', () => {
                 slug: 'acme-dining',
                 planTier: 'STARTER',
                 usageCredits: 125,
+                creditDebt: 30,
             },
         ]);
         expect(result.history).toEqual([
@@ -2653,6 +2686,7 @@ describe('AdminController platform user identity and access updates', () => {
                 findUniqueOrThrow: vi.fn().mockResolvedValue(updated),
                 update: vi.fn().mockResolvedValue(updated),
             },
+            onboardingSignupAttempt: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
             passwordResetToken: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             passwordResetEmailOutbox: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
             session: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -2696,8 +2730,6 @@ describe('AdminController platform user identity and access updates', () => {
                 userId: 'admin-1',
                 tenantId: 'platform-tenant',
                 sessionId: 'admin-session-1',
-                ipAddress: '203.0.113.25',
-                userAgent: 'vitest-platform-admin',
             },
         );
         expect(prisma.session.updateMany).toHaveBeenCalledWith({
@@ -2762,7 +2794,7 @@ describe('AdminController platform user identity and access updates', () => {
             'user-1',
             { role: 'STAFF' },
         )).resolves.toMatchObject({ role: 'STAFF' });
-        expect((prisma as any).$transaction).toHaveBeenCalledTimes(2);
+        expect((prisma as any).$transaction).toHaveBeenCalledTimes(3);
         expect(replacement).toHaveBeenCalledOnce();
         expect(prisma.auditLog.create).toHaveBeenCalledOnce();
     });
@@ -2808,10 +2840,11 @@ describe('AdminController platform user identity and access updates', () => {
                 userId: 'admin-1',
                 tenantId: 'platform-tenant',
                 sessionId: 'admin-session-1',
-                ipAddress: '203.0.113.25',
-                userAgent: 'vitest-platform-admin',
             },
         );
+        expect(prisma.onboardingSignupAttempt.deleteMany).toHaveBeenCalledWith({
+            where: { tenantId: 'tenant-1', userId: 'user-1' },
+        });
         expect(prisma.passwordResetToken.updateMany).toHaveBeenCalledWith({
             where: { tenantId: 'tenant-1', userId: 'user-1', consumedAt: null },
             data: { consumedAt: expect.any(Date) },
@@ -2845,6 +2878,32 @@ describe('AdminController platform user identity and access updates', () => {
             where: { userId: 'user-1', revokedAt: null },
             data: { revokedAt: expect.any(Date) },
         });
+    });
+
+    it('preserves bound signup recovery when the normalized email is unchanged', async () => {
+        const prisma = buildUserMutationPrisma();
+        const controller = buildController(prisma, { grantCredits: vi.fn() }, undefined, {
+            authorizePlatformAdminUserMutationInTransaction: vi.fn().mockResolvedValue({ id: 'user-1', tenantId: 'tenant-1' }),
+        } as any);
+        await controller.updateUser(superAdminReq, 'user-1', { email: ' ADMIN@example.com ' });
+        expect(prisma.onboardingSignupAttempt.deleteMany).not.toHaveBeenCalled();
+        expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+        expect(prisma.session.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('stops before identity mutation when bound signup invalidation fails', async () => {
+        const prisma = buildUserMutationPrisma();
+        prisma.onboardingSignupAttempt.deleteMany.mockRejectedValueOnce(new Error('signup invalidation unavailable'));
+        const controller = buildController(prisma, { grantCredits: vi.fn() }, undefined, {
+            authorizePlatformAdminUserMutationInTransaction: vi.fn().mockResolvedValue({ id: 'user-1', tenantId: 'tenant-1' }),
+        } as any);
+        await expect(controller.updateUser(superAdminReq, 'user-1', { email: 'replacement@example.com' }))
+            .rejects.toThrow('signup invalidation unavailable');
+        expect(prisma.user.update).not.toHaveBeenCalled();
+        expect(prisma.passwordResetToken.updateMany).not.toHaveBeenCalled();
+        expect(prisma.passwordResetEmailOutbox.updateMany).not.toHaveBeenCalled();
+        expect(prisma.session.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
     });
 
     it('rolls back a non-role patch when exact live platform authorization is no longer valid', async () => {
@@ -3121,7 +3180,7 @@ describe('AdminController tenant updates', () => {
     });
 
     it('denies tenant suspension when exact live platform authorization is revoked', async () => {
-        prisma.session = { updateMany: vi.fn() };
+        prisma.session = { ...prisma.session, updateMany: vi.fn() };
         authorizePlatformAdminTenantMutationInTransaction.mockRejectedValueOnce(
             new ForbiddenException('Platform administrator session is no longer active'),
         );

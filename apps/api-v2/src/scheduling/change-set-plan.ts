@@ -110,13 +110,13 @@ function validateWindow(
       [{ pointer: shift.sourcePointer, code: 'invalid_shift_window', message: 'End time must be after start time.' }],
     );
   }
-  if (shift.startTime < scheduleStart || shift.endTime > scheduleEnd) {
+  if (shift.startTime < scheduleStart || shift.startTime >= scheduleEnd || shift.endTime.getTime() - shift.startTime.getTime() > 86_400_000) {
     throw new ProblemError(
       422,
       'shift_outside_schedule',
-      'Every shift must stay inside the selected schedule window.',
+      'Every shift must start inside the selected schedule and last no more than 24 hours.',
       'Schedule validation failed',
-      [{ pointer: shift.sourcePointer, code: 'shift_outside_schedule', message: 'Keep the shift inside its schedule.' }],
+      [{ pointer: shift.sourcePointer, code: 'shift_outside_schedule', message: 'Start the shift inside its schedule; overnight shifts belong to their start day.' }],
     );
   }
 }

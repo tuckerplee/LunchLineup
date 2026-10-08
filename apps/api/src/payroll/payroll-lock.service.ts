@@ -6,6 +6,8 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { payrollWorkedMinutes } from './payroll-csv';
 import { normalizePayrollIdempotencyKey, payrollRequestIdentity } from './payroll-idempotency';
@@ -17,13 +19,11 @@ import {
 } from './payroll-period-cards';
 import { serializePayrollPeriod } from './payroll-records';
 import {
-    applyPayrollTransactionTimeouts,
     lockPayrollPeriod,
     lockPayrollTenant,
     PAYROLL_CONCURRENT_CHANGE,
     PAYROLL_REPLAY_CONFLICT,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -38,9 +38,14 @@ type LockedBreak = {
 
 @Injectable()
 export class PayrollLockService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async lock(actor: PayrollActor, periodIdRaw: unknown, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const request = body && typeof body === 'object' && !Array.isArray(body)
             ? body as Record<string, unknown>
@@ -53,113 +58,126 @@ export class PayrollLockService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { periodId, expectedRevision },
         });
-        const replay = await this.findReplay(actor, periodId, identity);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:lock',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, periodId, identity);
+                assertCurrent();
+                if (replay) return replay;
 
-        return retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            await applyPayrollTransactionTimeouts(tx);
-            await lockPayrollTenant(tx, actor.tenantId);
-            await lockPayrollPeriod(tx, actor.tenantId, periodId);
-            await this.lockPeriodRow(tx, actor.tenantId, periodId);
-            const insideReplay = await this.findReplayInTransaction(tx, actor, periodId, identity);
-            if (insideReplay) return insideReplay;
+                assertCurrent();
+                await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
+                await lockPayrollPeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
+                await this.lockPeriodRow(tx, actor.tenantId, periodId);
+                assertCurrent();
+                const insideReplay = await this.findReplayInTransaction(tx, actor, periodId, identity);
+                assertCurrent();
+                if (insideReplay) return insideReplay;
 
-            const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
-            if (!period) throw new NotFoundException('Payroll period not found.');
-            if (period.status !== 'REVIEW') {
-                throw new ConflictException('Only a payroll period in review can be locked.');
-            }
-            if (period.revision !== expectedRevision) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
-            if (period.endsAt.getTime() > Date.now()) {
-                throw new BadRequestException('Payroll period cannot be locked before it ends.');
-            }
+                assertCurrent();
+                const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
+                assertCurrent();
+                if (!period) throw new NotFoundException('Payroll period not found.');
+                if (period.status !== 'REVIEW') {
+                    throw new ConflictException('Only a payroll period in review can be locked.');
+                }
+                if (period.revision !== expectedRevision) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
+                if (period.endsAt.getTime() > Date.now()) {
+                    throw new BadRequestException('Payroll period cannot be locked before it ends.');
+                }
 
-            const cards = await lockPayrollCandidateCards(tx, actor.tenantId, period);
-            const assignedCards = validatePayrollCandidateCards(cards, period);
-            const breaksByCard = await this.lockAndValidateBreaks(tx, actor.tenantId, assignedCards);
-            const cardSources = await this.approvedCardSources(
-                tx,
-                actor.tenantId,
-                period.id,
-                assignedCards,
-                breaksByCard,
-            );
-            const amendmentSources = await this.approvedAmendmentSources(tx, actor.tenantId, period.id);
-            if (cardSources.length + amendmentSources.length > MAX_PAYROLL_LOCK_ENTRIES) {
-                throw new BadRequestException(`Payroll period exceeds the ${MAX_PAYROLL_LOCK_ENTRIES}-entry lock limit.`);
-            }
+                assertCurrent();
+                const cards = await lockPayrollCandidateCards(tx, actor.tenantId, period);
+                assertCurrent();
+                const assignedCards = validatePayrollCandidateCards(cards, period);
+                assertCurrent();
+                const breaksByCard = await this.lockAndValidateBreaks(tx, actor.tenantId, assignedCards);
+                assertCurrent();
+                const cardSources = await this.approvedCardSources(
+                    tx,
+                    actor.tenantId,
+                    period.id,
+                    assignedCards,
+                    breaksByCard,
+                );
+                assertCurrent();
+                const amendmentSources = await this.approvedAmendmentSources(tx, actor.tenantId, period.id);
+                assertCurrent();
+                if (cardSources.length + amendmentSources.length > MAX_PAYROLL_LOCK_ENTRIES) {
+                    throw new BadRequestException(`Payroll period exceeds the ${MAX_PAYROLL_LOCK_ENTRIES}-entry lock limit.`);
+                }
 
-            let snapshot;
-            try {
-                snapshot = materializeLockedSnapshots({
-                    tenantId: actor.tenantId,
-                    periodId: period.id,
-                    sources: [...cardSources, ...amendmentSources],
+                let snapshot;
+                try {
+                    snapshot = materializeLockedSnapshots({
+                        tenantId: actor.tenantId,
+                        periodId: period.id,
+                        sources: [...cardSources, ...amendmentSources],
+                    });
+                } catch {
+                    throw new BadRequestException('Payroll source data is invalid for locking.');
+                }
+                assertCurrent();
+                if (snapshot.entries.length > 0) await tx.payrollLockedEntry.createMany({
+                    data: snapshot.entries.map((entry) => ({
+                        tenantId: actor.tenantId,
+                        periodId: period.id,
+                        sequence: entry.sequence,
+                        sourceType: entry.sourceType,
+                        sourceId: entry.sourceId,
+                        sourceRevision: entry.sourceRevision,
+                        employeeId: entry.employeeId,
+                        locationId: entry.locationId,
+                        workTimeZone: entry.workTimeZone,
+                        clockInAt: new Date(entry.clockInAt),
+                        clockOutAt: new Date(entry.clockOutAt),
+                        breakMinutes: entry.breakMinutes,
+                        payableMinutes: entry.payableMinutes,
+                        approvedAt: new Date(entry.approvedAt),
+                        approvedByUserId: entry.approvedByUserId,
+                        canonicalSha256: entry.canonicalSha256,
+                    })),
                 });
-            } catch {
-                throw new BadRequestException('Payroll source data is invalid for locking.');
-            }
-            if (snapshot.entries.length > 0) await tx.payrollLockedEntry.createMany({
-                data: snapshot.entries.map((entry) => ({
-                    tenantId: actor.tenantId,
-                    periodId: period.id,
-                    sequence: entry.sequence,
-                    sourceType: entry.sourceType,
-                    sourceId: entry.sourceId,
-                    sourceRevision: entry.sourceRevision,
-                    employeeId: entry.employeeId,
-                    locationId: entry.locationId,
-                    workTimeZone: entry.workTimeZone,
-                    clockInAt: new Date(entry.clockInAt),
-                    clockOutAt: new Date(entry.clockOutAt),
-                    breakMinutes: entry.breakMinutes,
-                    payableMinutes: entry.payableMinutes,
-                    approvedAt: new Date(entry.approvedAt),
-                    approvedByUserId: entry.approvedByUserId,
-                    canonicalSha256: entry.canonicalSha256,
-                })),
+                assertCurrent();
+                const changed = await tx.payrollPeriod.updateMany({
+                    where: {
+                        id: period.id,
+                        tenantId: actor.tenantId,
+                        status: 'REVIEW',
+                        revision: expectedRevision,
+                    },
+                    data: {
+                        status: 'LOCKED',
+                        revision: { increment: 1 },
+                        lockedAt: new Date(),
+                        lockedByUserId: actor.userId,
+                        lockOperationId: identity.operationId,
+                        lockRequestHash: identity.requestHash,
+                        lockedEntrySha256: snapshot.aggregateSha256,
+                        lockedEntryCount: snapshot.entries.length,
+                        totalPayableMinutes: snapshot.totalPayableMinutes,
+                    },
+                });
+                assertCurrent();
+                if (changed.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
+                assertCurrent();
+                const updated = await tx.payrollPeriod.findFirst({ where: { id: period.id, tenantId: actor.tenantId } });
+                assertCurrent();
+                if (!updated) throw new NotFoundException('Payroll period not found.');
+                const response = serializePayrollPeriod(updated);
+                assertCurrent();
+                await writePayrollAudit(tx, actor, {
+                    action: 'PAYROLL_PERIOD_LOCKED',
+                    resource: 'PayrollPeriod',
+                    resourceId: period.id,
+                    oldValue: serializePayrollPeriod(period),
+                    newValue: response,
+                }, assertCurrent);
+                assertCurrent();
+                return response;
             });
-            const changed = await tx.payrollPeriod.updateMany({
-                where: {
-                    id: period.id,
-                    tenantId: actor.tenantId,
-                    status: 'REVIEW',
-                    revision: expectedRevision,
-                },
-                data: {
-                    status: 'LOCKED',
-                    revision: { increment: 1 },
-                    lockedAt: new Date(),
-                    lockedByUserId: actor.userId,
-                    lockOperationId: identity.operationId,
-                    lockRequestHash: identity.requestHash,
-                    lockedEntrySha256: snapshot.aggregateSha256,
-                    lockedEntryCount: snapshot.entries.length,
-                    totalPayableMinutes: snapshot.totalPayableMinutes,
-                },
-            });
-            if (changed.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
-            const updated = await tx.payrollPeriod.findFirst({ where: { id: period.id, tenantId: actor.tenantId } });
-            if (!updated) throw new NotFoundException('Payroll period not found.');
-            const response = serializePayrollPeriod(updated);
-            await writePayrollAudit(tx, actor, {
-                action: 'PAYROLL_PERIOD_LOCKED',
-                resource: 'PayrollPeriod',
-                resourceId: period.id,
-                oldValue: serializePayrollPeriod(period),
-                newValue: response,
-            });
-            return response;
-        }, PAYROLL_TRANSACTION_OPTIONS));
-    }
-
-    private async findReplay(
-        actor: PayrollActor,
-        periodId: string,
-        identity: { operationId: string; requestHash: string },
-    ) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            this.findReplayInTransaction(tx, actor, periodId, identity));
     }
 
     private async findReplayInTransaction(

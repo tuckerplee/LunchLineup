@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import styles from './tenants.module.css';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
@@ -25,6 +26,7 @@ import {
     TENANT_STATUS_EDIT_GUIDANCE,
 } from './tenant-edit-contract';
 import { startingStatusForPlan, tenantProvisioningDescription } from './tenant-provisioning-contract';
+import { tenantLifecycleOutcome, type TenantStatusAction } from './tenant-lifecycle-outcome';
 
 type PlanTier = 'FREE' | 'STARTER' | 'GROWTH' | 'ENTERPRISE';
 type TenantStatus = 'TRIAL' | 'ACTIVE' | 'PAST_DUE' | 'SUSPENDED' | 'CANCELLED' | 'PURGED';
@@ -201,6 +203,8 @@ export function TenantsClient() {
     const [saving, setSaving] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<string | null>(null);
+    // Kept separately so list refreshes cannot erase unresolved mutation guidance.
+    const [lifecycleFeedback, setLifecycleFeedback] = useState<{ message: string; detail?: string } | null>(null);
     const [query, setQuery] = useState('');
     const [appliedQuery, setAppliedQuery] = useState('');
     const [pagination, setPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
@@ -382,7 +386,7 @@ export function TenantsClient() {
         }
     }
 
-    async function runStatusAction(tenant: TenantRecord, action: 'suspend' | 'activate' | 'archive' | 'restore') {
+    async function runStatusAction(tenant: TenantRecord, action: TenantStatusAction) {
         const labelMap = {
             suspend: 'Suspend',
             activate: 'Activate',
@@ -404,13 +408,30 @@ export function TenantsClient() {
 
         setError(null);
         setNotice(null);
+        setLifecycleFeedback(null);
         setSaving(`${action}:${tenant.id}`);
         try {
-            await writeJson(`/admin/tenants/${tenant.id}/${action}`, 'POST');
-            setNotice(`${tenant.name} ${pastTenseMap[action]}.`);
+            const response = await fetchWithSession(`/admin/tenants/${tenant.id}/${action}`, jsonWriteInit('POST'));
+            const payload: unknown = await response.json().catch(() => null);
+            if (!response.ok) {
+                const message = payload !== null && typeof payload === 'object' && 'message' in payload
+                    && typeof payload.message === 'string' ? payload.message : `Request failed (${response.status})`;
+                throw new Error(message);
+            }
+            const outcome = tenantLifecycleOutcome(action, tenant.id, response.status, payload);
+            if (outcome === 'completed') {
+                setNotice(`${tenant.name} ${pastTenseMap[action]}.`);
+            } else {
+                setLifecycleFeedback({ message: outcome === 'incomplete'
+                    ? `Archive of ${tenant.name} was not completed. Refresh to check its current status before taking another action.`
+                    : `${labelMap[action]} for ${tenant.name} is unconfirmed. Refresh to check its current status before taking another action.` });
+            }
+            // A read updates the directory; it does not establish which request
+            // caused that state or replace the unresolved acknowledgement above.
             await refresh(tenant.id);
         } catch (err) {
-            setError(err instanceof Error ? err.message : `Failed to ${action} tenant`);
+            const detail = err instanceof Error ? err.message : `Failed to ${action} tenant`;
+            setLifecycleFeedback({ detail, message: `${labelMap[action]} for ${tenant.name} is unconfirmed. Refresh to check its current status before taking another action.` });
         } finally {
             setSaving((current) => (current === `${action}:${tenant.id}` ? null : current));
         }
@@ -480,23 +501,23 @@ export function TenantsClient() {
     const tenantToEdit = selectedTenant;
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
-            <section className="surface-card" style={{ padding: '1rem' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
-                    <div>
-                        <div className="workspace-kicker" style={{ color: '#b4233f' }}>
+        <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+            <section className={`surface-card ${styles.heroCard}`} style={{ padding: '1rem' }}>
+                <div className={styles.heroLayout} style={{ display: 'flex', justifyContent: 'space-between', gap: '0.85rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                    <div className={styles.heroIntro}>
+                        <div className={`workspace-kicker ${styles.heroKicker}`} style={{ color: '#b4233f' }}>
                             Organization control
                         </div>
-                        <h1 className="workspace-title" style={{ fontSize: '1.6rem', marginBottom: 2 }}>
+                        <h1 className={`workspace-title ${styles.heroTitle}`} style={{ fontSize: '1.6rem', marginBottom: 2 }}>
                             Tenants
                         </h1>
-                        <p className="workspace-subtitle">
-                            Live tenant management through the admin API - {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
+                        <p className={`workspace-subtitle ${styles.heroSubtitle}`}>
+                            {loading ? 'Loading...' : tenants.length + ' organizations loaded' + (pagination.hasMore ? ' - more available' : '')}
                         </p>
                     </div>
 
-                    <form onSubmit={applySearch} style={{ minWidth: 280, flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
-                        <label className="form-group" style={{ flex: 1 }}>
+                    <form className={styles.tenantSearch} onSubmit={applySearch} style={{ flex: '1 1 360px', display: 'flex', gap: '0.45rem', alignItems: 'flex-end' }}>
+                        <label className={`form-group ${styles.searchField}`} style={{ flex: 1 }}>
                             <span className="form-label">Search</span>
                             <input
                                 className="form-input"
@@ -513,14 +534,15 @@ export function TenantsClient() {
                 </div>
             </section>
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: '0.75rem' }}>
+            <section className={styles.summaryGrid} aria-label="Loaded tenant summary" aria-describedby="loaded-tenant-summary-context" style={{ display: 'grid', gap: '0.75rem' }}>
+                <p id="loaded-tenant-summary-context" className={styles.summaryContext}>Loaded organizations only</p>
                 {summary.map((item, index) => {
                     const palette = SUMMARY_COLORS[index];
                     return (
-                        <article key={palette.title} className="surface-card" style={{ padding: '0.95rem', background: palette.bg }}>
-                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
-                                <span style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{palette.title}</span>
-                                <span
+                        <article key={palette.title} className={`surface-card ${styles.summaryCard} ${index === 3 ? styles.summaryCredits : ''}`} style={{ padding: '0.95rem', background: palette.bg }}>
+                            <div className={styles.summaryHeading} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.55rem' }}>
+                                <span className={styles.summaryLabel} style={{ fontSize: '0.78rem', color: 'var(--text-secondary)', fontWeight: 650 }}>{palette.title}</span>
+                                <span className={styles.summaryIcon} aria-hidden="true"
                                     style={{
                                         width: 33,
                                         height: 33,
@@ -535,12 +557,21 @@ export function TenantsClient() {
                                     {index === 0 ? '🏢' : index === 1 ? '✅' : index === 2 ? '⚠️' : '💳'}
                                 </span>
                             </div>
-                            <div style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
-                            <div style={{ fontSize: '0.72rem', fontWeight: 700, color: palette.color }}>{item.subtitle}</div>
+                            <div className={styles.summaryValue} style={{ fontSize: '1.9rem', fontWeight: 800, letterSpacing: 0, color: 'var(--text-primary)' }}>{item.value}</div>
+                            <div className={styles.summaryDetail} style={{ fontSize: '0.72rem', fontWeight: 700, color: palette.color }}>{item.subtitle}</div>
                         </article>
                     );
                 })}
             </section>
+
+            {lifecycleFeedback ? (
+                <div role="alert" style={{ padding: '0.8rem 0.95rem', borderRadius: 12,
+                    border: '1px solid #f2d39b', background: '#fff8eb', color: '#7c4a03',
+                    fontWeight: 600, fontSize: '0.86rem' }}>
+                    {lifecycleFeedback.detail ? <p style={{ margin: '0 0 0.35rem' }}>{lifecycleFeedback.detail}</p> : null}
+                    <p style={{ margin: 0 }}>{lifecycleFeedback.message}</p>
+                </div>
+            ) : null}
 
             {error ? (
                 <div
@@ -574,17 +605,16 @@ export function TenantsClient() {
                 </div>
             ) : null}
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.3fr) minmax(320px, 0.7fr)', gap: '0.85rem', alignItems: 'start' }}>
+            <section className={styles.directoryGrid} style={{ display: 'grid', gap: '0.85rem', alignItems: 'start' }}>
                 <article
-                    className="surface-card"
+                    className={`surface-card ${styles.directory}`}
                     aria-label="Tenant directory table"
                     tabIndex={0}
-                    style={{ overflowX: 'auto' }}
                 >
-                    <div style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div className={styles.directoryHeading} style={{ padding: '0.95rem 1rem 0.55rem', display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
                         <div>
                             <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Tenant Directory</h2>
-                            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Click Edit to load a tenant into the management panel.</div>
+                            <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Edit to manage an organization.</div>
                         </div>
 
                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
@@ -608,12 +638,16 @@ export function TenantsClient() {
                         </div>
                     </div>
 
-                    <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 1060 }}>
-                        <thead>
-                            <tr style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
+                    <div className={styles.tableViewport} role="region" aria-label="Tenant table scroll area" tabIndex={0}>
+                    <table className={styles.tenantTable} role="table" aria-label="Tenant records" style={{ width: '100%', borderCollapse: 'collapse' }}>
+                        <thead role="rowgroup">
+                            <tr role="row" style={{ borderTop: '1px solid var(--border)', borderBottom: '1px solid var(--border)', background: '#f8faff' }}>
                                 {['Organization', 'Plan', 'Status', 'Usage', 'Credits', 'Created', 'Actions'].map((h) => (
                                     <th
                                         key={h}
+                                        id={`tenant-directory-${h.toLowerCase()}`}
+                                        scope="col"
+                                        role="columnheader"
                                         style={{
                                             textAlign: 'left',
                                             padding: '0.75rem 1rem',
@@ -629,7 +663,7 @@ export function TenantsClient() {
                                 ))}
                             </tr>
                         </thead>
-                        <tbody>
+                        <tbody role="rowgroup">
                             {tenants.map((tenant, index) => {
                                 const isSelected = tenant.id === selectedTenantId;
                                 const isArchived = Boolean(tenant.deletedAt) || tenant.status === 'CANCELLED' || tenant.status === 'PURGED';
@@ -640,26 +674,32 @@ export function TenantsClient() {
                                 return (
                                     <tr
                                         key={tenant.id}
+                                        role="row"
+                                        className={styles.tenantRow}
                                         style={{
                                             borderBottom: index < tenants.length - 1 ? '1px solid var(--border)' : 'none',
                                             background: isSelected ? '#f8faff' : 'transparent',
                                         }}
                                     >
-                                        <td style={{ padding: '0.9rem 1rem' }}>
-                                            <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
-                                            <div style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
+                                        <td role="cell" headers="tenant-directory-organization" className={styles.organizationCell} style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Organization</span>
+                                            <div id={`tenant-directory-name-${tenant.id}`} style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)', marginBottom: 2 }}>{tenant.name}</div>
+                                            <div id={`tenant-directory-slug-${tenant.id}`} style={{ fontSize: '0.72rem', fontFamily: 'var(--font-mono)', color: 'var(--text-muted)' }}>{tenant.slug}</div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" headers="tenant-directory-plan" style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Plan</span>
                                             <span className="badge" style={badgeStyle(planStyle.color, planStyle.bg, planStyle.border)}>
                                                 {tenant.planTier}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" headers="tenant-directory-status" style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Status</span>
                                             <span className="badge" style={badgeStyle(statusStyle.color, statusStyle.bg, statusStyle.border)}>
                                                 {statusLabel}
                                             </span>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" headers="tenant-directory-usage" style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Usage</span>
                                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.85rem', flexWrap: 'wrap' }}>
                                                 <div>
                                                     <div style={{ fontSize: '0.92rem', fontWeight: 800, color: 'var(--text-primary)' }}>{tenant.usersCount}</div>
@@ -671,19 +711,23 @@ export function TenantsClient() {
                                                 </div>
                                             </div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
+                                        <td role="cell" headers="tenant-directory-credits" style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Credits</span>
                                             <div style={{ display: 'inline-flex', alignItems: 'baseline', gap: '0.35rem' }}>
                                                 <span style={{ fontSize: '0.88rem', color: '#7c4a03', fontWeight: 800 }}>{tenant.usageCredits.toLocaleString()}</span>
                                                 <span style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>credits</span>
                                             </div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                        <td role="cell" headers="tenant-directory-created" style={{ padding: '0.9rem 1rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Created</span>
                                             <div>{formatDate(tenant.createdAt)}</div>
                                             <div style={{ fontSize: '0.68rem', color: 'var(--text-muted)', marginTop: 2 }}>{isArchived ? 'Archived' : 'Active record'}</div>
                                         </td>
-                                        <td style={{ padding: '0.9rem 1rem' }}>
-                                            <div style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
-                                                <button className="btn btn-sm btn-secondary" type="button" onClick={() => setSelectedTenantId(tenant.id)}>
+                                        <td role="cell" headers="tenant-directory-actions" className={styles.actionsCell} style={{ padding: '0.9rem 1rem' }}>
+                                            <span className={styles.cellLabel} aria-hidden="true">Actions</span>
+                                            <span id={`tenant-directory-action-context-${tenant.id}`} className={styles.actionContext}>for {tenant.slug}</span>
+                                            <div className={styles.rowActions} style={{ display: 'flex', gap: '0.35rem', flexWrap: 'wrap' }}>
+                                                <button className="btn btn-sm btn-secondary" type="button" aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`} onClick={() => setSelectedTenantId(tenant.id)}>
                                                     Edit
                                                 </button>
                                                 {isArchived ? (
@@ -692,6 +736,7 @@ export function TenantsClient() {
                                                             className="btn btn-sm"
                                                             style={actionButtonStyle('neutral')}
                                                             type="button"
+                                                            aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                             disabled={saving === `restore:${tenant.id}`}
                                                             onClick={() => void runStatusAction(tenant, 'restore')}
                                                         >
@@ -701,6 +746,7 @@ export function TenantsClient() {
                                                             className="btn btn-sm"
                                                             style={actionButtonStyle('danger')}
                                                             type="button"
+                                                            aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                             disabled={saving === `delete:${tenant.id}`}
                                                             onClick={() => void deleteTenant(tenant)}
                                                         >
@@ -712,6 +758,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('positive')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `activate:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'activate')}
                                                     >
@@ -722,6 +769,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('danger')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `suspend:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'suspend')}
                                                     >
@@ -734,6 +782,7 @@ export function TenantsClient() {
                                                         className="btn btn-sm"
                                                         style={actionButtonStyle('warn')}
                                                         type="button"
+                                                        aria-describedby={`tenant-directory-name-${tenant.id} tenant-directory-slug-${tenant.id}`}
                                                         disabled={saving === `archive:${tenant.id}`}
                                                         onClick={() => void runStatusAction(tenant, 'archive')}
                                                     >
@@ -747,14 +796,15 @@ export function TenantsClient() {
                             })}
 
                             {!loading && tenants.length === 0 ? (
-                                <tr>
-                                    <td colSpan={7} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
+                                <tr role="row" className={styles.emptyRow}>
+                                    <td role="cell" colSpan={7} style={{ padding: '1rem', fontSize: '0.84rem', color: 'var(--text-muted)' }}>
                                         No tenants match the current filter.
                                     </td>
                                 </tr>
                             ) : null}
                         </tbody>
                     </table>
+                    </div>
                     {pagination.hasMore ? (
                         <div style={{ padding: '0.8rem 1rem', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'center' }}>
                             <button
@@ -773,16 +823,13 @@ export function TenantsClient() {
                     ) : null}
                 </article>
 
-                <div style={{ display: 'grid', gap: '0.85rem' }}>
+                <div className={styles.managementPanels} style={{ display: 'grid', gap: '0.85rem' }}>
                     <article className="surface-card" style={{ padding: '1rem' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', marginBottom: '0.8rem' }}>
                             <div>
                                 <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Create tenant</h2>
-                                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Provision a new organization directly from the admin API.</div>
+                                <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>Create an organization and its owner.</div>
                             </div>
-                            <span className="badge" style={badgeStyle('#1d4ed8', '#edf3ff', '#c9d9ff')}>
-                                POST /admin/tenants
-                            </span>
                         </div>
 
                         <form onSubmit={(event) => void createTenant(event)} style={{ display: 'grid', gap: '0.78rem' }}>
@@ -892,7 +939,7 @@ export function TenantsClient() {
                             <div style={{ minWidth: 0 }}>
                                 <h2 style={{ fontSize: '0.98rem', fontWeight: 760, color: 'var(--text-primary)' }}>Selected tenant</h2>
                                 <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)', marginTop: 2 }}>
-                                    {tenantToEdit ? `${tenantToEdit.name} · ${tenantToEdit.slug}` : 'Pick a row in the table to edit it.'}
+                                    {tenantToEdit ? `${tenantToEdit.name} · ${tenantToEdit.slug}` : 'Choose Edit from the directory to manage a tenant.'}
                                 </div>
                             </div>
                             {tenantToEdit ? (

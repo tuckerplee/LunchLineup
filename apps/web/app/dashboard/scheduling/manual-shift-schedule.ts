@@ -16,7 +16,7 @@ export function containingDraftScheduleForShift<T extends ManualShiftSchedule>(
 ): T | null {
   const shiftStart = Date.parse(startTime);
   const shiftEnd = Date.parse(endTime);
-  if (!Number.isFinite(shiftStart) || !Number.isFinite(shiftEnd) || shiftEnd <= shiftStart) return null;
+  if (!Number.isFinite(shiftStart) || !Number.isFinite(shiftEnd) || shiftEnd <= shiftStart || shiftEnd - shiftStart > 86_400_000) return null;
 
   return schedules.find((schedule) => {
     const scheduleStart = Date.parse(schedule.startDate);
@@ -26,13 +26,12 @@ export function containingDraftScheduleForShift<T extends ManualShiftSchedule>(
       && Number.isFinite(scheduleStart)
       && Number.isFinite(scheduleEnd)
       && scheduleStart <= shiftStart
-      && scheduleEnd >= shiftEnd;
+      && shiftStart < scheduleEnd;
   }) ?? null;
 }
 
 export function fallbackDraftWindowForShift(startTime: string, endTime: string, timeZone: string) {
-  const inclusiveEnd = new Date(new Date(endTime).getTime() - 1);
+  if (!Number.isFinite(Date.parse(endTime)) || Date.parse(endTime) <= Date.parse(startTime) || Date.parse(endTime) - Date.parse(startTime) > 86_400_000) throw new Error("Shift must last between zero and 24 hours.");
   const startDay = localDateRange(dateValueInTimeZone(startTime, timeZone), 1, timeZone);
-  const endDay = localDateRange(dateValueInTimeZone(inclusiveEnd, timeZone), 1, timeZone);
-  return { start: startDay.start, end: endDay.end };
+  return { start: startDay.start, end: startDay.end };
 }

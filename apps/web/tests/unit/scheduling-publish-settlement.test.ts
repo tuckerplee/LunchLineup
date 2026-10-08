@@ -70,7 +70,7 @@ describe('schedule publish settlement UI contract', () => {
     expect(source).toContain('if (publishingScheduleIdRef.current) return;');
     expect(source).toContain('apiV2.getSchedulePublishPlan(scheduleId)');
     expect(source).toContain('apiV2.publishSchedule(');
-    expect(source).toContain('acceptedContract: publishReview!.acceptedContract');
+    expect(source).toContain('publishAttempt.payload.body');
     expect(source).toContain('parseSchedulePublishResponse(scheduleId, publishedPayload)');
     expect(source).toContain('publishSettlementByScheduleId[schedule.id]');
   });

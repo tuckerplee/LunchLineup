@@ -1,6 +1,8 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
 
 import { normalizeTimeZone } from '../common/location-timezone';
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import {
     childPayrollOperationId,
@@ -9,13 +11,11 @@ import {
 } from './payroll-idempotency';
 import { readPayrollOperationReplay, writePayrollOperation } from './payroll-operation';
 import {
-    applyPayrollTransactionTimeouts,
     isPrismaUniqueConflict,
     lockPayrollPeriod,
     lockPayrollTenant,
     PAYROLL_CONCURRENT_CHANGE,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -23,9 +23,14 @@ import { parseAdoption, parseApprovalDecisions, requiredId } from './payroll-val
 
 @Injectable()
 export class PayrollCardService {
-    constructor(private readonly tenantDb: TenantPrismaService) {}
+    constructor(
+        private readonly tenantDb: TenantPrismaService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
+    ) {}
 
     async adopt(actor: PayrollActor, periodIdRaw: unknown, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const cards = parseAdoption(body);
         const identity = payrollRequestIdentity({
@@ -35,49 +40,65 @@ export class PayrollCardService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { periodId, cards },
         });
-        const replay = await this.findReplay(actor, identity, 'ADOPT', periodId);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:policy_write',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await readPayrollOperationReplay(tx, actor, identity, 'ADOPT', periodId);
+                assertCurrent();
+                if (replay) return replay;
 
-        return retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            await applyPayrollTransactionTimeouts(tx);
-            await lockPayrollTenant(tx, actor.tenantId);
-            await lockPayrollPeriod(tx, actor.tenantId, periodId);
-            const insideReplay = await readPayrollOperationReplay(tx, actor, identity, 'ADOPT', periodId);
-            if (insideReplay) return insideReplay;
-            const period = await this.requirePeriod(tx, actor.tenantId, periodId);
-            if (period.status !== 'OPEN') throw new ConflictException('Cards can be adopted only into an open payroll period.');
-            const rows = await tx.timeCard.findMany({
-                where: { tenantId: actor.tenantId, id: { in: cards.map((card) => card.id) } },
-                orderBy: { id: 'asc' },
-                take: cards.length,
-            });
-            if (rows.length !== cards.length) throw new NotFoundException('One or more time cards were not found.');
-            const expectedById = new Map(cards.map((card) => [card.id, card.expectedRevision]));
-            for (const card of rows) this.assertAdoptableCard(card, period, expectedById.get(card.id)!);
-            for (const card of rows) {
-                const updated = await tx.timeCard.updateMany({
-                    where: {
-                        id: card.id, tenantId: actor.tenantId, revision: expectedById.get(card.id),
-                        payrollPeriodId: null, status: 'CLOSED', deletedAt: null,
-                    },
-                    data: { payrollPeriodId: period.id, revision: { increment: 1 } },
+                assertCurrent();
+                await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
+                await lockPayrollPeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
+                const insideReplay = await readPayrollOperationReplay(tx, actor, identity, 'ADOPT', periodId);
+                assertCurrent();
+                if (insideReplay) return insideReplay;
+                assertCurrent();
+                const period = await this.requirePeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
+                if (period.status !== 'OPEN') throw new ConflictException('Cards can be adopted only into an open payroll period.');
+                assertCurrent();
+                const rows = await tx.timeCard.findMany({
+                    where: { tenantId: actor.tenantId, id: { in: cards.map((card) => card.id) } },
+                    orderBy: { id: 'asc' },
+                    take: cards.length,
                 });
-                if (updated.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
-            }
-            const response = {
-                periodId: period.id,
-                cards: rows.map((card) => ({ id: card.id, revision: card.revision + 1 })),
-            };
-            await writePayrollOperation(tx, actor, identity, 'ADOPT', period.id, response);
-            await writePayrollAudit(tx, actor, {
-                action: 'PAYROLL_TIME_CARDS_ADOPTED', resource: 'PayrollPeriod',
-                resourceId: period.id, newValue: response,
+                assertCurrent();
+                if (rows.length !== cards.length) throw new NotFoundException('One or more time cards were not found.');
+                const expectedById = new Map(cards.map((card) => [card.id, card.expectedRevision]));
+                for (const card of rows) this.assertAdoptableCard(card, period, expectedById.get(card.id)!);
+                for (const card of rows) {
+                    assertCurrent();
+                    const updated = await tx.timeCard.updateMany({
+                        where: {
+                            id: card.id, tenantId: actor.tenantId, revision: expectedById.get(card.id),
+                            payrollPeriodId: null, status: 'CLOSED', deletedAt: null,
+                        },
+                        data: { payrollPeriodId: period.id, revision: { increment: 1 } },
+                    });
+                    assertCurrent();
+                    if (updated.count !== 1) throw new ConflictException(PAYROLL_CONCURRENT_CHANGE);
+                }
+                const response = {
+                    periodId: period.id,
+                    cards: rows.map((card) => ({ id: card.id, revision: card.revision + 1 })),
+                };
+                assertCurrent();
+                await writePayrollOperation(tx, actor, identity, 'ADOPT', period.id, response, assertCurrent);
+                assertCurrent();
+                await writePayrollAudit(tx, actor, {
+                    action: 'PAYROLL_TIME_CARDS_ADOPTED', resource: 'PayrollPeriod',
+                    resourceId: period.id, newValue: response,
+                }, assertCurrent);
+                assertCurrent();
+                return response;
             });
-            return response;
-        }, PAYROLL_TRANSACTION_OPTIONS));
     }
 
     async decide(actor: PayrollActor, periodIdRaw: unknown, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const decisions = parseApprovalDecisions(body);
         const identity = payrollRequestIdentity({
@@ -87,20 +108,28 @@ export class PayrollCardService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { periodId, decisions },
         });
-        const replay = await this.findReplay(actor, identity, 'APPROVAL', periodId);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'time_cards:approve',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await readPayrollOperationReplay(tx, actor, identity, 'APPROVAL', periodId);
+                assertCurrent();
+                if (replay) return replay;
 
-        try {
-            return await retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-                await applyPayrollTransactionTimeouts(tx);
+                assertCurrent();
                 await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
                 await lockPayrollPeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
                 const insideReplay = await readPayrollOperationReplay(tx, actor, identity, 'APPROVAL', periodId);
+                assertCurrent();
                 if (insideReplay) return insideReplay;
+                assertCurrent();
                 const period = await this.requirePeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
                 if (period.status !== 'REVIEW') {
                     throw new ConflictException('Time-card decisions require a payroll period in review.');
                 }
+                assertCurrent();
                 const rows = await tx.timeCard.findMany({
                     where: {
                         tenantId: actor.tenantId, payrollPeriodId: period.id,
@@ -108,6 +137,7 @@ export class PayrollCardService {
                     },
                     orderBy: { id: 'asc' }, take: decisions.length,
                 });
+                assertCurrent();
                 if (rows.length !== decisions.length) throw new NotFoundException('One or more time cards were not found.');
                 const decisionById = new Map(decisions.map((decision) => [decision.timeCardId, decision]));
                 for (const card of rows) {
@@ -119,6 +149,7 @@ export class PayrollCardService {
                         throw new ConflictException('Employees cannot approve or reject their own time cards.');
                     }
                 }
+                assertCurrent();
                 const existing = await tx.payrollTimeCardApproval.findMany({
                     where: {
                         tenantId: actor.tenantId,
@@ -130,6 +161,7 @@ export class PayrollCardService {
                     take: decisions.length,
                     select: { id: true },
                 });
+                assertCurrent();
                 if (existing.length > 0) throw new ConflictException('A decision already exists for a time-card revision.');
                 const created = [];
                 for (const decision of decisions) {
@@ -142,6 +174,7 @@ export class PayrollCardService {
                         ),
                         body: decision,
                     });
+                    assertCurrent();
                     created.push(await tx.payrollTimeCardApproval.create({
                         data: {
                             tenantId: actor.tenantId, periodId: period.id,
@@ -151,36 +184,31 @@ export class PayrollCardService {
                             decidedByUserId: actor.userId,
                         },
                     }));
+                    assertCurrent();
                 }
                 const response = {
                     periodId: period.id,
                     decisions: created.map((decision) => this.serializeApproval(decision)),
                 };
-                await writePayrollOperation(tx, actor, identity, 'APPROVAL', period.id, response);
+                assertCurrent();
+                await writePayrollOperation(tx, actor, identity, 'APPROVAL', period.id, response, assertCurrent);
+                assertCurrent();
                 await writePayrollAudit(tx, actor, {
                     action: 'PAYROLL_TIME_CARD_DECISIONS_RECORDED', resource: 'PayrollPeriod',
                     resourceId: period.id, newValue: response,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 return response;
-            }, PAYROLL_TRANSACTION_OPTIONS));
-        } catch (error) {
-            if (isPrismaUniqueConflict(error)) {
-                const racedReplay = await this.findReplay(actor, identity, 'APPROVAL', periodId);
-                if (racedReplay) return racedReplay;
+            }, {
+            isRecoverable: isPrismaUniqueConflict,
+            operation: async (tx, assertCurrent, actor, error) => {
+                assertCurrent();
+                const replay = await readPayrollOperationReplay(tx, actor, identity, 'APPROVAL', periodId);
+                assertCurrent();
+                if (replay) return replay;
                 throw new ConflictException('A payroll decision already exists for this request or revision.');
-            }
-            throw error;
-        }
-    }
-
-    private async findReplay(
-        actor: PayrollActor,
-        identity: { operationId: string; requestHash: string },
-        kind: 'ADOPT' | 'APPROVAL',
-        periodId: string,
-    ) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            readPayrollOperationReplay(tx, actor, identity, kind, periodId));
+            },
+        });
     }
 
     private async requirePeriod(tx: TenantPrismaTransaction, tenantId: string, periodId: string) {

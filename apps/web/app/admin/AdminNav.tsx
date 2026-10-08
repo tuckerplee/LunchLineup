@@ -1,8 +1,10 @@
 'use client';
 
 import Link from 'next/link';
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
+import styles from './admin-shell.module.css';
 import { usePathname } from 'next/navigation';
-import { CalendarDays, CreditCard, LayoutDashboard, MapPin, Package, Shield, Users, UtensilsCrossed } from 'lucide-react';
+import { CalendarDays, CreditCard, LayoutDashboard, MapPin, Menu, Package, Shield, Users, UtensilsCrossed, X } from 'lucide-react';
 
 const NAV_GROUPS = [
     {
@@ -29,31 +31,71 @@ const NAV_GROUPS = [
 
 export function AdminNav() {
     const pathname = usePathname();
+    const [expanded, setExpanded] = useState(false);
+    const navigationId = useId();
+    const toggleRef = useRef<HTMLButtonElement>(null);
+
+    useEffect(() => {
+        setExpanded(false);
+    }, [pathname]);
+
+    function closeNavigation() {
+        setExpanded(false);
+        if (expanded) toggleRef.current?.focus();
+    }
+
+    function handleEscape(event: KeyboardEvent<HTMLElement>) {
+        if (event.key !== 'Escape' || !expanded) return;
+        event.preventDefault();
+        closeNavigation();
+    }
 
     return (
-        <nav style={{ flex: 1, padding: '0.75rem', display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {NAV_GROUPS.map((group) => (
-                <div key={group.label} style={{ display: 'grid', gap: 4 }}>
-                    <div className="workspace-kicker" style={{ padding: '0.35rem 0.55rem', color: 'var(--text-soft)' }}>
-                        {group.label}
+        <>
+            <button
+                ref={toggleRef}
+                type="button"
+                className={styles.navigationToggle}
+                aria-label="Admin navigation"
+                aria-controls={navigationId}
+                aria-expanded={expanded}
+                onClick={() => setExpanded((open) => !open)}
+                onKeyDown={handleEscape}
+            >
+                {expanded ? <X aria-hidden="true" size={20} /> : <Menu aria-hidden="true" size={20} />}
+                <span>Menu</span>
+            </button>
+            <nav
+                id={navigationId}
+                aria-label="Admin navigation"
+                className={styles.navigation}
+                data-expanded={expanded}
+                onKeyDown={handleEscape}
+            >
+                {NAV_GROUPS.map((group) => (
+                    <div key={group.label} style={{ display: 'grid', gap: 4 }}>
+                        <div className="workspace-kicker" style={{ padding: '0.35rem 0.55rem', color: 'var(--text-soft)' }}>
+                            {group.label}
+                        </div>
+                        {group.items.map((item) => {
+                            const Icon = item.icon;
+                            const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
+                            return (
+                                <Link
+                                    key={item.href}
+                                    href={item.href}
+                                    className={`workspace-nav-link ${isActive ? 'active' : ''}`}
+                                    aria-current={isActive ? 'page' : undefined}
+                                    onClick={closeNavigation}
+                                >
+                                    <Icon aria-hidden="true" size={16} />
+                                    {item.label}
+                                </Link>
+                            );
+                        })}
                     </div>
-                    {group.items.map((item) => {
-                        const Icon = item.icon;
-                        const isActive = item.exact ? pathname === item.href : pathname.startsWith(item.href);
-                        return (
-                            <Link
-                                key={item.href}
-                                href={item.href}
-                                className={`workspace-nav-link ${isActive ? 'active' : ''}`}
-                                aria-current={isActive ? 'page' : undefined}
-                            >
-                                <Icon aria-hidden="true" size={16} />
-                                {item.label}
-                            </Link>
-                        );
-                    })}
-                </div>
-            ))}
-        </nav>
+                ))}
+            </nav>
+        </>
     );
 }

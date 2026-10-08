@@ -228,7 +228,10 @@ export class FeatureAccessService {
         reason: string,
         operationId: string,
         transactionId?: string,
+        assertCurrent?: () => void,
     ): Promise<{ consumedCredits: number; newBalance: number | null }> {
+        const guard = assertCurrent ?? (() => {});
+        guard();
         if (!resolution.enabled) {
             throw new ForbiddenException(resolution.reason);
         }
@@ -245,16 +248,22 @@ export class FeatureAccessService {
             cost: creditCost,
             reason,
             operationId,
+            ...(assertCurrent ? { assertCurrent } : {}),
         };
         if (transactionId !== undefined) {
-            return this.meteringService.recordCreditDebitInTransaction(tx, {
+            const result = await this.meteringService.recordCreditDebitInTransaction(tx, {
                 tenantId,
                 cost: creditCost,
                 reason,
                 transactionId,
+                ...(assertCurrent ? { assertCurrent } : {}),
             });
+            guard();
+            return result;
         }
-        return this.meteringService.recordFeatureUsageInTransaction(tx, settlement);
+        const result = await this.meteringService.recordFeatureUsageInTransaction(tx, settlement);
+        guard();
+        return result;
     }
     private async loadTenantFeatureConfig(tx: TenantPrismaTransaction, tenantId: string): Promise<TenantFeatureConfig | null> {
         const tenantSetting = await tx.tenantSetting?.findUnique?.({

@@ -15,3 +15,13 @@ This folder owns the native API-02 People surface: tenant staff directory and pr
 - `people.service.ts`: native People resource orchestration, public serialization, atomic recurring and local-date availability-exception persistence, exact affected-draft invalidation, access-role and staff-deactivation lifecycle, and PIN flows.
 - `people.service.test.ts`: public-identifier, catalog, cursor, resolver, dated-exception mapping, atomic replacement/exact-draft invalidation, and local-date/time-boundary validation tests.
 - `routes.ts`: typed Fastify routes, HTTP-level permission checks, CSRF, and MFA boundaries for native People operations, including protected scheduling-profile exception writes.
+
+- `people-lifecycle.test.ts`: recovery and acceptance regression checks.
+
+- `profile-version.test.ts`: recovery and acceptance regression checks.
+
+- `profile-version.ts`: scoped application repair or disposable qualification support.
+- `mutation-authority.ts`: canonical mutation identity, current tenant/session policy and finite MFA lifetime checks.
+- `people-mutation-authority.test.ts`: People mutation current-authority, async PIN proof and modeled effect-lifetime regressions.
+- `people-nested-lifetime.test.ts`: nested deletion cleanup and invitation enqueue lifetime regressions with modeled transactions.
+- `pin-rotation-security.test.ts`: PIN guessing-budget, async KDF admission, credential CAS and rotation rollback regressions.

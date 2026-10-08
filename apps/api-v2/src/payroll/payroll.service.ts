@@ -18,6 +18,8 @@ import type {
 import type { TenantDatabase, TenantTransaction } from '../platform/database';
 import { assertFeatureEntitled, debitFeatureCredit, lockTenantForFeature } from '../platform/feature-entitlement';
 import { ProblemError } from '../platform/problem';
+import type { MfaSessionObserver, MfaVerificationObservation } from '@lunchlineup/rbac';
+import { authorizeCurrentMutation, assertCurrentMutation, mutationIdentity } from '../people/mutation-authority';
 import {
   MAX_PAYROLL_CARD_PAGE_SIZE,
   MAX_PAYROLL_HISTORY_PAGE_SIZE,
@@ -66,6 +68,10 @@ const TRANSACTION_OPTIONS = {
   maxWait: 5_000,
   timeout: 20_000,
 } as const;
+
+type PayrollMutationScope = {
+  run<T>(operation: (transaction: TenantTransaction, assertCurrent: () => void) => Promise<T>): Promise<T>;
+};
 
 type PayrollRow = {
   id: string;
@@ -156,14 +162,19 @@ function sameHash(left: unknown, right: string): boolean {
  * UUIDs at every browser boundary.
  */
 export class PayrollService {
-  constructor(private readonly database: Pick<TenantDatabase, 'withTenant'>) {}
+  constructor(
+    private readonly database: Pick<TenantDatabase, 'withTenant'>,
+    private readonly mfaObserver?: Partial<MfaSessionObserver>,
+  ) {}
 
   async listPolicies(identity: SessionIdentity, query: PayrollPolicyListQuery) {
+    identity = mutationIdentity(identity);
     const limit = parseBoundedLimit(query.limit, 'policy_limit', 25, MAX_PAYROLL_HISTORY_PAGE_SIZE);
     const cursor = decodeCursor(query.cursor, 'policy_cursor');
     const version = cursorInteger(cursor, 'version', 'policy_cursor');
     const publicId = cursorText(cursor, 'publicId', 'policy_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const rows = await transaction.payrollPolicyVersion.findMany({
         where: {
           tenantId: identity.tenantId,
@@ -177,8 +188,10 @@ export class PayrollService {
         orderBy: [{ version: 'desc' }, { publicId: 'desc' }],
         take: limit + 1,
       });
+      assertCurrent();
       const page = rows.slice(0, limit);
       const users = await this.publicUsers(transaction, identity.tenantId, page.map((row) => row.createdByUserId));
+      assertCurrent();
       return {
         data: page.map((row) => this.serializePolicy(row, users)),
         nextCursor: rows.length > limit && page.length > 0
@@ -189,18 +202,25 @@ export class PayrollService {
   }
 
   async latestPolicy(identity: SessionIdentity) {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const row = await transaction.payrollPolicyVersion.findFirst({
         where: { tenantId: identity.tenantId },
         orderBy: [{ version: 'desc' }, { publicId: 'desc' }],
       });
+      assertCurrent();
       if (!row) return { data: null };
       const users = await this.publicUsers(transaction, identity.tenantId, [row.createdByUserId]);
+      assertCurrent();
       return { data: this.serializePolicy(row, users) };
     });
   }
 
   async createPolicy(identity: SessionIdentity, body: PayrollPolicyRequest, idempotencyKeyRaw: string | undefined) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:policy_write');
     const policy = normalizePayrollPolicy(body);
     assertPayrollAnchorAlignment(policy.effectiveFrom, policy.anchorDate, policy.cadence);
     const request = payrollRequestIdentity({
@@ -211,8 +231,7 @@ export class PayrollService {
       body: policy,
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         const replay = await transaction.payrollPolicyVersion.findUnique({ where: { operationId: request.operationId } });
         if (replay) {
@@ -236,6 +255,7 @@ export class PayrollService {
           }
           assertPayrollAnchorAlignment(policy.effectiveFrom, serializeDateOnly(latest.anchorDate), latest.cadence);
         }
+        assertCurrent();
         const created = await transaction.payrollPolicyVersion.create({
           data: {
             tenantId: identity.tenantId,
@@ -249,16 +269,19 @@ export class PayrollService {
             createdByUserId: identity.sub,
           },
         });
+        assertCurrent();
         const users = await this.publicUsers(transaction, identity.tenantId, [identity.sub]);
         const response = this.serializePolicy(created, users);
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_POLICY_VERSION_CREATED',
           resource: 'PayrollPolicyVersion',
           resourceId: created.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_policy_boundary_conflict', 'Payroll policy version conflicts with an existing boundary.', 'Conflict');
@@ -268,29 +291,34 @@ export class PayrollService {
   }
 
   async listPeriods(identity: SessionIdentity, query: PayrollPeriodListQuery) {
+    identity = mutationIdentity(identity);
     const limit = parseBoundedLimit(query.limit, 'period_limit', 25, MAX_PAYROLL_HISTORY_PAGE_SIZE);
     const cursor = decodeCursor(query.cursor, 'period_cursor');
     const localStartDate = cursorText(cursor, 'localStartDate', 'period_cursor');
     const publicId = cursorText(cursor, 'publicId', 'period_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const startDate = localStartDate === null ? null : dateOnlyForPrisma(localStartDate);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const rows = await transaction.payrollPeriod.findMany({
         where: {
           tenantId: identity.tenantId,
-          ...(localStartDate === null ? {} : {
+          ...(startDate === null ? {} : {
             OR: [
-              { localStartDate: { lt: dateOnlyForPrisma(localStartDate) } },
-              { localStartDate: dateOnlyForPrisma(localStartDate), publicId: { lt: publicId ?? '' } },
+              { localStartDate: { lt: startDate } },
+              { localStartDate: startDate, publicId: { lt: publicId ?? '' } },
             ],
           }),
         },
         orderBy: [{ localStartDate: 'desc' }, { publicId: 'desc' }],
         take: limit + 1,
       }) as unknown as PayrollRow[];
+      assertCurrent();
       const page = rows.slice(0, limit);
       const [summaries, policies] = await Promise.all([
-        loadPayrollPeriodSummaries(transaction, identity.tenantId, page.map((row) => row.id)),
-        this.publicPolicies(transaction, identity.tenantId, page.map((row) => row.policyVersionId)),
+        loadPayrollPeriodSummaries(transaction, identity.tenantId, page.map((row) => row.id), assertCurrent),
+        this.publicPolicies(transaction, identity.tenantId, page.map((row) => row.policyVersionId), assertCurrent),
       ]);
+      assertCurrent();
       return {
         data: page.map((row) => this.serializePeriod(row, summaries.get(row.id) ?? this.emptySummary(), policies, null)),
         nextCursor: rows.length > limit && page.length > 0
@@ -304,6 +332,9 @@ export class PayrollService {
   }
 
   async createPeriod(identity: SessionIdentity, body: PayrollPeriodCreateRequest, idempotencyKeyRaw: string | undefined) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:policy_write');
     const localStartDate = body.localStartDate;
     const request = payrollRequestIdentity({
       tenantId: identity.tenantId,
@@ -313,8 +344,7 @@ export class PayrollService {
       body: { localStartDate },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         const replay = await transaction.payrollOperation.findUnique({ where: { operationId: request.operationId } });
         if (replay) return this.replayOperation(replay, request.requestHash);
@@ -339,6 +369,7 @@ export class PayrollService {
           select: { id: true },
         });
         if (overlap) throw payrollProblem(409, 'payroll_period_overlap', 'Payroll period overlaps an existing period.', 'Conflict');
+        assertCurrent();
         const created = await transaction.payrollPeriod.create({
           data: {
             tenantId: identity.tenantId,
@@ -351,8 +382,10 @@ export class PayrollService {
             cadence: policy.cadence,
           },
         }) as unknown as PayrollRow;
+        assertCurrent();
         const policies = new Map([[policy.id, policy.publicId]]);
         const response = this.serializePeriod(created, this.emptySummary(), policies, null);
+        assertCurrent();
         await transaction.payrollOperation.create({
           data: {
             operationId: request.operationId,
@@ -363,14 +396,16 @@ export class PayrollService {
             response: response as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_PERIOD_CREATED',
           resource: 'PayrollPeriod',
           resourceId: created.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_period_conflict', 'Payroll period conflicts with an existing period.', 'Conflict');
@@ -380,13 +415,15 @@ export class PayrollService {
   }
 
   async getPeriod(identity: SessionIdentity, publicPeriodId: string, query: PayrollPeriodDetailQuery) {
+    identity = mutationIdentity(identity);
     const periodId = requiredPublicId(publicPeriodId, 'payroll_period');
     const cardLimit = parseBoundedLimit(query.cardLimit, 'card_limit', 100, MAX_PAYROLL_CARD_PAGE_SIZE);
     const cardCursor = cursorText(decodeCursor(query.cardCursor, 'card_cursor'), 'publicId', 'card_cursor');
     const lineLimit = parseBoundedLimit(query.lineLimit, 'line_limit', 500, 500);
     const lineCursor = cursorText(decodeCursor(query.lineCursor, 'line_cursor'), 'publicId', 'line_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const period = await this.requirePeriod(transaction, identity.tenantId, periodId);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
+      const period = await this.requirePeriod(transaction, identity.tenantId, periodId, assertCurrent);
       const rows = await transaction.timeCard.findMany({
         where: period.status === 'OPEN'
           ? {
@@ -428,6 +465,7 @@ export class PayrollService {
           location: { select: { publicId: true } },
         },
       });
+      assertCurrent();
       const page = rows.slice(0, cardLimit);
       const approvals = page.length === 0 ? [] : await transaction.payrollTimeCardApproval.findMany({
         where: {
@@ -436,19 +474,22 @@ export class PayrollService {
           OR: page.map((card) => ({ timeCardId: card.id, timeCardRevision: card.revision })),
         },
       });
+      assertCurrent();
       const approverIds = approvals.map((approval) => approval.decidedByUserId);
-      const approvers = await this.publicUsers(transaction, identity.tenantId, approverIds);
+      const approvers = await this.publicUsers(transaction, identity.tenantId, approverIds, assertCurrent);
       const decisionByCard = new Map(approvals.map((approval) => [`${approval.timeCardId}:${approval.timeCardRevision}`, approval]));
-      const summary = await loadPayrollPeriodSummary(transaction, identity.tenantId, period.id);
-      const policies = await this.publicPolicies(transaction, identity.tenantId, [period.policyVersionId]);
+      const summary = await loadPayrollPeriodSummary(transaction, identity.tenantId, period.id, assertCurrent);
+      const policies = await this.publicPolicies(transaction, identity.tenantId, [period.policyVersionId], assertCurrent);
       const [lockedEntries, amendments, batch] = await Promise.all([
-        this.serializedLockedEntries(transaction, identity.tenantId, period.id),
-        this.serializedAmendments(transaction, identity.tenantId, period.id, period.status),
+        this.serializedLockedEntries(transaction, identity.tenantId, period.id, assertCurrent),
+        this.serializedAmendments(transaction, identity.tenantId, period.id, period.status, assertCurrent),
         transaction.payrollExportBatch.findFirst({ where: { tenantId: identity.tenantId, periodId: period.id } }),
       ]);
+      assertCurrent();
       const exportBatch = batch
-        ? await this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor)
+        ? await this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor, assertCurrent)
         : null;
+      assertCurrent();
       return {
         period: this.serializePeriod(period, summary, policies, exportBatch),
         cards: page.map((card) => {
@@ -498,15 +539,19 @@ export class PayrollService {
   }
 
   async getExport(identity: SessionIdentity, publicExportId: string, query: { lineLimit?: string; lineCursor?: string }) {
+    identity = mutationIdentity(identity);
     const exportId = requiredPublicId(publicExportId, 'payroll_export');
     const lineLimit = parseBoundedLimit(query.lineLimit, 'line_limit', 500, 500);
     const lineCursor = cursorText(decodeCursor(query.lineCursor, 'line_cursor'), 'publicId', 'line_cursor');
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:read');
+    return authority.run(async (transaction, assertCurrent) => {
       const batch = await transaction.payrollExportBatch.findFirst({
         where: { tenantId: identity.tenantId, publicId: exportId },
       });
+      assertCurrent();
       if (!batch) throw payrollProblem(404, 'payroll_export_not_found', 'The requested payroll export was not found in this workspace.', 'Not found');
-      return this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor);
+      await this.verifyExportCreditProvenance(transaction, batch, assertCurrent);
+      return this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor, assertCurrent);
     });
   }
 
@@ -541,6 +586,9 @@ export class PayrollService {
     body: PayrollExportRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:export');
     const periodId = await this.resolvePeriodId(identity, publicPeriodId);
     const request = payrollRequestIdentity({
       tenantId: identity.tenantId,
@@ -550,8 +598,7 @@ export class PayrollService {
       body: { periodId, expectedCreditCost: body.expectedCreditCost },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         // Lock order is shared with every debit path: tenant wallet first, then
         // tenant/period payroll advisory locks.
         await lockTenantForFeature(transaction, identity.tenantId);
@@ -663,13 +710,16 @@ export class PayrollService {
           throw payrollProblem(503, 'payroll_export_integrity_failed', 'Payroll evidence failed integrity verification.', 'Service unavailable');
         }
         const creditTransactionId = `feature-usage-payroll-export:${request.operationId}`;
+        assertCurrent();
         const settlement = await debitFeatureCredit(transaction, {
           tenantId: identity.tenantId,
+          assertCurrent,
           entitlement,
           operationId: `payroll-export:${request.operationId}`,
           transactionId: creditTransactionId,
           reason: `Payroll export (${period.id})`,
         });
+        assertCurrent();
         if (
           settlement.consumedCredits !== entitlement.creditCost
           || !Number.isSafeInteger(settlement.newBalance)
@@ -677,6 +727,7 @@ export class PayrollService {
         ) {
           throw payrollProblem(503, 'payroll_export_settlement_invalid', 'Payroll export settlement is unavailable.', 'Service unavailable');
         }
+        assertCurrent();
         const batch = await transaction.payrollExportBatch.create({
           data: {
             id: batchId,
@@ -697,6 +748,7 @@ export class PayrollService {
             newBalance: settlement.newBalance,
           },
         });
+        assertCurrent();
         await transaction.payrollExportLine.createMany({
           data: lines.map(({ id, publicId, entry, canonicalSha256: lineSha256, line }) => ({
             id,
@@ -717,23 +769,26 @@ export class PayrollService {
             canonicalSha256: lineSha256,
           })),
         });
+        assertCurrent();
         const response = await this.serializeExport(transaction, identity.tenantId, batch, 500, null);
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_EXPORT_GENERATED',
           resource: 'PayrollExportBatch',
           resourceId: batch.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
-        const replay = await this.findExportReplay(identity, periodId, request);
+        const replay = await this.findExportReplay(identity, periodId, request, mutation);
         if (replay) return replay;
         throw payrollProblem(409, 'payroll_export_conflict', 'Payroll period already has its canonical export batch.', 'Conflict');
       }
       if (isLockTimeout(error)) {
-        const replay = await this.findExportReplay(identity, periodId, request);
+        const replay = await this.findExportReplay(identity, periodId, request, mutation);
         if (replay) return replay;
         throw payrollProblem(503, 'payroll_concurrent_change', PAYROLL_CONCURRENT_CHANGE, 'Service unavailable');
       }
@@ -742,9 +797,10 @@ export class PayrollService {
   }
 
   async downloadExport(identity: SessionIdentity, publicExportId: string): Promise<{ filename: string; content: Buffer }> {
+    identity = mutationIdentity(identity);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:export');
     const publicId = requiredPublicId(publicExportId, 'payroll_export');
-    return retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-      await applyPayrollTransactionTimeouts(transaction);
+    return mutation.run(async (transaction, assertCurrent) => {
       await lockPayrollTenant(transaction, identity.tenantId);
       const rows = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
         SELECT "id"
@@ -767,25 +823,29 @@ export class PayrollService {
       const content = evidence.publicContent;
       if (batch.status === 'GENERATED') {
         const downloadedAt = new Date();
+        assertCurrent();
         const changed = await transaction.payrollExportBatch.updateMany({
           where: { id: batch.id, tenantId: identity.tenantId, status: 'GENERATED' },
           data: { status: 'DOWNLOADED', downloadedAt },
         });
+        assertCurrent();
         if (changed.count !== 1) {
           throw payrollProblem(409, 'payroll_download_state_changed', 'Payroll export download state changed. Retry.', 'Conflict');
         }
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_EXPORT_DOWNLOADED',
           resource: 'PayrollExportBatch',
           resourceId: batch.id,
           newValue: { downloadedAt: downloadedAt.toISOString() },
         });
+        assertCurrent();
       }
       return {
         filename: `payroll-${serializeDateOnly(period.localStartDate)}-${batch.publicId}.csv`,
         content,
       };
-    }, TRANSACTION_OPTIONS));
+    });
   }
 
   async reconcileExport(
@@ -793,6 +853,9 @@ export class PayrollService {
     publicExportId: string,
     body: PayrollReconciliationRequest,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:reconcile');
     const exportId = await this.resolveExportId(identity, publicExportId);
     const publicPayload = normalizeReconciliation(body);
     // Receipt hashes must keep the v1-compatible canonical storage identity.
@@ -807,8 +870,7 @@ export class PayrollService {
       payload,
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         const rows = await transaction.$queryRaw<Array<{ id: string }>>(Prisma.sql`
           SELECT "id"
@@ -860,6 +922,7 @@ export class PayrollService {
         }
         const outcomes = canonicalPayload.outcomes;
         const counts = reconciliationCounts(canonicalPayload);
+        assertCurrent();
         const receipt = await transaction.payrollReconciliationReceipt.create({
           data: {
             tenantId: identity.tenantId,
@@ -872,6 +935,7 @@ export class PayrollService {
             receivedByUserId: identity.sub,
           },
         });
+        assertCurrent();
         await transaction.payrollReconciliationLineEvent.createMany({
           data: outcomes.map((outcome) => ({
             tenantId: identity.tenantId,
@@ -882,7 +946,9 @@ export class PayrollService {
             reason: outcome.reason,
           })),
         });
+        assertCurrent();
         for (const outcome of outcomes) {
+          assertCurrent();
           await transaction.payrollReconciliationLineState.upsert({
             where: { batchId_lineId: { batchId: batch.id, lineId: outcome.lineId } },
             create: {
@@ -899,12 +965,15 @@ export class PayrollService {
               reason: outcome.reason,
             },
           });
+          assertCurrent();
         }
         if (batch.status === 'DOWNLOADED') {
+          assertCurrent();
           const changed = await transaction.payrollExportBatch.updateMany({
             where: { id: batch.id, tenantId: identity.tenantId, status: 'DOWNLOADED' },
             data: { status: 'RECONCILING' },
           });
+          assertCurrent();
           if (changed.count !== 1) {
             throw payrollProblem(409, 'payroll_reconciliation_state_changed', 'Payroll reconciliation state changed. Retry.', 'Conflict');
           }
@@ -913,26 +982,30 @@ export class PayrollService {
           where: { tenantId: identity.tenantId, batchId: batch.id, status: 'ACCEPTED' },
         });
         if (accepted === batch.rowCount && payload.providerTotalMinutes === batch.totalPayableMinutes) {
+          assertCurrent();
           const changed = await transaction.payrollExportBatch.updateMany({
             where: { id: batch.id, tenantId: identity.tenantId, status: 'RECONCILING' },
             data: { status: 'RECONCILED', reconciledAt: new Date() },
           });
+          assertCurrent();
           if (changed.count !== 1) {
             throw payrollProblem(409, 'payroll_reconciliation_state_changed', 'Payroll reconciliation state changed. Retry.', 'Conflict');
           }
         }
         const response = await this.serializeReceipt(transaction, identity.tenantId, receipt);
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_RECONCILIATION_RECEIVED',
           resource: 'PayrollReconciliationReceipt',
           resourceId: receipt.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
-        const replay = await this.findReceiptReplay(identity, exportId, payload.provider, payload.providerEventId, payloadSha256);
+        const replay = await this.findReceiptReplay(identity, exportId, payload.provider, payload.providerEventId, payloadSha256, mutation);
         if (replay) return replay;
         throw payrollProblem(409, 'idempotency_conflict', PAYROLL_REPLAY_CONFLICT, 'Conflict');
       }
@@ -946,6 +1019,9 @@ export class PayrollService {
     body: PayrollExpectedRevisionRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:lock');
     const periodId = await this.resolvePeriodId(identity, publicPeriodId);
     const request = payrollRequestIdentity({
       tenantId: identity.tenantId,
@@ -954,8 +1030,7 @@ export class PayrollService {
       idempotencyKey: normalizeIdempotencyKey(idempotencyKeyRaw),
       body: { periodId, expectedRevision: body.expectedRevision },
     });
-    return retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-      await applyPayrollTransactionTimeouts(transaction);
+    return mutation.run(async (transaction, assertCurrent) => {
       await lockPayrollTenant(transaction, identity.tenantId);
       await lockPayrollPeriod(transaction, identity.tenantId, periodId);
       const replay = await transaction.payrollOperation.findUnique({ where: { operationId: request.operationId } });
@@ -969,10 +1044,12 @@ export class PayrollService {
         period,
       );
       void cards;
+      assertCurrent();
       const changed = await transaction.payrollPeriod.updateMany({
         where: { id: period.id, tenantId: identity.tenantId, status: 'OPEN', revision: body.expectedRevision },
         data: { status: 'REVIEW', revision: { increment: 1 }, reviewStartedAt: new Date(), reviewStartedByUserId: identity.sub },
       });
+      assertCurrent();
       if (changed.count !== 1) throw payrollProblem(409, 'payroll_concurrent_change', PAYROLL_CONCURRENT_CHANGE, 'Concurrent change');
       const updated = await this.requirePeriodById(transaction, identity.tenantId, period.id);
       const [summary, policies] = await Promise.all([
@@ -980,9 +1057,11 @@ export class PayrollService {
         this.publicPolicies(transaction, identity.tenantId, [updated.policyVersionId]),
       ]);
       const response = this.serializePeriod(updated, summary, policies, null);
+      assertCurrent();
       await transaction.payrollOperation.create({
         data: { operationId: request.operationId, tenantId: identity.tenantId, periodId: updated.id, kind: 'REVIEW', requestHash: request.requestHash, response: response as Prisma.InputJsonValue },
       });
+      assertCurrent();
       await writePayrollAudit(transaction, identity, {
         action: 'PAYROLL_PERIOD_REVIEW_STARTED',
         resource: 'PayrollPeriod',
@@ -990,8 +1069,9 @@ export class PayrollService {
         oldValue: this.serializePeriod(period, this.emptySummary(), policies, null),
         newValue: response,
       });
+      assertCurrent();
       return response;
-    }, TRANSACTION_OPTIONS));
+    });
   }
 
   async adoptCards(
@@ -1000,6 +1080,9 @@ export class PayrollService {
     body: PayrollCardsAdoptRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:policy_write');
     const periodId = await this.resolvePeriodId(identity, publicPeriodId);
     const cardsByPublicId = await this.resolveTimeCards(identity, body.cards.map((card) => card.id));
     if (new Set(body.cards.map((card) => card.id)).size !== body.cards.length) {
@@ -1018,8 +1101,7 @@ export class PayrollService {
       body: { periodId, cards: cards.map(({ id, expectedRevision }) => ({ id, expectedRevision })) },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         await lockPayrollPeriod(transaction, identity.tenantId, periodId);
         const replay = await transaction.payrollOperation.findUnique({ where: { operationId: request.operationId } });
@@ -1053,6 +1135,7 @@ export class PayrollService {
           }
         }
         for (const card of rows) {
+          assertCurrent();
           const updated = await transaction.timeCard.updateMany({
             where: {
               id: card.id,
@@ -1064,6 +1147,7 @@ export class PayrollService {
             },
             data: { payrollPeriodId: period.id, revision: { increment: 1 } },
           });
+          assertCurrent();
           if (updated.count !== 1) {
             throw payrollProblem(409, 'payroll_concurrent_change', PAYROLL_CONCURRENT_CHANGE, 'Concurrent change');
           }
@@ -1076,6 +1160,7 @@ export class PayrollService {
             revision: card.revision + 1,
           })),
         };
+        assertCurrent();
         await transaction.payrollOperation.create({
           data: {
             operationId: request.operationId,
@@ -1086,14 +1171,16 @@ export class PayrollService {
             response: response as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_TIME_CARDS_ADOPTED',
           resource: 'PayrollPeriod',
           resourceId: period.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_adoption_conflict', 'A time-card adoption changed before it could be committed.', 'Conflict');
@@ -1108,6 +1195,9 @@ export class PayrollService {
     body: PayrollDecisionsRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'time_cards:approve');
     const periodId = await this.resolvePeriodId(identity, publicPeriodId);
     const cardsByPublicId = await this.resolveTimeCards(identity, body.decisions.map((decision) => decision.timeCardId));
     const decisions = body.decisions.map((decision) => ({
@@ -1128,8 +1218,7 @@ export class PayrollService {
       body: { periodId, decisions: decisions.map(({ timeCardId, expectedRevision, decision, reason }) => ({ timeCardId, expectedRevision, decision, reason })) },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         await lockPayrollPeriod(transaction, identity.tenantId, periodId);
         const replay = await transaction.payrollOperation.findUnique({ where: { operationId: request.operationId } });
@@ -1178,6 +1267,7 @@ export class PayrollService {
             idempotencyKey: childPayrollOperationId(request.operationId, `${decision.timeCardId}:${decision.expectedRevision}`),
             body: decision,
           });
+          assertCurrent();
           created.push(await transaction.payrollTimeCardApproval.create({
             data: {
               tenantId: identity.tenantId,
@@ -1191,6 +1281,7 @@ export class PayrollService {
               decidedByUserId: identity.sub,
             },
           }));
+          assertCurrent();
         }
         const publicByInternalId = new Map(decisions.map((decision) => [decision.timeCardId, decision.publicTimeCardId]));
         const response = {
@@ -1204,6 +1295,7 @@ export class PayrollService {
             decidedByUserId: identity.publicUserId,
           })),
         };
+        assertCurrent();
         await transaction.payrollOperation.create({
           data: {
             operationId: request.operationId,
@@ -1214,14 +1306,16 @@ export class PayrollService {
             response: response as Prisma.InputJsonValue,
           },
         });
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_TIME_CARD_DECISIONS_RECORDED',
           resource: 'PayrollPeriod',
           resourceId: period.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_decision_conflict', 'A payroll decision already exists for this request or revision.', 'Conflict');
@@ -1236,6 +1330,9 @@ export class PayrollService {
     body: PayrollExpectedRevisionRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:lock');
     const periodId = await this.resolvePeriodId(identity, publicPeriodId);
     const request = payrollRequestIdentity({
       tenantId: identity.tenantId,
@@ -1244,8 +1341,7 @@ export class PayrollService {
       idempotencyKey: normalizeIdempotencyKey(idempotencyKeyRaw),
       body: { periodId, expectedRevision: body.expectedRevision },
     });
-    return retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-      await applyPayrollTransactionTimeouts(transaction);
+    return mutation.run(async (transaction, assertCurrent) => {
       await lockPayrollTenant(transaction, identity.tenantId);
       await lockPayrollPeriod(transaction, identity.tenantId, periodId);
       const period = await this.requirePeriodById(transaction, identity.tenantId, periodId);
@@ -1289,6 +1385,7 @@ export class PayrollService {
         throw payrollProblem(422, 'payroll_source_invalid', 'Payroll source data is invalid for locking.', 'Payroll validation failed');
       }
       if (snapshot.entries.length > 0) {
+        assertCurrent();
         await transaction.payrollLockedEntry.createMany({
           data: snapshot.entries.map((entry) => ({
             tenantId: identity.tenantId,
@@ -1309,7 +1406,9 @@ export class PayrollService {
             canonicalSha256: entry.canonicalSha256,
           })),
         });
+        assertCurrent();
       }
+      assertCurrent();
       const changed = await transaction.payrollPeriod.updateMany({
         where: { id: period.id, tenantId: identity.tenantId, status: 'REVIEW', revision: body.expectedRevision },
         data: {
@@ -1324,6 +1423,7 @@ export class PayrollService {
           totalPayableMinutes: snapshot.totalPayableMinutes,
         },
       });
+      assertCurrent();
       if (changed.count !== 1) {
         throw payrollProblem(409, 'payroll_concurrent_change', PAYROLL_CONCURRENT_CHANGE, 'Concurrent change');
       }
@@ -1333,6 +1433,7 @@ export class PayrollService {
         this.publicPolicies(transaction, identity.tenantId, [updated.policyVersionId]),
       ]);
       const response = this.serializePeriod(updated, summary, policies, null);
+      assertCurrent();
       await writePayrollAudit(transaction, identity, {
         action: 'PAYROLL_PERIOD_LOCKED',
         resource: 'PayrollPeriod',
@@ -1340,8 +1441,9 @@ export class PayrollService {
         oldValue: this.serializePeriod(period, this.emptySummary(), policies, null),
         newValue: response,
       });
+      assertCurrent();
       return response;
-    }, TRANSACTION_OPTIONS));
+    });
   }
 
   async createAmendment(
@@ -1350,6 +1452,9 @@ export class PayrollService {
     body: PayrollAmendmentRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'payroll:reconcile');
     const entryId = await this.resolveLockedEntryId(identity, publicEntryId);
     const adjustmentPeriodId = await this.resolvePeriodId(identity, body.adjustmentPeriodId);
     const replacementClockInAt = parseInstant(body.replacementClockInAt, 'replacement_clock_in');
@@ -1379,8 +1484,7 @@ export class PayrollService {
       },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         const replay = await transaction.payrollAmendment.findUnique({ where: { operationId: request.operationId } });
         if (replay) {
@@ -1411,6 +1515,7 @@ export class PayrollService {
         if (!Number.isSafeInteger(minuteDelta)) {
           throw payrollProblem(422, 'payroll_amendment_delta_invalid', 'Amendment minute delta is invalid.', 'Payroll validation failed');
         }
+        assertCurrent();
         const created = await transaction.payrollAmendment.create({
           data: {
             tenantId: identity.tenantId,
@@ -1427,15 +1532,18 @@ export class PayrollService {
             minuteDelta,
           },
         });
+        assertCurrent();
         const response = await this.serializeAmendment(transaction, identity.tenantId, created);
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_AMENDMENT_REQUESTED',
           resource: 'PayrollAmendment',
           resourceId: created.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_amendment_conflict', 'A saved payroll amendment does not match this request.', 'Conflict');
@@ -1450,6 +1558,9 @@ export class PayrollService {
     body: PayrollAmendmentDecisionRequest,
     idempotencyKeyRaw: string | undefined,
   ) {
+    identity = mutationIdentity(identity);
+    body = structuredClone(body);
+    const mutation = await this.prepareCurrentMutation(identity, 'time_cards:approve');
     const amendmentId = await this.resolveAmendmentId(identity, publicAmendmentId);
     const request = payrollRequestIdentity({
       tenantId: identity.tenantId,
@@ -1459,8 +1570,7 @@ export class PayrollService {
       body: { amendmentId, decision: body.decision, reason: body.reason?.trim() || null },
     });
     try {
-      return await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId, async (transaction) => {
-        await applyPayrollTransactionTimeouts(transaction);
+      return await mutation.run(async (transaction, assertCurrent) => {
         await lockPayrollTenant(transaction, identity.tenantId);
         const replay = await transaction.payrollAmendmentDecision.findUnique({ where: { operationId: request.operationId } });
         if (replay) {
@@ -1493,6 +1603,7 @@ export class PayrollService {
         }
         const existing = await transaction.payrollAmendmentDecision.findUnique({ where: { amendmentId: amendment.id } });
         if (existing) throw payrollProblem(409, 'payroll_amendment_decision_exists', 'A decision already exists for this payroll amendment.', 'Conflict');
+        assertCurrent();
         const created = await transaction.payrollAmendmentDecision.create({
           data: {
             tenantId: identity.tenantId,
@@ -1504,6 +1615,7 @@ export class PayrollService {
             decidedByUserId: identity.sub,
           },
         });
+        assertCurrent();
         const response = {
           amendmentId: amendment.publicId,
           decision: created.decision,
@@ -1511,20 +1623,58 @@ export class PayrollService {
           decidedByUserId: identity.publicUserId,
           decidedAt: created.decidedAt.toISOString(),
         };
+        assertCurrent();
         await writePayrollAudit(transaction, identity, {
           action: 'PAYROLL_AMENDMENT_DECIDED',
           resource: 'PayrollAmendment',
           resourceId: amendment.id,
           newValue: response,
         });
+        assertCurrent();
         return response;
-      }, TRANSACTION_OPTIONS));
+      });
     } catch (error) {
       if (isUniqueConflict(error)) {
         throw payrollProblem(409, 'payroll_amendment_decision_conflict', 'A payroll amendment decision already exists for this request.', 'Conflict');
       }
       throw error;
     }
+  }
+
+  private async prepareCurrentMutation(identity: SessionIdentity, permission: string): Promise<PayrollMutationScope> {
+    // Capture only the server-owned observer capability, once, before waits.
+    const observer = this.mfaObserver;
+    const observe = observer?.observeSessionMfa;
+    const preflight = await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId,
+      async transaction => {
+        await applyPayrollTransactionTimeouts(transaction);
+        return authorizeCurrentMutation(transaction, identity, permission);
+      }, TRANSACTION_OPTIONS));
+    let observation: MfaVerificationObservation | null = null;
+    if (preflight.requiresMfa) {
+      if (!observe) throw payrollProblem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+      try {
+        const value = await observe.call(observer, preflight.identity);
+        if (value) observation = Object.freeze({ sub: value.sub, tenantId: value.tenantId, sessionId: value.sessionId,
+          expiresAtEpochMs: value.expiresAtEpochMs, expiresAtMonotonicMs: value.expiresAtMonotonicMs });
+      } catch {
+        throw payrollProblem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
+      }
+    }
+    assertCurrentMutation(preflight, observation);
+    // All domain retries and replay-recovery calls reuse this finite observation.
+    return {
+      run: operation => retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId,
+        async transaction => {
+          await applyPayrollTransactionTimeouts(transaction);
+          const authority = await authorizeCurrentMutation(transaction, identity, permission);
+          const assertCurrent = () => assertCurrentMutation(authority, observation);
+          assertCurrent();
+          const response = await operation(transaction, assertCurrent);
+          assertCurrent();
+          return response;
+        }, TRANSACTION_OPTIONS)),
+    };
   }
 
   private async resolvePeriodId(identity: SessionIdentity, publicPeriodId: string): Promise<string> {
@@ -1740,25 +1890,29 @@ export class PayrollService {
     return amendment;
   }
 
-  private async serializedLockedEntries(transaction: TenantTransaction, tenantId: string, periodId: string) {
+  private async serializedLockedEntries(transaction: TenantTransaction, tenantId: string, periodId: string, assertCurrent: () => void = () => {}) {
     const rows = await transaction.payrollLockedEntry.findMany({
       where: { tenantId, periodId },
       orderBy: [{ sequence: 'asc' }, { publicId: 'asc' }],
       take: 5_001,
     });
+    assertCurrent();
     if (rows.length > 5_000) {
       throw payrollProblem(503, 'payroll_entry_limit_invalid', 'Stored payroll entry evidence exceeds the supported limit.', 'Service unavailable');
     }
     const [users, locations, timeCards, amendments] = await Promise.all([
-      this.publicUsers(transaction, tenantId, rows.flatMap((row) => [row.employeeId, row.approvedByUserId])),
-      this.publicLocations(transaction, tenantId, rows.map((row) => row.locationId)),
-      this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId)),
-      this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId)),
+      this.publicUsers(transaction, tenantId, rows.flatMap((row) => [row.employeeId, row.approvedByUserId]), assertCurrent),
+      this.publicLocations(transaction, tenantId, rows.map((row) => row.locationId), assertCurrent),
+      this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId), assertCurrent),
+      this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId), assertCurrent),
     ]);
-    const employeeNames = rows.length === 0 ? new Map<string, string>() : new Map((await transaction.user.findMany({
+    assertCurrent();
+    const employees = rows.length === 0 ? [] : await transaction.user.findMany({
       where: { tenantId, id: { in: [...new Set(rows.map((row) => row.employeeId))] } },
       select: { id: true, name: true },
-    })).map((user) => [user.id, user.name]));
+    });
+    assertCurrent();
+    const employeeNames = new Map(employees.map((user) => [user.id, user.name]));
     return rows.map((row) => ({
       id: row.publicId,
       sequence: row.sequence,
@@ -1786,14 +1940,17 @@ export class PayrollService {
     tenantId: string,
     periodId: string,
     status: PayrollRow['status'],
+    assertCurrent: () => void = () => {},
   ) {
-    const lockedEntryIds = status === 'LOCKED'
-      ? (await transaction.payrollLockedEntry.findMany({
+    const lockedEntries = status === 'LOCKED'
+      ? await transaction.payrollLockedEntry.findMany({
         where: { tenantId, periodId },
         select: { id: true },
         take: 5_001,
-      })).map((entry) => entry.id)
+      })
       : [];
+    assertCurrent();
+    const lockedEntryIds = lockedEntries.map((entry) => entry.id);
     const rows = await transaction.payrollAmendment.findMany({
       where: status === 'LOCKED'
         ? { tenantId, OR: [{ adjustmentPeriodId: periodId }, ...(lockedEntryIds.length > 0 ? [{ lockedEntryId: { in: lockedEntryIds } }] : [])] }
@@ -1801,24 +1958,28 @@ export class PayrollService {
       orderBy: [{ createdAt: 'asc' }, { publicId: 'asc' }],
       take: 5_001,
     });
+    assertCurrent();
     if (rows.length > 5_000) {
       throw payrollProblem(503, 'payroll_amendment_limit_invalid', 'Stored payroll amendment evidence exceeds the supported limit.', 'Service unavailable');
     }
     const decisions = rows.length === 0 ? [] : await transaction.payrollAmendmentDecision.findMany({
       where: { tenantId, amendmentId: { in: rows.map((row) => row.id) } },
     });
+    assertCurrent();
     const sources = rows.length === 0 ? [] : await transaction.payrollLockedEntry.findMany({
       where: { tenantId, id: { in: [...new Set(rows.map((row) => row.lockedEntryId))] } },
       select: { id: true, publicId: true, employeeId: true },
     });
+    assertCurrent();
     const [periods, users] = await Promise.all([
-      this.publicPeriods(transaction, tenantId, rows.map((row) => row.adjustmentPeriodId)),
+      this.publicPeriods(transaction, tenantId, rows.map((row) => row.adjustmentPeriodId), assertCurrent),
       this.publicUsers(transaction, tenantId, [
         ...rows.map((row) => row.requestedByUserId),
         ...decisions.map((decision) => decision.decidedByUserId),
         ...sources.map((source) => source.employeeId),
-      ]),
+      ], assertCurrent),
     ]);
+    assertCurrent();
     const sourceById = new Map(sources.map((source) => [source.id, source]));
     const decisionByAmendment = new Map(decisions.map((decision) => [decision.amendmentId, decision]));
     return rows.map((row) => {
@@ -1853,6 +2014,7 @@ export class PayrollService {
     batch: PayrollExportBatch,
     lineLimit: number,
     lineCursor: string | null,
+    assertCurrent: () => void = () => {},
   ) {
     const cursor = lineCursor
       ? await transaction.payrollExportLine.findFirst({
@@ -1860,6 +2022,7 @@ export class PayrollService {
         select: { lineNumber: true },
       })
       : null;
+    assertCurrent();
     if (lineCursor && !cursor) {
       throw payrollProblem(422, 'invalid_payroll_line_cursor', 'lineCursor is invalid for this payroll export.', 'Payroll validation failed');
     }
@@ -1872,6 +2035,7 @@ export class PayrollService {
       orderBy: [{ lineNumber: 'asc' }, { publicId: 'asc' }],
       take: lineLimit + 1,
     });
+    assertCurrent();
     const page = rows.slice(0, lineLimit);
     const [states, entries, users, periods] = await Promise.all([
       page.length === 0 ? [] : transaction.payrollReconciliationLineState.findMany({
@@ -1881,12 +2045,14 @@ export class PayrollService {
       this.publicUsers(transaction, tenantId, page.map((line) => line.employeeId)),
       this.publicPeriods(transaction, tenantId, [batch.periodId]),
     ]);
+    assertCurrent();
     const stateByLineId = new Map(states.map((state) => [state.lineId, state]));
     const stateCounts = await transaction.payrollReconciliationLineState.groupBy({
       by: ['status'],
       where: { tenantId, batchId: batch.id },
       _count: { _all: true },
     });
+    assertCurrent();
     const countByStatus = new Map(stateCounts.map((state) => [state.status, state._count._all]));
     const acceptedCount = countByStatus.get('ACCEPTED') ?? 0;
     const rejectedCount = countByStatus.get('REJECTED') ?? 0;
@@ -1898,7 +2064,9 @@ export class PayrollService {
       where: { tenantId, batchId: batch.id },
       orderBy: [{ receivedAt: 'desc' }, { publicId: 'desc' }],
     });
-    const contentSha256 = (await this.loadAndVerifyExportLines(transaction, tenantId, batch)).publicContentSha256;
+    assertCurrent();
+    const contentSha256 = (await this.loadAndVerifyExportLines(transaction, tenantId, batch, assertCurrent)).publicContentSha256;
+    assertCurrent();
     return {
       id: batch.publicId,
       periodId: this.requireMapped(periods, batch.periodId, 'payroll period'),
@@ -1944,8 +2112,9 @@ export class PayrollService {
     identity: SessionIdentity,
     periodId: string,
     request: { operationId: string; requestHash: string },
+    mutation: PayrollMutationScope,
   ): Promise<unknown | null> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    return mutation.run(async (transaction) => {
       const batch = await transaction.payrollExportBatch.findUnique({ where: { operationId: request.operationId } });
       if (!batch) return null;
       if (
@@ -1970,12 +2139,14 @@ export class PayrollService {
       consumedCredits: number;
       newBalance: number;
     },
+    assertCurrent: () => void = () => {},
   ): Promise<void> {
     const expectedId = `feature-usage-payroll-export:${batch.operationId}`;
     const ledger = await transaction.creditTransaction.findUnique({
       where: { id: batch.creditTransactionId },
       select: { id: true, tenantId: true, amount: true, debtAmount: true, reason: true, balanceAfter: true, debtAfter: true },
     });
+    assertCurrent();
     if (
       batch.creditTransactionId !== expectedId
       || !ledger
@@ -1995,6 +2166,7 @@ export class PayrollService {
     transaction: TenantTransaction,
     tenantId: string,
     batch: { id: string; rowCount: number; totalPayableMinutes: number; contentSha256: string },
+    assertCurrent: () => void = () => {},
   ) {
     if (batch.rowCount < 1 || batch.rowCount > MAX_PAYROLL_LOCK_ENTRIES) {
       throw payrollProblem(503, 'payroll_export_integrity_failed', 'Payroll evidence failed integrity verification.', 'Service unavailable');
@@ -2004,6 +2176,7 @@ export class PayrollService {
       orderBy: [{ lineNumber: 'asc' }, { id: 'asc' }],
       take: MAX_PAYROLL_LOCK_ENTRIES + 1,
     });
+    assertCurrent();
     if (rows.length !== batch.rowCount || rows.length > MAX_PAYROLL_LOCK_ENTRIES) {
       throw payrollProblem(503, 'payroll_export_integrity_failed', 'Payroll evidence failed integrity verification.', 'Service unavailable');
     }
@@ -2013,6 +2186,7 @@ export class PayrollService {
       this.publicTimeCards(transaction, tenantId, rows.filter((row) => row.sourceType === 'TIME_CARD').map((row) => row.sourceId)),
       this.publicAmendments(transaction, tenantId, rows.filter((row) => row.sourceType === 'AMENDMENT').map((row) => row.sourceId)),
     ]);
+    assertCurrent();
     let total = 0;
     let encoding: 'legacy' | 'public' | null = null;
     const lines = rows.map((row) => {
@@ -2096,8 +2270,9 @@ export class PayrollService {
     provider: string,
     providerEventId: string,
     payloadSha256: string,
+    mutation: PayrollMutationScope,
   ): Promise<unknown | null> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    return mutation.run(async (transaction) => {
       const receipt = await transaction.payrollReconciliationReceipt.findUnique({
         where: {
           tenantId_provider_providerEventId: {
@@ -2197,8 +2372,9 @@ export class PayrollService {
     });
   }
 
-  private async requirePeriod(transaction: TenantTransaction, tenantId: string, publicId: string): Promise<PayrollRow> {
+  private async requirePeriod(transaction: TenantTransaction, tenantId: string, publicId: string, assertCurrent: () => void = () => {}): Promise<PayrollRow> {
     const row = await transaction.payrollPeriod.findFirst({ where: { tenantId, publicId } }) as unknown as PayrollRow | null;
+    assertCurrent();
     if (!row) throw payrollProblem(404, 'payroll_period_not_found', 'The requested payroll period was not found in this workspace.', 'Not found');
     return row;
   }
@@ -2209,63 +2385,69 @@ export class PayrollService {
     return row;
   }
 
-  private async publicUsers(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicUsers(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.user.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicPolicies(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicPolicies(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollPolicyVersion.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicPeriods(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicPeriods(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollPeriod.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicLocations(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicLocations(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.location.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicTimeCards(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicTimeCards(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.timeCard.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 
-  private async publicAmendments(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[]): Promise<Map<string, string>> {
+  private async publicAmendments(transaction: TenantTransaction, tenantId: string, ids: readonly (string | null | undefined)[], assertCurrent: () => void = () => {}): Promise<Map<string, string>> {
     const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id)))];
     if (uniqueIds.length === 0) return new Map();
     const rows = await transaction.payrollAmendment.findMany({
       where: { tenantId, id: { in: uniqueIds } },
       select: { id: true, publicId: true },
     });
+    assertCurrent();
     return new Map(rows.map((row) => [row.id, row.publicId]));
   }
 

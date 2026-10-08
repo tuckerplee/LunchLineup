@@ -12,6 +12,7 @@ import { OnboardingSignupService } from './onboarding-signup.service';
 import { operationalErrorLog } from './operational-error';
 import { secureHttpRequest, type SecureRequestOptions } from '../common/secure-http-client';
 import { PUBLIC_LEGAL_MANIFEST, hasCurrentSelfServiceLegalApproval } from '@lunchlineup/config';
+import { isCurrentMfaObservation, observeMfaVerification, type MfaSessionIdentity, type MfaVerificationObservation } from '@lunchlineup/rbac';
 import {
     isPrismaUniqueConstraintConflict,
     isSerializableTransactionConflict,
@@ -29,7 +30,6 @@ const OIDC_STATE_TTL_SECONDS = 10 * 60;
 const KEY_OIDC_STATE = (state: string) => `oidc_state:${state}`;
 const KEY_SESSION_MFA = (sessionId: string) => `session_mfa:${sessionId}`;
 const MFA_ENROLLMENT_TTL_SECONDS = 10 * 60;
-const KEY_PENDING_MFA_ENROLLMENT = (sessionId: string, userId: string) => `mfa_enrollment:${sessionId}:${userId}`;
 const DEFAULT_MFA_ISSUER = 'LunchLineup';
 const MFA_BACKUP_CODE_COUNT = 10;
 const MAX_PROVISIONED_TENANT_NAME_LENGTH = 80;
@@ -83,6 +83,11 @@ type AuthenticatedUser = {
     pinResetRequired?: boolean | null;
 };
 
+type PinLoginProof = Readonly<{ username: string; pinHash: string }>;
+
+type PasswordLoginProof = Readonly<{ passwordHash: string }>;
+type EmailLoginProof = Readonly<{ email: string }>;
+
 type SessionRecord = {
     id: string;
     userId: string;
@@ -135,16 +140,20 @@ type RefreshCredential = SelectedRefreshCredential | LegacyRefreshCredential;
 
 type RefreshSession = Prisma.SessionGetPayload<{ include: { user: true } }>;
 
+type RefreshSessionLocator = { sessionId: string; userId: string; tenantId: string };
+type RefreshMfaObservation = RefreshSessionLocator & { verified: boolean };
+
 type RefreshRotationResult =
     | {
         status: 'rotated';
-        session: RefreshSession;
+        authorization: RefreshAuthorizationContext;
     }
     | {
         status: 'replayed';
         sessionId: string;
     }
-    | { status: 'invalid' };
+    | { status: 'invalid' }
+    | { status: 'needs-mfa-marker'; locator: RefreshSessionLocator };
 
 type RefreshAuthorizationContext = {
     session: RefreshSession;
@@ -606,8 +615,8 @@ export class AuthService implements OnModuleDestroy {
         }
 
         const key = KEY_OIDC_STATE(state);
-        const rawPayload = await this.getRedis().get(key);
-        await this.getRedis().del(key);
+        // Redis must claim the state atomically before any callback can exchange its code.
+        const rawPayload = await this.getRedis().getdel(key);
         if (!rawPayload) {
             throw new UnauthorizedException('Invalid OIDC state');
         }
@@ -769,6 +778,20 @@ export class AuthService implements OnModuleDestroy {
         return this.safeEqual(hash, computed);
     }
 
+    // Login KDF work must not block the event loop or hold a database row lock.
+    // Other PIN mutation callers retain their existing verification contracts.
+    private async verifyLoginPin(pin: string, storedHash: string): Promise<boolean> {
+        const [salt, hash] = storedHash.split(':');
+        if (!salt || !hash) return false;
+        const computed = await new Promise<Buffer>((resolve, reject) => {
+            crypto.scrypt(pin, salt, 64, (error, derivedKey) => {
+                if (error) reject(error);
+                else resolve(derivedKey);
+            });
+        });
+        return this.safeEqual(hash, computed.toString('hex'));
+    }
+
     private verifyLegacyPassword(password: string, storedHash: string): boolean {
         try {
             const normalizedHash = storedHash.replace(/^\$2y\$/, '$2a$');
@@ -911,14 +934,26 @@ export class AuthService implements OnModuleDestroy {
         source: SessionTokenAudit | string,
         resetLoginAttempts = true,
         mfaExemption: SessionMfaExemption = null,
+        pinProof?: PinLoginProof,
+        passwordProof?: PasswordLoginProof,
+        emailProof?: EmailLoginProof,
     ) {
         const audit = this.sessionTokenAudit(source);
         await this.assertTenantIdCanAuthenticate(user.tenantId);
-        const settings = await this.getTenantSecuritySettings(user.tenantId);
-        const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
         const refreshCredential = this.generateSelectedRefreshCredential();
         const issuance = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await this.lockTenantForSessionIssuance(tx, user.tenantId);
+            // Both settings implementations take this Tenant lock before
+            // reading/replacing their JSON aggregate. Keep policy decisions
+            // and session expiry inside the same protected issuance window.
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
+            if (settings.ssoOidcOnly && audit.loginMethod !== 'OIDC') {
+                if (audit.loginMethod === 'USERNAME_PIN') {
+                    throw new UnauthorizedException('Invalid username or PIN');
+                }
+                throw new ForbiddenException('This tenant requires SSO login.');
+            }
+            const expiresAt = new Date(Date.now() + settings.sessionTimeoutMinutes * 60 * 1000);
             await tx.$queryRaw(Prisma.sql`
                 SELECT "id"
                 FROM "User"
@@ -936,11 +971,34 @@ export class AuthService implements OnModuleDestroy {
             if (!lockedUser) {
                 throw new UnauthorizedException('User account inactive');
             }
+            if (audit.loginMethod === 'EMAIL_OTP' && (!emailProof
+                || lockedUser.email !== emailProof.email)) {
+                throw new UnauthorizedException('Invalid workspace or login');
+            }
+            if (audit.loginMethod === 'USERNAME_PASSWORD' && (!passwordProof
+                || lockedUser.passwordHash !== passwordProof.passwordHash)) {
+                throw new UnauthorizedException('Invalid username or password');
+            }
+            if (audit.loginMethod === 'USERNAME_PIN' && (!pinProof
+                || lockedUser.pinHash !== pinProof.pinHash
+                || lockedUser.username !== pinProof.username
+                || (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()))) {
+                throw new UnauthorizedException('Invalid username or PIN');
+            }
 
             // Role assignment mutations lock this same user row before replacing
             // access and revoking sessions. Resolve access only after the lock so
             // the session, permission, and MFA policy share one linearization point.
             const access = await this.rbacService.getEffectiveAccess(lockedUser.id, lockedUser.tenantId);
+            if (audit.loginMethod === 'EMAIL_OTP' && !access.permissions.includes('auth:login_email')) {
+                throw new UnauthorizedException('Invalid workspace or login');
+            }
+            if (audit.loginMethod === 'USERNAME_PASSWORD' && !access.permissions.includes('auth:login_password')) {
+                throw new UnauthorizedException('Invalid username or password');
+            }
+            if (audit.loginMethod === 'USERNAME_PIN' && !access.permissions.includes('auth:login_pin')) {
+                throw new UnauthorizedException('Invalid username or PIN');
+            }
             const mfaRequired = this.isMfaRequired(lockedUser, settings, access);
             const now = new Date();
             await tx.session.deleteMany({
@@ -1008,9 +1066,9 @@ export class AuthService implements OnModuleDestroy {
                     : { lastLoginAt: new Date() },
             });
 
-            return { session, user: lockedUser, access, mfaRequired };
+            return { session, user: lockedUser, access, mfaRequired, settings, expiresAt };
         }, SESSION_CREATION_TRANSACTION_OPTIONS);
-        const { session, user: currentUser, access, mfaRequired } = issuance;
+        const { session, user: currentUser, access, mfaRequired, settings, expiresAt } = issuance;
         const mfaVerified = !mfaRequired || mfaExemption === 'BETA_DEMO';
         if (mfaRequired && mfaExemption === 'BETA_DEMO') {
             try {
@@ -1210,7 +1268,11 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
             }
-            return { status: 'authenticated' as const, user: lockedUser };
+            return {
+                status: 'authenticated' as const,
+                user: lockedUser,
+                passwordProof: { passwordHash: lockedUser.passwordHash },
+            };
         });
 
         if (numericCredential) this.verifyPin(password, DUMMY_PIN_HASH);
@@ -1236,7 +1298,7 @@ export class AuthService implements OnModuleDestroy {
             tenantId: authenticatedUser.tenantId,
             role: authenticatedUser.role,
             mfaEnabled: authenticatedUser.mfaEnabled,
-        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false, betaDemoMfaBypass ? 'BETA_DEMO' : null);
+        }, { loginMethod: 'USERNAME_PASSWORD', ...audit }, false, betaDemoMfaBypass ? 'BETA_DEMO' : null, undefined, passwordAttempt.passwordProof);
     }
     async createPasswordReset(identifierRaw: string, tenantSlugRaw?: string): Promise<null> {
         const resetOutbox = new PasswordResetOutboxService(this.configService);
@@ -1281,16 +1343,20 @@ export class AuthService implements OnModuleDestroy {
                 return null;
             }
         } catch (err) {
-            if (err instanceof ForbiddenException) return null;
+            if (err instanceof ForbiddenException || err instanceof UnauthorizedException) return null;
             throw err;
         }
 
-        const resetToken = this.generatePasswordResetToken();
-        const tokenHash = this.hashPasswordResetToken(resetToken);
-        const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
-        const delivery = resetOutbox.createEncryptedEnvelope(user.email, resetToken, expiresAt);
-
-        await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+        await runSerializableMutationWithRetry(() => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
+            // Session issuance, account administration, role changes and the
+            // delivery worker all take Tenant -> User. Recheck the recipient
+            // and eligibility under that same fence before supersession.
+            const currentUser = await this.passwordResetUserInTransaction(tx, user.tenantId, user.id);
+            if (!currentUser?.email) return;
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
+            if (settings.ssoOidcOnly) return;
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, user.id, user.tenantId);
+            if (!access.permissions.includes('auth:login_password')) return;
             await tx.passwordResetToken.updateMany({
                 where: {
                     tenantId: user.tenantId,
@@ -1312,6 +1378,12 @@ export class AuthService implements OnModuleDestroy {
                     lastError: 'Superseded by a newer password reset request',
                 },
             });
+            // Start the new lifetime after lock and supersession waits. The
+            // envelope and durable token must share this exact expiry.
+            const resetToken = this.generatePasswordResetToken();
+            const tokenHash = this.hashPasswordResetToken(resetToken);
+            const expiresAt = new Date(Date.now() + PASSWORD_RESET_TOKEN_TTL_MINUTES * 60 * 1000);
+            const delivery = resetOutbox.createEncryptedEnvelope(currentUser.email, resetToken, expiresAt);
             await tx.passwordResetToken.create({
                 data: {
                     tenantId: user.tenantId,
@@ -1330,9 +1402,33 @@ export class AuthService implements OnModuleDestroy {
                     expiresAt,
                 },
             });
+        // READ COMMITTED makes policy reads after a waited lock fresh. A
+        // Serializable snapshot could predate that lock even when only a
+        // setting/grant (not the Tenant row) changed under its previous holder.
+        }, { isolationLevel: 'ReadCommitted' }), {
+            conflictMessage: 'Account or reset state changed concurrently; retry the request',
+        }).catch(err => {
+            // A now-ineligible account remains indistinguishable from an
+            // unknown account. Infrastructure and delivery failures propagate.
+            if (!(err instanceof UnauthorizedException || err instanceof ForbiddenException)) throw err;
         });
 
         return null;
+    }
+
+    private async passwordResetUserInTransaction(tx: TenantPrismaTransaction, tenantId: string, userId: string) {
+        await this.lockTenantForSessionIssuance(tx, tenantId);
+        await tx.$queryRaw`
+            SELECT "id" FROM "User"
+            WHERE "id" = ${userId} AND "tenantId" = ${tenantId}
+            FOR UPDATE
+        `;
+        // Recovery deliberately ignores credential lockout and needs no
+        // access Session, PIN or MFA proof. It still requires a live account.
+        return tx.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null, suspendedAt: null, passwordHash: { not: null } },
+            select: { id: true, tenantId: true, email: true, passwordHash: true },
+        });
     }
 
     async resetPasswordWithToken(
@@ -1347,40 +1443,35 @@ export class AuthService implements OnModuleDestroy {
 
         const tokenHash = this.hashPasswordResetToken(token);
         const password = this.validateNewPassword(passwordRaw);
-        const now = new Date();
         const audit = this.securityRequestAudit(requestAudit);
-        let revokedSessionIds: string[] = [];
-
-        await this.getTenantDb().withPlatformAdmin(async (tx) => {
-            const reset = await tx.passwordResetToken.findFirst({
+        const locator = await this.getTenantDb().withPlatformAdmin(tx => tx.passwordResetToken.findFirst({
                 where: { tokenHash },
                 include: { user: true },
+        }));
+        if (!locator || locator.consumedAt || locator.expiresAt <= new Date()
+            || locator.user.id !== locator.userId || locator.user.tenantId !== locator.tenantId
+            || locator.user.deletedAt || locator.user.suspendedAt || !locator.user.passwordHash) {
+            throw new UnauthorizedException('Invalid or expired reset token');
+        }
+        // Expensive preparation holds no authorization locks. None of the
+        // locator's account or time observations authorizes the final write.
+        const passwordHash = await this.hashNewPassword(password);
+        const revokedSessionIds = await runSerializableMutationWithRetry(() => this.getTenantDb().withTenant(
+            locator.tenantId, async (tx) => {
+            const currentUser = await this.passwordResetUserInTransaction(tx, locator.tenantId, locator.userId);
+            if (!currentUser) throw new UnauthorizedException('Invalid or expired reset token');
+            await tx.$queryRaw`
+                SELECT "id" FROM "PasswordResetToken"
+                WHERE "id" = ${locator.id} AND "tenantId" = ${locator.tenantId}
+                  AND "userId" = ${locator.userId} AND "tokenHash" = ${tokenHash}
+                FOR UPDATE
+            `;
+            const reset = await tx.passwordResetToken.findFirst({
+                where: { id: locator.id, tenantId: locator.tenantId, userId: locator.userId, tokenHash },
             });
-
-            if (!reset || reset.consumedAt || reset.expiresAt <= now || reset.user.deletedAt || reset.user.suspendedAt || !reset.user.passwordHash) {
+            if (!reset || reset.consumedAt || reset.expiresAt <= new Date()) {
                 throw new UnauthorizedException('Invalid or expired reset token');
             }
-
-            const tenant = await tx.tenant.findUnique({
-                where: { id: reset.tenantId },
-                select: { id: true, status: true, deletedAt: true },
-            });
-            this.assertTenantCanAuthenticate(tenant);
-
-            const passwordHash = await this.hashNewPassword(password);
-
-            const consumed = await tx.passwordResetToken.updateMany({
-                where: {
-                    id: reset.id,
-                    consumedAt: null,
-                    expiresAt: { gt: now },
-                },
-                data: { consumedAt: now },
-            });
-            if (consumed.count !== 1) {
-                throw new UnauthorizedException('Invalid or expired reset token');
-            }
-
             const activeSessions = await tx.session.findMany({
                 where: {
                     userId: reset.userId,
@@ -1388,7 +1479,21 @@ export class AuthService implements OnModuleDestroy {
                 },
                 select: { id: true },
             });
-            revokedSessionIds = activeSessions.map((session) => session.id);
+            // Use the statement's UTC database clock after all reads/waits,
+            // rather than an application timestamp captured before an await.
+            const consumed = await tx.$queryRaw<Array<{ id: string; consumedAt: Date }>>`
+                UPDATE "PasswordResetToken"
+                SET "consumedAt" = timezone('UTC', clock_timestamp())
+                WHERE "id" = ${reset.id} AND "tenantId" = ${locator.tenantId}
+                  AND "userId" = ${locator.userId} AND "tokenHash" = ${tokenHash}
+                  AND "consumedAt" IS NULL
+                  AND "expiresAt" > timezone('UTC', clock_timestamp())
+                RETURNING "id", "consumedAt"
+            `;
+            if (consumed.length !== 1 || consumed[0]?.id !== reset.id) {
+                throw new UnauthorizedException('Invalid or expired reset token');
+            }
+            const now = consumed[0].consumedAt;
 
             await tx.user.update({
                 where: { id: reset.userId },
@@ -1407,6 +1512,7 @@ export class AuthService implements OnModuleDestroy {
             });
             await tx.passwordResetToken.updateMany({
                 where: {
+                    tenantId: locator.tenantId,
                     userId: reset.userId,
                     consumedAt: null,
                 },
@@ -1426,6 +1532,9 @@ export class AuthService implements OnModuleDestroy {
                     userAgent: audit.userAgent,
                 },
             });
+            return activeSessions.map(session => session.id);
+        }, { isolationLevel: 'ReadCommitted' }), {
+            conflictMessage: 'Account or reset state changed concurrently; retry the request',
         });
 
         try {
@@ -1552,7 +1661,7 @@ export class AuthService implements OnModuleDestroy {
             tenantId: user.tenantId,
             role: user.role,
             mfaEnabled: user.mfaEnabled,
-        }, { loginMethod: 'EMAIL_OTP', ...audit });
+        }, { loginMethod: 'EMAIL_OTP', ...audit }, true, null, undefined, undefined, { email });
         return { ...session, workspaceSlug };
     }
 
@@ -1565,7 +1674,7 @@ export class AuthService implements OnModuleDestroy {
         const username = this.normalizeIdentifier(identifierRaw);
         const pin = typeof pinRaw === 'string' ? pinRaw : '';
         if (!username || !this.isPin(pin)) {
-            this.verifyPin('invalid-pin', DUMMY_PIN_HASH);
+            await this.verifyLoginPin('invalid-pin', DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
@@ -1576,10 +1685,12 @@ export class AuthService implements OnModuleDestroy {
         }));
 
         if (!user || !user.pinHash) {
-            this.verifyPin(pin, DUMMY_PIN_HASH);
+            await this.verifyLoginPin(pin, DUMMY_PIN_HASH);
             throw new UnauthorizedException('Invalid username or PIN');
         }
 
+        const pinProof: PinLoginProof = { username, pinHash: user.pinHash };
+        const validPin = await this.verifyLoginPin(pin, pinProof.pinHash);
         const pinAttempt = await this.getTenantDb().withTenant(user.tenantId, async (tx) => {
             await tx.$queryRaw`
                 SELECT "id"
@@ -1591,15 +1702,16 @@ export class AuthService implements OnModuleDestroy {
                 where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
             });
 
-            if (!lockedUser?.pinHash) {
-                this.verifyPin(pin, DUMMY_PIN_HASH);
+            // A credential or identity change invalidates this verification;
+            // never charge a stale guess against the replacement credential.
+            if (!lockedUser?.pinHash || lockedUser.pinHash !== pinProof.pinHash
+                || lockedUser.username !== pinProof.username) {
                 return { status: 'invalid' as const };
             }
             if (lockedUser.pinLockedUntil && lockedUser.pinLockedUntil > new Date()) {
-                this.verifyPin(pin, DUMMY_PIN_HASH);
                 return { status: 'locked' as const };
             }
-            if (!this.verifyPin(pin, lockedUser.pinHash)) {
+            if (!validPin) {
                 const attempts = lockedUser.pinLoginAttempts + 1;
                 await tx.user.update({
                     where: { id: lockedUser.id },
@@ -1643,7 +1755,7 @@ export class AuthService implements OnModuleDestroy {
             role: authenticatedUser.role,
             mfaEnabled: authenticatedUser.mfaEnabled,
             pinResetRequired: authenticatedUser.pinResetRequired,
-        }, { loginMethod: 'USERNAME_PIN', ...audit });
+        }, { loginMethod: 'USERNAME_PIN', ...audit }, true, null, pinProof);
     }
     async resetUserPinAsAdmin(
         userId: string,
@@ -1660,93 +1772,123 @@ export class AuthService implements OnModuleDestroy {
         const now = new Date();
         const data = this.buildPinCredentialData(normalizedPin, true, now);
         const audit = this.securityRequestAudit(requestAudit);
-        const reset = await runSerializableMutationWithRetry(
-            () => this.getTenantDb().withTenant(tenantId, async (tx) => {
-                    let usernameBootstrapAttempted = false;
-                    const user = await this.rbacService.authorizeUserAdministrationInTransaction(
-                        tx,
-                        tenantId,
-                        {
-                            actorUserId,
-                            actorSessionId,
-                            targetUserId: userId,
-                            requiredPermission: 'users:admin',
-                            selfMutationMessage: 'Use the self-service PIN rotation route for your own account',
-                        },
-                    );
+        if (actorUserId?.trim() === userId?.trim()) {
+            throw new ForbiddenException('Use the self-service PIN rotation route for your own account');
+        }
+        const reset = await this.rbacService.runCurrentMutation({
+            actor: { userId: actorUserId, tenantId, sessionId: actorSessionId },
+            requiredPermission: 'users:admin', mfaObserver: this,
+            isConflict: (error) => error instanceof UsernameReservationConflict
+                || isSerializableTransactionConflict(error),
+            conflictMessage: (error) => error instanceof UsernameReservationConflict
+                ? 'Unable to reserve a unique username; retry the PIN reset'
+                : 'Authorization or PIN state changed concurrently; retry the request',
+        }, (tx, actor) => this.rbacService.authorizeUserAdministrationInTransaction(tx, tenantId, {
+            actorUserId: actor.userId, actorSessionId: actor.sessionId, targetUserId: userId,
+            requiredPermission: 'users:admin',
+            selfMutationMessage: 'Use the self-service PIN rotation route for your own account',
+        }), async (tx, user, assertCurrent, actor) => {
+            let usernameBootstrapAttempted = false;
+            let username = user.username;
+            if (!username) {
+                if (!this.canBootstrapPinUsername(user.email)) {
+                    throw new BadRequestException('PIN reset is only available for username accounts');
+                }
+                usernameBootstrapAttempted = true;
+                username = await this.generateUniqueUsername(tx, tenantId, user.name);
+            }
 
-                    let username = user.username;
-                    if (!username) {
-                        if (!this.canBootstrapPinUsername(user.email)) {
-                            throw new BadRequestException('PIN reset is only available for username accounts');
-                        }
-                        usernameBootstrapAttempted = true;
-                        username = await this.generateUniqueUsername(tx, tenantId, user.name);
-                    }
-
-                    const activeSessions = await tx.session.findMany({
-                        where: { userId, revokedAt: null },
-                        select: { id: true },
-                    });
-                    let updated: { count: number };
-                    try {
-                        updated = await tx.user.updateMany({
-                            where: { id: userId, tenantId, deletedAt: null },
-                            data: {
-                                ...data,
-                                username,
-                            },
-                        });
-                    } catch (error) {
-                        if (usernameBootstrapAttempted && isPrismaUniqueConstraintConflict(error)) {
-                            throw new UsernameReservationConflict();
-                        }
-                        throw error;
-                    }
-                    if (updated.count !== 1) {
-                        throw new UnauthorizedException('User account inactive');
-                    }
-                    const sessions = await tx.session.updateMany({
-                        where: { userId, revokedAt: null },
-                        data: { revokedAt: now },
-                    });
-                    await tx.auditLog.create({
-                        data: {
-                            tenantId,
-                            userId: actorUserId,
-                            actorUserId,
-                            actorTenantId: tenantId,
-                            action: 'USER_PIN_RESET',
-                            resource: 'User',
-                            resourceId: userId,
-                            newValue: {
-                                pinResetRequired: true,
-                                sessionsRevoked: sessions.count,
-                            },
-                            ipAddress: audit.ipAddress,
-                            userAgent: audit.userAgent,
-                        },
-                    });
-
-                    return {
+            const activeSessions = await tx.session.findMany({
+                where: { userId, revokedAt: null },
+                select: { id: true },
+            });
+            let updated: { count: number };
+            try {
+                assertCurrent();
+                updated = await tx.user.updateMany({
+                    where: { id: userId, tenantId, deletedAt: null },
+                    data: {
+                        ...data,
                         username,
-                        revokedSessionIds: activeSessions.map((session) => session.id),
-                    };
-                }, { isolationLevel: 'Serializable' }),
-            {
-                isConflict: (error) => error instanceof UsernameReservationConflict
-                    || isSerializableTransactionConflict(error),
-                conflictMessage: (error) => error instanceof UsernameReservationConflict
-                    ? 'Unable to reserve a unique username; retry the PIN reset'
-                    : 'Authorization or PIN state changed concurrently; retry the request',
-            },
-        );
+                    },
+                });
+            } catch (error) {
+                if (usernameBootstrapAttempted && isPrismaUniqueConstraintConflict(error)) {
+                    throw new UsernameReservationConflict();
+                }
+                throw error;
+            }
+            if (updated.count !== 1) {
+                throw new UnauthorizedException('User account inactive');
+            }
+            assertCurrent();
+            const sessions = await tx.session.updateMany({
+                where: { userId, revokedAt: null },
+                data: { revokedAt: now },
+            });
+            assertCurrent();
+            await tx.auditLog.create({
+                data: {
+                    tenantId,
+                    userId: actor.userId,
+                    actorUserId: actor.userId,
+                    actorTenantId: tenantId,
+                    action: 'USER_PIN_RESET',
+                    resource: 'User',
+                    resourceId: userId,
+                    newValue: {
+                        pinResetRequired: true,
+                        sessionsRevoked: sessions.count,
+                    },
+                    ipAddress: audit.ipAddress,
+                    userAgent: audit.userAgent,
+                },
+            });
+
+            return {
+                username,
+                revokedSessionIds: activeSessions.map((session) => session.id),
+            };
+        });
 
         await this.clearSessionMfaMarkersBestEffort(
             reset.revokedSessionIds,
             'auth.admin_pin_reset_mfa_cleanup_failed',
         );
         return { username: reset.username };
+    }
+
+    private async selfSecurityContextInTransaction(
+        tx: TenantPrismaTransaction,
+        tenantId: string,
+        userId: string,
+        sessionId: string,
+        options: { allowPinReset?: boolean; requiredPermission?: 'auth:login_pin' } = {},
+    ) {
+        // Retain Tenant -> User -> exact Session -> current roles/grants locks.
+        // Refresh eligibility and effective lifetime after those waits; callers
+        // must recheck deadlines after any additional waits before writing.
+        const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(tx, tenantId, {
+            actorUserId: userId, actorSessionId: sessionId, requiredPermission: options.requiredPermission,
+        });
+        const tenant = await tx.tenant.findUnique({
+            where: { id: tenantId }, select: { id: true, status: true, deletedAt: true },
+        });
+        this.assertTenantCanAuthenticate(tenant);
+        const user = await tx.user.findFirst({
+            where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
+            select: { id: true, tenantId: true, role: true, email: true, username: true,
+                pinHash: true, pinResetRequired: true, mfaEnabled: true, mfaSecret: true, mfaBackupCodes: true },
+        });
+        if (!user) throw new UnauthorizedException('User not found');
+        if (user.pinResetRequired && !options.allowPinReset) {
+            throw new ForbiddenException('PIN rotation required before MFA access');
+        }
+        const session = await tx.session.findFirst({ where: { id: sessionId, userId } });
+        if (!session) throw new UnauthorizedException('Invalid or expired session');
+        const settings = await this.tenantSecuritySettingsInTransaction(tx, tenantId);
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        return { user, session, settings, access, effectiveExpiresAt };
     }
 
     async rotateOwnPin(
@@ -1764,20 +1906,33 @@ export class AuthService implements OnModuleDestroy {
             throw new BadRequestException('New PIN must differ from the temporary PIN');
         }
 
-        const now = new Date();
-        const data = this.buildPinCredentialData(newPin, false, now);
+        // Observe MFA outside retained database locks, then repeat current
+        // authorization in the write transaction. Forced reset is the explicit
+        // recovery exception; ordinary PIN changes follow current MFA policy.
+        const identity = { sub: userId, tenantId, sessionId: actorSessionId };
+        const preflight = await this.getTenantDb().withTenant(tenantId, tx =>
+            this.selfSecurityContextInTransaction(tx, tenantId, userId, actorSessionId,
+                { allowPinReset: true, requiredPermission: 'auth:login_pin' }));
+        const observation = !preflight.user.pinResetRequired
+            && this.isMfaRequired(preflight.user, preflight.settings, preflight.access)
+            ? await this.observeSessionMfa(identity) : null;
+        // New credential generation is independent of persisted authority.
+        // Keep this KDF outside locks and reuse it across bounded retries.
+        const preparedCredential = this.buildPinCredentialData(newPin, false);
         const audit = this.securityRequestAudit(requestAudit);
         const revokedSessionIds = await runSerializableMutationWithRetry(
             () => this.getTenantDb().withTenant(tenantId, async (tx) => {
-            await this.rbacService.authorizeSelfSecurityMutationInTransaction(tx, tenantId, {
-                actorUserId: userId,
-                actorSessionId,
-                requiredPermission: 'auth:login_pin',
-            });
-            const user = await tx.user.findFirst({
-                where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
-                select: { id: true, username: true, pinHash: true },
-            });
+            const { user, session, settings, access } = await this.selfSecurityContextInTransaction(
+                tx, tenantId, userId, actorSessionId,
+                { allowPinReset: true, requiredPermission: 'auth:login_pin' });
+            const assertCurrentAuthority = () => {
+                this.assertSessionActive(session, settings);
+                if (!user.pinResetRequired && this.isMfaRequired(user, settings, access)
+                    && !isCurrentMfaObservation(observation, identity)) {
+                    throw new ForbiddenException('MFA verification required before PIN change');
+                }
+            };
+            assertCurrentAuthority();
             if (!user || !user.username || !user.pinHash) {
                 throw new ForbiddenException('PIN change is only available for username accounts');
             }
@@ -1789,6 +1944,10 @@ export class AuthService implements OnModuleDestroy {
                 where: { userId, revokedAt: null },
                 select: { id: true },
             });
+            assertCurrentAuthority();
+            const now = new Date();
+            const data = { ...preparedCredential, pinSetAt: now };
+            assertCurrentAuthority();
             const updated = await tx.user.updateMany({
                 where: { id: userId, tenantId, deletedAt: null, suspendedAt: null },
                 data,
@@ -1796,10 +1955,12 @@ export class AuthService implements OnModuleDestroy {
             if (updated.count !== 1) {
                 throw new UnauthorizedException('User account inactive');
             }
+            assertCurrentAuthority();
             const sessions = await tx.session.updateMany({
                 where: { userId, revokedAt: null },
                 data: { revokedAt: now },
             });
+            assertCurrentAuthority();
             await tx.auditLog.create({
                 data: {
                     tenantId,
@@ -1818,6 +1979,7 @@ export class AuthService implements OnModuleDestroy {
                 },
             });
 
+            assertCurrentAuthority();
             return activeSessions.map((session) => session.id);
             }, { isolationLevel: 'Serializable' }),
             { conflictMessage: 'Authorization or PIN state changed concurrently; retry the request' },
@@ -1829,101 +1991,71 @@ export class AuthService implements OnModuleDestroy {
         );
     }
 
-    private async prepareRefreshAuthorization(
+    private async locateRefreshSession(
         credential: RefreshCredential,
-    ): Promise<RefreshAuthorizationContext | null> {
-        const session = await this.getTenantDb().withPlatformAdmin((tx) => tx.session.findFirst({
-            where: credential.kind === 'selected'
-                ? { selectorHash: credential.selectorHash }
-                : { refreshToken: { in: credential.candidates } },
-            include: { user: true },
-        }));
-        if (!session) return null;
-
-        const currentCredentialMatches = credential.kind === 'selected'
-            ? session.refreshToken === credential.validatorHash
-            : credential.candidates.includes(session.refreshToken);
-        if (!currentCredentialMatches) return null;
-        if (
-            session.revokedAt
-            || session.expiresAt <= new Date()
-            || session.user.deletedAt
-            || session.user.suspendedAt
-        ) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-
-        await this.assertTenantIdCanAuthenticate(session.user.tenantId);
-        const settings = await this.getTenantSecuritySettings(session.user.tenantId);
-        const effectiveExpiresAt = this.assertSessionActive(session, settings);
-        const access = await this.rbacService.getEffectiveAccess(session.user.id, session.user.tenantId);
-        const mfaRequired = this.isMfaRequired(session.user, settings, access);
-        const mfaVerified = !mfaRequired || await this.isSessionMfaVerified(session.id);
-
-        return {
-            session,
-            access,
-            effectiveExpiresAt,
-            mfaRequired,
-            mfaVerified,
-        };
+    ): Promise<RefreshSessionLocator | null> {
+        return this.getTenantDb().withPlatformAdmin(async (tx) => {
+            let session = await tx.session.findFirst({
+                where: credential.kind === 'selected'
+                    ? { selectorHash: credential.selectorHash }
+                    : { refreshToken: { in: credential.candidates } },
+                include: { user: true },
+            });
+            if (!session && credential.kind === 'legacy') {
+                const replay = await tx.refreshTokenReplay.findUnique({
+                    where: { validatorHash: credential.candidates[0] },
+                    select: { sessionId: true },
+                });
+                if (replay) session = await tx.session.findFirst({
+                    where: { id: replay.sessionId },
+                    include: { user: true },
+                });
+            }
+            // This lookup supplies lock identities only. All authority and
+            // credential decisions are repeated after acquiring those locks.
+            return session ? {
+                sessionId: session.id,
+                userId: session.userId,
+                tenantId: session.user.tenantId,
+            } : null;
+        });
     }
 
     private async rotateRefreshCredential(
         credential: RefreshCredential,
         rotatedCredential: SelectedRefreshCredential,
-        allowRotation: boolean,
+        locator: RefreshSessionLocator,
+        marker?: RefreshMfaObservation,
     ): Promise<RefreshRotationResult> {
         return this.getTenantDb().withPlatformAdmin(async (tx) => {
-            let session: RefreshSession | null;
-            let legacyReplayHash: string | null = null;
-
-            if (credential.kind === 'selected') {
-                await tx.$queryRaw`
-                    SELECT "id"
-                    FROM "Session"
-                    WHERE "selectorHash" = ${credential.selectorHash}
-                    FOR UPDATE
-                `;
-                session = await tx.session.findFirst({
-                    where: { selectorHash: credential.selectorHash },
-                    include: { user: true },
-                });
-            } else {
-                legacyReplayHash = credential.candidates[0];
-                const candidate = await tx.session.findFirst({
-                    where: { refreshToken: { in: credential.candidates } },
-                    select: { id: true },
-                });
-                const replay = candidate
-                    ? null
-                    : await tx.refreshTokenReplay.findUnique({
-                        where: { validatorHash: legacyReplayHash },
-                        select: { sessionId: true },
-                    });
-                const sessionId = candidate?.id ?? replay?.sessionId;
-                if (!sessionId) return { status: 'invalid' };
-
-                await tx.$queryRaw`
-                    SELECT "id"
-                    FROM "Session"
-                    WHERE "id" = ${sessionId}
-                    FOR UPDATE
-                `;
-                session = await tx.session.findFirst({
-                    where: { id: sessionId },
-                    include: { user: true },
-                });
-            }
+            // Defer tenant eligibility until after replay classification: a
+            // known predecessor must still revoke its family when access fails.
+            await tx.$queryRaw`
+                SELECT "id" FROM "Tenant" WHERE "id" = ${locator.tenantId} FOR UPDATE
+            `;
+            await tx.$queryRaw`
+                SELECT "id" FROM "User"
+                WHERE "id" = ${locator.userId} AND "tenantId" = ${locator.tenantId} FOR UPDATE
+            `;
+            await tx.$queryRaw`
+                SELECT "id" FROM "Session"
+                WHERE "id" = ${locator.sessionId} AND "userId" = ${locator.userId} FOR UPDATE
+            `;
+            const session = await tx.session.findFirst({
+                where: { id: locator.sessionId, userId: locator.userId },
+                include: { user: true },
+            });
 
             const now = new Date();
-            if (!session || session.revokedAt || session.expiresAt <= now || session.user.deletedAt || session.user.suspendedAt) {
+            if (!session || session.revokedAt
+                || session.user.id !== locator.userId || session.user.tenantId !== locator.tenantId
+                || credential.kind === 'selected' && session.selectorHash !== credential.selectorHash) {
                 return { status: 'invalid' };
             }
 
             const suppliedValidatorHash = credential.kind === 'selected'
                 ? credential.validatorHash
-                : legacyReplayHash;
+                : credential.candidates[0];
             const currentCredentialMatches = credential.kind === 'selected'
                 ? session.refreshToken === credential.validatorHash
                 : credential.candidates.includes(session.refreshToken);
@@ -1940,15 +2072,31 @@ export class AuthService implements OnModuleDestroy {
                 }
 
                 await tx.session.updateMany({
-                    where: { id: session.id, revokedAt: null },
+                    where: { id: session.id, userId: locator.userId, revokedAt: null },
                     data: { revokedAt: now },
                 });
                 return { status: 'replayed', sessionId: session.id };
             }
 
-            if (!allowRotation) {
+            if (session.expiresAt <= now || session.user.deletedAt || session.user.suspendedAt) {
                 return { status: 'invalid' };
             }
+
+            const tenant = await tx.tenant.findUnique({
+                where: { id: locator.tenantId },
+                select: { id: true, status: true, deletedAt: true },
+            });
+            this.assertTenantCanAuthenticate(tenant);
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, locator.tenantId);
+            const effectiveExpiresAt = this.assertSessionActive(session, settings);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, locator.userId, locator.tenantId);
+            const mfaRequired = this.isMfaRequired(session.user, settings, access);
+            const markerMatches = marker?.sessionId === session.id
+                && marker.userId === locator.userId && marker.tenantId === locator.tenantId;
+            if (mfaRequired && !markerMatches) {
+                return { status: 'needs-mfa-marker', locator };
+            }
+            const mfaVerified = !mfaRequired || marker?.verified === true;
 
             await tx.refreshTokenReplay.create({
                 data: {
@@ -1982,7 +2130,7 @@ export class AuthService implements OnModuleDestroy {
                 throw new UnauthorizedException('Invalid or expired refresh token');
             }
 
-            return { status: 'rotated', session };
+            return { status: 'rotated', authorization: { session, access, effectiveExpiresAt, mfaRequired, mfaVerified } };
         });
     }
     async refreshAccessToken(refreshTokenRaw: unknown) {
@@ -1991,22 +2139,25 @@ export class AuthService implements OnModuleDestroy {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
 
-        const authorization = await this.prepareRefreshAuthorization(credential);
+        const locator = await this.locateRefreshSession(credential);
+        if (!locator) throw new UnauthorizedException('Invalid or expired refresh token');
         const rotatedCredential = this.generateSelectedRefreshCredential();
-        const rotation = await this.rotateRefreshCredential(credential, rotatedCredential, Boolean(authorization));
+        let rotation = await this.rotateRefreshCredential(credential, rotatedCredential, locator);
+        if (rotation.status === 'needs-mfa-marker') {
+            const observation: RefreshMfaObservation = {
+                ...rotation.locator,
+                verified: await this.isSessionMfaVerified(rotation.locator.sessionId),
+            };
+            rotation = await this.rotateRefreshCredential(credential, rotatedCredential, locator, observation);
+        }
         if (rotation.status === 'replayed') {
-            await this.getRedis().del(KEY_SESSION_MFA(rotation.sessionId));
+            await this.clearSessionMfaMarkersBestEffort([rotation.sessionId], 'auth.refresh_replay_mfa_cleanup_failed');
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
-        if (rotation.status === 'invalid') {
+        if (rotation.status !== 'rotated') {
             throw new UnauthorizedException('Invalid or expired refresh token');
         }
-        if (!authorization) {
-            throw new UnauthorizedException('Invalid or expired refresh token');
-        }
-
-        const { session } = rotation;
-        const { access, effectiveExpiresAt, mfaRequired, mfaVerified } = authorization;
+        const { session, access, effectiveExpiresAt, mfaRequired, mfaVerified } = rotation.authorization;
         const payload: TokenPayload = {
             sub: session.user.id,
             tenantId: session.user.tenantId,
@@ -2085,6 +2236,21 @@ export class AuthService implements OnModuleDestroy {
     private async isSessionMfaVerified(sessionId: string): Promise<boolean> {
         const value = await this.getRedis().get(KEY_SESSION_MFA(sessionId));
         return value === '1';
+    }
+
+    async observeSessionMfa(identity: MfaSessionIdentity): Promise<MfaVerificationObservation | null> {
+        const redis = this.getRedis();
+        // Reuse the managed client, but never enqueue this observation while it
+        // is offline. The bounded read only affects the mutation decision; it
+        // does not change existing authentication retry behavior.
+        if (redis.status !== 'ready') {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
+        try {
+            return await observeMfaVerification(identity, (script, key) => redis.eval(script, 1, key));
+        } catch {
+            throw new ServiceUnavailableException('MFA verification is temporarily unavailable');
+        }
     }
 
     private async markSessionMfaVerified(sessionId: string, expiresAt: Date): Promise<void> {
@@ -2451,28 +2617,92 @@ export class AuthService implements OnModuleDestroy {
         };
     }
 
+    private async assertMfaEnrollmentLifetimeInTransaction(
+        tx: TenantPrismaTransaction,
+        session: SessionRecord,
+        settings: TenantSecuritySettings,
+        enrollmentExpiresAt?: Date,
+    ): Promise<Date> {
+        // A statement clock is required after lock/proof/write waits. The
+        // transaction-start clock and the process clock cannot authorize an
+        // expired durable challenge. Timestamp columns are stored as UTC.
+        const rows = await tx.$queryRaw<Array<{ now: Date }>>`
+            SELECT timezone('UTC', clock_timestamp()) AS "now"
+        `;
+        const now = rows.length === 1 ? rows[0]?.now : null;
+        if (!(now instanceof Date) || !Number.isFinite(now.getTime())) {
+            throw new ServiceUnavailableException('MFA enrollment is temporarily unavailable');
+        }
+        const effectiveExpiresAt = this.assertSessionActive(session, settings);
+        if (effectiveExpiresAt <= now) throw new UnauthorizedException('Invalid or expired session');
+        if (enrollmentExpiresAt && enrollmentExpiresAt <= now) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        return now;
+    }
+
+    private encryptDurableMfaSecret(secret: string): string {
+        const encrypted = this.encryptMfaSecret(secret);
+        if (!encrypted.startsWith(CURRENT_ENCRYPTED_MFA_SECRET_PREFIX)
+            && !encrypted.startsWith(ENCRYPTED_MFA_SECRET_PREFIX)) {
+            throw new ServiceUnavailableException('MFA enrollment is not configured.');
+        }
+        return encrypted;
+    }
+
+    private decryptPendingMfaEnrollment(stored: unknown): string {
+        // Durable pending material never permits the development plaintext
+        // fallback supported for historical account secrets. Both authenticated
+        // managed-key v2 and configured legacy-key v1 envelopes can be read.
+        if (typeof stored !== 'string'
+            || (!stored.startsWith(CURRENT_ENCRYPTED_MFA_SECRET_PREFIX)
+                && !stored.startsWith(ENCRYPTED_MFA_SECRET_PREFIX))) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        const secret = this.decryptMfaSecret(stored);
+        if (!secret || !/^[A-Z2-7]{32}$/.test(secret)) {
+            throw new BadRequestException('MFA enrollment has expired');
+        }
+        return secret;
+    }
+
     async beginMfaEnrollment(
         userId: string,
         sessionClaims: { tenantId: string; sessionId: string },
     ) {
-        const { user } = await this.loadMfaSessionContext(userId, sessionClaims);
-        if (user.mfaEnabled && user.mfaSecret) {
-            throw new BadRequestException('MFA is already enabled');
-        }
-
-        const secret = this.generateBase32Secret();
-        await this.getRedis().set(
-            KEY_PENDING_MFA_ENROLLMENT(sessionClaims.sessionId, user.id),
-            secret,
-            'EX',
-            MFA_ENROLLMENT_TTL_SECONDS,
+        return runSerializableMutationWithRetry(
+            () => this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+                const { user, session, settings } = await this.selfSecurityContextInTransaction(
+                    tx, sessionClaims.tenantId, userId, sessionClaims.sessionId);
+                if (user.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+                const secret = this.generateBase32Secret();
+                const encryptedSecret = this.encryptDurableMfaSecret(secret);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings);
+                const rows = await tx.$queryRaw<Array<{ id: string; mfaEnrollmentExpiresAt: Date }>>`
+                    UPDATE "Session"
+                    SET "mfaEnrollmentSecret" = ${encryptedSecret},
+                        "mfaEnrollmentExpiresAt" = timezone('UTC', clock_timestamp())
+                            + ${MFA_ENROLLMENT_TTL_SECONDS} * interval '1 second'
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                        AND "expiresAt" > timezone('UTC', clock_timestamp())
+                    RETURNING "id", "mfaEnrollmentExpiresAt"
+                `;
+                const expiresAt = rows.length === 1 && rows[0]?.id === session.id
+                    ? rows[0].mfaEnrollmentExpiresAt : null;
+                if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) {
+                    throw new UnauthorizedException('Invalid or expired session');
+                }
+                const now = await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                return {
+                    secret,
+                    otpauthUrl: this.buildOtpAuthUrl(secret, user),
+                    expiresInSeconds: Math.min(MFA_ENROLLMENT_TTL_SECONDS,
+                        Math.ceil((expiresAt.getTime() - now.getTime()) / 1000)),
+                };
+            }, { isolationLevel: 'ReadCommitted' }),
+            { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
         );
-
-        return {
-            secret,
-            otpauthUrl: this.buildOtpAuthUrl(secret, user),
-            expiresInSeconds: MFA_ENROLLMENT_TTL_SECONDS,
-        };
     }
 
     async confirmMfaEnrollment(
@@ -2481,107 +2711,105 @@ export class AuthService implements OnModuleDestroy {
         sessionClaims: { tenantId: string; sessionId: string },
         requestAudit: SessionRequestAudit = {},
     ) {
-        const { user, session } = await this.loadMfaSessionContext(userId, sessionClaims);
-        const key = KEY_PENDING_MFA_ENROLLMENT(session.id, user.id);
-        const secret = await this.getRedis().get(key);
-        if (!secret) {
-            throw new BadRequestException('MFA enrollment has expired');
-        }
-
         const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
-        const matchedTotpTimeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
-        if (matchedTotpTimeStep === null) {
-            throw new ForbiddenException('Invalid MFA code');
-        }
-
         const backupCodes = this.generateBackupCodes();
         const audit = this.securityRequestAudit(requestAudit);
         const committed = await runSerializableMutationWithRetry(
-            () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
-                tx,
-                user.tenantId,
-                { actorUserId: user.id, actorSessionId: session.id },
-            );
-            const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
-                select: {
-                    id: true,
-                    tenantId: true,
-                    role: true,
-                    email: true,
-                    username: true,
-                    pinResetRequired: true,
-                    mfaEnabled: true,
-                },
-            });
-            if (!currentUser) throw new UnauthorizedException('User not found');
-            if (currentUser.pinResetRequired) {
-                throw new ForbiddenException('PIN rotation required before MFA access');
-            }
-            if (currentUser.mfaEnabled) throw new BadRequestException('MFA is already enabled');
-            const currentSession = await tx.session.findFirst({
-                where: { id: session.id, userId: currentUser.id },
-            });
-            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
-            const settings = await this.tenantSecuritySettingsInTransaction(tx, currentUser.tenantId);
-            const effectiveExpiresAt = this.assertSessionActive(currentSession, settings);
-
-            await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
-            await tx.user.update({
-                where: { id: user.id },
-                data: {
-                    mfaEnabled: true,
-                    mfaSecret: this.encryptMfaSecret(secret),
-                    mfaBackupCodes: backupCodes.map((backupCode) => this.hashBackupCode(backupCode)),
-                },
-            });
-            await tx.auditLog.create({
-                data: {
-                    tenantId: user.tenantId,
-                    userId: user.id,
-                    actorUserId: user.id,
-                    actorTenantId: user.tenantId,
-                    action: 'MFA_ENABLED',
-                    resource: 'User',
-                    resourceId: user.id,
-                    newValue: { mfaEnabled: true },
-                    ipAddress: audit.ipAddress,
-                    userAgent: audit.userAgent,
-                },
-            });
-            const payload: TokenPayload = {
-                sub: user.id,
-                tenantId: user.tenantId,
-                role: access.primaryRole,
-                legacyRole: currentUser.role,
-                sessionId: session.id,
-                mfaVerified: true,
-                pinResetRequired: false,
-            };
-            return {
-                effectiveExpiresAt,
-                accessToken: this.jwtService.generateAccessToken(payload),
-                accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
-            };
-            }, { isolationLevel: 'Serializable' }),
+            () => this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+                const { user, access, session, settings, effectiveExpiresAt } = await this.selfSecurityContextInTransaction(
+                    tx, sessionClaims.tenantId, userId, sessionClaims.sessionId);
+                if (user.mfaEnabled) throw new BadRequestException('MFA is already enabled');
+                const backupCodeHashes = backupCodes.map(backupCode => this.hashBackupCode(backupCode));
+                // The shared Session fence is already held. Each conflict retry
+                // reads the current generation and original deadline anew.
+                const pending = await tx.$queryRaw<Array<{
+                    id: string; mfaEnrollmentSecret: string | null; mfaEnrollmentExpiresAt: Date | null;
+                }>>`
+                    SELECT "id", "mfaEnrollmentSecret", "mfaEnrollmentExpiresAt"
+                    FROM "Session"
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                    FOR UPDATE
+                `;
+                const enrollment = pending.length === 1 && pending[0]?.id === session.id ? pending[0] : null;
+                const expiresAt = enrollment?.mfaEnrollmentExpiresAt;
+                if (!(expiresAt instanceof Date) || !Number.isFinite(expiresAt.getTime())) {
+                    throw new BadRequestException('MFA enrollment has expired');
+                }
+                const encryptedSecret = enrollment!.mfaEnrollmentSecret;
+                const secret = this.decryptPendingMfaEnrollment(encryptedSecret);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                const timeStep = this.findMatchingTotpTimeStep(secret, normalizedCode);
+                if (timeStep === null) throw new ForbiddenException('Invalid MFA code');
+                await this.claimTotpTimeStep(tx, user.tenantId, user.id, timeStep);
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                const consumed = await tx.$queryRaw<Array<{ id: string }>>`
+                    UPDATE "Session"
+                    SET "mfaEnrollmentSecret" = NULL, "mfaEnrollmentExpiresAt" = NULL
+                    WHERE "id" = ${session.id} AND "userId" = ${user.id}
+                        AND "revokedAt" IS NULL
+                        AND "mfaEnrollmentSecret" = ${encryptedSecret}
+                        AND "mfaEnrollmentExpiresAt" = (${expiresAt.toISOString()}::timestamptz AT TIME ZONE 'UTC')
+                        AND "mfaEnrollmentExpiresAt" > timezone('UTC', clock_timestamp())
+                        AND "expiresAt" > timezone('UTC', clock_timestamp())
+                    RETURNING "id"
+                `;
+                if (consumed.length !== 1 || consumed[0]?.id !== session.id) {
+                    throw new BadRequestException('MFA enrollment has expired');
+                }
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                await tx.user.update({
+                    where: { id: user.id },
+                    data: {
+                        mfaEnabled: true,
+                        mfaSecret: this.encryptDurableMfaSecret(secret),
+                        mfaBackupCodes: backupCodeHashes,
+                    },
+                });
+                // The additive User lifecycle trigger clears pending challenges
+                // on every retained Session when account MFA state changes.
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                await tx.auditLog.create({
+                    data: {
+                        tenantId: user.tenantId, userId: user.id,
+                        actorUserId: user.id, actorTenantId: user.tenantId,
+                        action: 'MFA_ENABLED', resource: 'User', resourceId: user.id,
+                        newValue: { mfaEnabled: true },
+                        ipAddress: audit.ipAddress, userAgent: audit.userAgent,
+                    },
+                });
+                await this.assertMfaEnrollmentLifetimeInTransaction(tx, session, settings, expiresAt);
+                if (this.findMatchingTotpTimeStep(secret, normalizedCode) !== timeStep) {
+                    throw new ForbiddenException('Invalid MFA code');
+                }
+                const payload: TokenPayload = {
+                    sub: user.id, tenantId: user.tenantId, role: access.primaryRole,
+                    legacyRole: user.role, sessionId: session.id,
+                    mfaVerified: true, pinResetRequired: false,
+                };
+                return {
+                    effectiveExpiresAt,
+                    accessToken: this.jwtService.generateAccessToken(payload),
+                    accessTokenMaxAgeMs: this.getAccessTokenMaxAgeMs(effectiveExpiresAt),
+                };
+            }, { isolationLevel: 'ReadCommitted' }),
             { conflictMessage: 'Authorization or MFA state changed concurrently; retry the request' },
         );
-        await Promise.all([
-            this.runRedisMutationBestEffort(
-                'auth.mfa_enrollment_cleanup_failed',
-                () => this.getRedis().del(key),
-            ),
-            this.runRedisMutationBestEffort(
-                'auth.mfa_enrollment_session_marker_failed',
-                () => this.markSessionMfaVerified(session.id, committed.effectiveExpiresAt),
-            ),
-        ]);
-
+        await this.runRedisMutationBestEffort(
+            'auth.mfa_enrollment_session_marker_failed',
+            () => this.markSessionMfaVerified(sessionClaims.sessionId, committed.effectiveExpiresAt),
+        );
         return {
-            success: true,
-            mfaVerified: true,
-            backupCodes,
+            success: true, mfaVerified: true, backupCodes,
             accessToken: committed.accessToken,
             accessTokenMaxAgeMs: committed.accessTokenMaxAgeMs,
         };
@@ -2599,27 +2827,8 @@ export class AuthService implements OnModuleDestroy {
         const audit = this.securityRequestAudit(requestAudit);
         const revokedSessionIds = await runSerializableMutationWithRetry(
             () => this.getTenantDb().withTenant(user.tenantId, async (tx) => {
-            const access = await this.rbacService.authorizeSelfSecurityMutationInTransaction(
-                tx,
-                user.tenantId,
-                { actorUserId: user.id, actorSessionId: session.id },
-            );
-            const currentUser = await tx.user.findFirst({
-                where: { id: user.id, tenantId: user.tenantId, deletedAt: null, suspendedAt: null },
-                select: {
-                    id: true,
-                    mfaEnabled: true,
-                    mfaSecret: true,
-                    mfaBackupCodes: true,
-                },
-            });
-            if (!currentUser) throw new UnauthorizedException('User not found');
-            const currentSession = await tx.session.findFirst({
-                where: { id: session.id, userId: currentUser.id },
-            });
-            if (!currentSession) throw new UnauthorizedException('Invalid or expired session');
-            const settings = await this.tenantSecuritySettingsInTransaction(tx, user.tenantId);
-            this.assertSessionActive(currentSession, settings);
+            const { user: currentUser, session: currentSession, access, settings } = await this.selfSecurityContextInTransaction(
+                tx, user.tenantId, user.id, session.id);
             if (this.isPrivilegedMfaRequiredForAccess(access)) {
                 throw new ForbiddenException('MFA is required for administrative access');
             }
@@ -2627,6 +2836,13 @@ export class AuthService implements OnModuleDestroy {
                 throw new ForbiddenException('MFA is required by workspace policy');
             }
             if (currentUser.mfaEnabled) {
+                const activeSessions = await tx.session.findMany({
+                    where: { userId: user.id, revokedAt: null },
+                    select: { id: true },
+                });
+                // Enumeration can wait too. Reject expired authority before
+                // the first proof or account write; calculate TOTP afterwards.
+                this.assertSessionActive(currentSession, settings);
                 const matchedTotpTimeStep = currentUser.mfaSecret
                     ? this.findMatchingTotpTimeStep(currentUser.mfaSecret, normalizedCode)
                     : null;
@@ -2637,14 +2853,11 @@ export class AuthService implements OnModuleDestroy {
                 if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
                     throw new ForbiddenException('Invalid MFA code');
                 }
+                this.assertSessionActive(currentSession, settings);
                 if (matchedTotpTimeStep !== null) {
                     await this.claimTotpTimeStep(tx, user.tenantId, user.id, matchedTotpTimeStep);
                 }
-
-                const activeSessions = await tx.session.findMany({
-                    where: { userId: user.id, revokedAt: null },
-                    select: { id: true },
-                });
+                this.assertSessionActive(currentSession, settings);
 
                 await tx.user.update({
                     where: { id: user.id },
@@ -2696,12 +2909,10 @@ export class AuthService implements OnModuleDestroy {
         code: string,
         sessionClaims: { tenantId: string; sessionId: string },
     ) {
-        await this.assertTenantIdCanAuthenticate(sessionClaims.tenantId);
-        const settings = await this.getTenantSecuritySettings(sessionClaims.tenantId);
-        const access = await this.rbacService.getEffectiveAccess(userId, sessionClaims.tenantId);
         const normalizedCode = typeof code === 'string' ? code.trim().replace(/\s+/g, '') : '';
 
         const verification = await this.getTenantDb().withTenant(sessionClaims.tenantId, async (tx) => {
+            await this.lockTenantForSessionIssuance(tx, sessionClaims.tenantId);
             await tx.$queryRaw`
                 SELECT "id"
                 FROM "User"
@@ -2718,25 +2929,39 @@ export class AuthService implements OnModuleDestroy {
                     id: true,
                     tenantId: true,
                     role: true,
+                    pinResetRequired: true,
+                    lockedUntil: true,
+                    pinLockedUntil: true,
                     mfaEnabled: true,
                     mfaSecret: true,
                     mfaBackupCodes: true,
                 },
             });
-            const session = user
-                ? await tx.session.findFirst({
-                    where: {
-                        id: sessionClaims.sessionId,
-                        userId,
-                    },
-                })
-                : null;
             if (!user) throw new UnauthorizedException('User not found');
+            if (user.pinResetRequired) throw new ForbiddenException('PIN rotation required before MFA access');
+            await this.checkAccountLockout(user);
+            if (user.pinLockedUntil && user.pinLockedUntil > new Date()) {
+                throw new ForbiddenException('Account locked due to too many failed PIN attempts');
+            }
+            await tx.$queryRaw`
+                SELECT "id"
+                FROM "Session"
+                WHERE "id" = ${sessionClaims.sessionId} AND "userId" = ${userId}
+                FOR UPDATE
+            `;
+            const session = await tx.session.findFirst({
+                where: {
+                    id: sessionClaims.sessionId,
+                    userId,
+                },
+            });
             if (!session) throw new UnauthorizedException('Invalid or expired session');
 
+            const settings = await this.tenantSecuritySettingsInTransaction(tx, sessionClaims.tenantId);
+            const access = await this.rbacService.getEffectiveAccessInTransaction(tx, userId, sessionClaims.tenantId);
             const effectiveExpiresAt = this.assertSessionActive(session, settings);
             if (!this.isMfaRequired(user, settings, access)) {
-                return { user, session, effectiveExpiresAt, verificationRequired: false };
+                return { user, session, access, effectiveExpiresAt, verificationRequired: false };
             }
 
             const matchedTotpTimeStep = user.mfaSecret
@@ -2749,6 +2974,7 @@ export class AuthService implements OnModuleDestroy {
             if (matchedTotpTimeStep === null && !matchingBackupCodeHash) {
                 throw new ForbiddenException('Invalid MFA code');
             }
+            this.assertSessionActive(session, settings);
             if (matchedTotpTimeStep !== null) {
                 await this.claimTotpTimeStep(
                     tx,
@@ -2757,6 +2983,7 @@ export class AuthService implements OnModuleDestroy {
                     matchedTotpTimeStep,
                 );
             }
+            this.assertSessionActive(session, settings);
             if (matchingBackupCodeHash) {
                 await tx.user.update({
                     where: { id: user.id },
@@ -2765,7 +2992,8 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
             }
-            return { user, session, effectiveExpiresAt, verificationRequired: true };
+            this.assertSessionActive(session, settings);
+            return { user, session, access, effectiveExpiresAt, verificationRequired: true };
         });
 
         if (!verification.verificationRequired) return { success: true, mfaVerified: true };
@@ -2774,7 +3002,7 @@ export class AuthService implements OnModuleDestroy {
         const payload: TokenPayload = {
             sub: verification.user.id,
             tenantId: verification.user.tenantId,
-            role: access.primaryRole,
+            role: verification.access.primaryRole,
             legacyRole: verification.user.role,
             sessionId: verification.session.id,
             mfaVerified: true,
@@ -2848,7 +3076,7 @@ export class AuthService implements OnModuleDestroy {
         if (!session) return { status: 'already_invalid' };
 
         if (session.revokedAt || session.expiresAt <= new Date()) {
-            await this.getRedis().del(KEY_SESSION_MFA(session.id));
+            await this.clearSessionMfaMarkersBestEffort([session.id], 'auth.logout_mfa_cleanup_failed');
             return { status: 'already_invalid' };
         }
 
@@ -2863,7 +3091,7 @@ export class AuthService implements OnModuleDestroy {
             },
             data: { revokedAt: new Date() },
         }));
-        await this.getRedis().del(KEY_SESSION_MFA(session.id));
+        await this.clearSessionMfaMarkersBestEffort([session.id], 'auth.logout_mfa_cleanup_failed');
 
         return { status: revoked.count === 1 ? 'revoked' : 'already_invalid' };
     }

@@ -13,6 +13,77 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const execFileAsync = promisify(execFile);
 
+// A dead orphan can remain waitable briefly under a namespace subreaper.
+// Only an observed zombie may wait; every live/error/reused identity fails.
+// Success still requires kill(pid, 0) to report ESRCH for every original PID.
+function waitForProcessAbsence(pids, { kill, stat, now, pause }, budgetMs = 1_500) {
+  const deadline = now() + budgetMs;
+  const identities = new Map();
+  const observedAbsent = new Set();
+  if (!pids.length || !pids.every((pid) => Number.isSafeInteger(pid) && pid > 1)) throw new Error('invalid process IDs');
+  const absent = (pid) => {
+    try {
+      kill(pid, 0);
+      if (observedAbsent.has(pid)) throw new Error(`reused process ID ${pid}: reappeared after absence`);
+      return false;
+    } catch (error) {
+      if (error?.code === 'ESRCH') { observedAbsent.add(pid); return true; }
+      throw error;
+    }
+  };
+  while (true) {
+    let remaining = 0;
+    for (const pid of pids) {
+      if (absent(pid)) continue;
+      let text;
+      try { text = stat(pid); } catch (error) {
+        if (error?.code === 'ENOENT' && absent(pid)) continue;
+        throw error;
+      }
+      const fields = text.slice(text.lastIndexOf(')') + 2).trim().split(/\s+/);
+      const [state] = fields;
+      const startTicks = fields[19];
+      if (state !== 'Z') throw new Error(`live process ${pid}: state=${state}`);
+      if (!/^[0-9]+$/.test(startTicks ?? '')) throw new Error(`invalid process identity ${pid}`);
+      if (identities.has(pid) && identities.get(pid) !== startTicks) throw new Error(`reused process ID ${pid}`);
+      identities.set(pid, startTicks);
+      remaining += 1;
+    }
+    if (remaining === 0) return true;
+    if (now() >= deadline) return false;
+    pause(Math.min(10, deadline - now()));
+  }
+}
+
+function processAbsenceCheck(pids) {
+  const program = `
+const fs = require('node:fs');
+const clock = require('node:perf_hooks').performance;
+const gate = new Int32Array(new SharedArrayBuffer(4));
+const waitForProcessAbsence = ${waitForProcessAbsence.toString()};
+try {
+  const passed = waitForProcessAbsence(JSON.parse(process.argv[1]).map(Number), {
+    kill: (pid, signal) => process.kill(pid, signal),
+    stat: (pid) => {
+      const fd = fs.openSync('/proc/' + pid + '/stat', 'r');
+      try {
+        const bytes = Buffer.alloc(4097);
+        const length = fs.readSync(fd, bytes, 0, bytes.length, 0);
+        if (length > 4096) throw new Error('process stat exceeded bound');
+        return bytes.subarray(0, length).toString('utf8');
+      } finally { fs.closeSync(fd); }
+    },
+    now: () => clock.now(),
+    pause: (ms) => Atomics.wait(gate, 0, 0, ms),
+  });
+  process.exitCode = passed ? 0 : 1;
+} catch (error) { console.error(error); process.exitCode = 1; }
+`;
+  return spawnSync(process.execPath, ['-e', program, JSON.stringify(pids)], {
+    encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL',
+  });
+}
+
 function read(path) {
   return readFileSync(join(root, path), 'utf8');
 }
@@ -77,8 +148,8 @@ function createSignedAdapterFixture(scratch, fetchSha256, readbackSha256) {
     oidcIssuer: adapterIssuer,
     issuedAt: new Date(now - 60_000).toISOString(),
     expiresAt: new Date(now + 86_400_000).toISOString(),
-  }));
-  writeFileSync(signatureFile, JSON.stringify({ fixture: 'valid-sigstore-bundle' }));
+  }), { mode: 0o600 });
+  writeFileSync(signatureFile, JSON.stringify({ fixture: 'valid-sigstore-bundle' }), { mode: 0o600 });
   return {
     attestationFile,
     signatureFile,
@@ -505,6 +576,50 @@ const processTreeSkip = cgroupOwnerAvailable && commandWorks('setsid', ['--help'
   : cgroupOwnerSkip || 'setsid is required for descendant-escape coverage';
 
 test('backup, restore, DR, and retention purge scripts expose machine-checkable proof contracts', () => {
+
+  const missing = () => Object.assign(new Error('gone'), { code: 'ESRCH' });
+  const statText = (state, start = '100') => `17 (fixture) ${[state, '1', '17', '17', ...Array(15).fill('0'), start].join(' ')}`;
+  const probe = (states, options = {}) => {
+    let elapsed = 0;
+    let pauses = 0;
+    let index = 0;
+    const state = () => states[Math.min(index, states.length - 1)];
+    return {
+      run: () => waitForProcessAbsence([17], {
+        kill: () => { if (state() === null) throw missing(); if (options.killError) throw options.killError; },
+        stat: () => { if (options.statError) throw options.statError; return statText(state(), options.reused && index > 0 ? '101' : '100'); },
+        now: () => elapsed,
+        pause: (ms) => { elapsed += ms; pauses += 1; index += 1; },
+      }, 30),
+      pauses: () => pauses,
+    };
+  };
+  assert.equal(probe([null]).run(), true);
+  assert.equal(probe(['Z', null]).run(), true, 'zombie must actually disappear');
+  assert.equal(probe(['Z']).run(), false, 'permanent zombie never passes');
+  for (const state of ['R', 'S', 'D', 'T']) {
+    const control = probe([state, null]);
+    assert.throws(control.run, /live process/);
+    assert.equal(control.pauses(), 0, 'live process must not receive a grace period');
+  }
+  assert.throws(probe(['Z', 'S']).run, /live process/);
+  assert.throws(probe(['Z', 'Z'], { reused: true }).run, /reused process ID/);
+  // PID17 is gone while PID18 still awaits reaping, then PID17 reappears.
+  // Even if both would disappear on a later poll, that known reuse must fail.
+  let reuseRound = 0;
+  let reuseElapsed = 0;
+  const reuseStates = [[null, 'Z'], ['Z', null], [null, null]];
+  assert.throws(() => waitForProcessAbsence([17, 18], {
+    kill: (pid) => { if (reuseStates[reuseRound][pid - 17] === null) throw missing(); },
+    stat: (pid) => statText('Z', pid === 17 ? '999' : '100'),
+    now: () => reuseElapsed,
+    pause: (ms) => { reuseElapsed += ms; reuseRound += 1; },
+  }, 30), /reused process ID 17: reappeared after absence/);
+  assert.equal(reuseRound, 1, 'refuse the first reappearance without another wait');
+
+  assert.throws(probe(['Z'], { killError: Object.assign(new Error('denied'), { code: 'EPERM' }) }).run, /denied/);
+  assert.throws(probe(['Z'], { statError: Object.assign(new Error('stat gone but PID present'), { code: 'ENOENT' }) }).run, /stat gone but PID present/);
+
   const backup = read('scripts/backup.sh');
   const restore = read('scripts/restore.sh');
   const drill = read('scripts/dr-drill.sh');
@@ -1022,13 +1137,7 @@ wait "$child"
     assert.match(`${result.stdout}\n${result.stderr}`, /Off-host backup retrieval timed out after 1s/);
     const parentPid = readFileSync(parentPidFile, 'utf8').trim();
     const childPid = readFileSync(childPidFile, 'utf8').trim();
-    const processCheck = spawnSync(bash, [
-      '-c',
-      'for pid in "$@"; do ! kill -0 "$pid" 2>/dev/null || exit 1; done',
-      'adapter-process-check',
-      parentPid,
-      childPid,
-    ], { encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL' });
+    const processCheck = processAbsenceCheck([parentPid, childPid]);
     assert.equal(processCheck.status, 0, `fetch adapter process survived: parent=${parentPid} child=${childPid}`);
 
     const delayedRewriteWindow = spawnSync(bash, ['-c', 'sleep 2'], {
@@ -1048,6 +1157,21 @@ test('DR drill kills a setsid readback descendant before retrieved-output cleanu
   const fixture = createOffhostDrFixture();
   const parentPidFile = join(fixture.scratch, 'readback-parent.pid');
   const childPidFile = join(fixture.scratch, 'readback-child.pid');
+  const fetchTimerPidFile = join(fixture.scratch, 'fast-fetch-timer.pid');
+  writeExecutable(join(fixture.fakeBin, 'sleep'), `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -eq 1 ] && [ "$1" = 300 ]; then printf '%s\\n' "$$" > "$FAKE_FETCH_TIMER_PID_FILE"; fi
+exec /usr/bin/sleep "$@"
+`);
+  const fetchBytes = readFileSync(fixture.fetchCommand, 'utf8');
+  writeExecutable(fixture.fetchCommand, fetchBytes + `
+for attempt in {1..100}; do
+  [ ! -s "$FAKE_FETCH_TIMER_PID_FILE" ] || exit 0
+  /usr/bin/sleep 0.01
+done
+exit 92
+`);
+
   rmSync(join(fixture.fakeBin, 'timeout'));
   rmSync(join(fixture.fakeBin, 'setsid'));
   writeExecutable(fixture.readbackCommand, `#!/usr/bin/env bash
@@ -1064,6 +1188,7 @@ printf '%s\n' "$$" > "$FAKE_READBACK_PARENT_PID_FILE"
 wait "$child"
 `);
   const attestation = JSON.parse(readFileSync(fixture.adapter.attestationFile, 'utf8'));
+  attestation.fetchAdapterSha256 = createHash('sha256').update(readFileSync(fixture.fetchCommand)).digest('hex');
   attestation.readbackAdapterSha256 = createHash('sha256').update(readFileSync(fixture.readbackCommand)).digest('hex');
   writeFileSync(fixture.adapter.attestationFile, JSON.stringify(attestation));
 
@@ -1083,6 +1208,7 @@ wait "$child"
       FAKE_REMOTE_URI: fixture.sourceUri,
       FAKE_REMOTE_VERSION: fixture.sourceVersion,
       FAKE_REMOTE_OBJECT: bashPath(fixture.remoteObject),
+      FAKE_FETCH_TIMER_PID_FILE: bashPath(fetchTimerPidFile),
       FAKE_READBACK_PARENT_PID_FILE: bashPath(parentPidFile),
       FAKE_READBACK_CHILD_PID_FILE: bashPath(childPidFile),
     }, [], { timeout: 12_000, killSignal: 'SIGKILL' });
@@ -1092,13 +1218,8 @@ wait "$child"
     assert.match(`${result.stdout}\n${result.stderr}`, /Provider-authenticated off-host readback timed out after 1s/);
     const parentPid = readFileSync(parentPidFile, 'utf8').trim();
     const childPid = readFileSync(childPidFile, 'utf8').trim();
-    const processCheck = spawnSync(bash, [
-      '-c',
-      'for pid in "$@"; do ! kill -0 "$pid" 2>/dev/null || exit 1; done',
-      'readback-process-check',
-      parentPid,
-      childPid,
-    ], { encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL' });
+    const fetchTimerPid = readFileSync(fetchTimerPidFile, 'utf8').trim();
+    const processCheck = processAbsenceCheck([parentPid, childPid, fetchTimerPid]);
     assert.equal(processCheck.status, 0, `readback adapter process survived: parent=${parentPid} child=${childPid}`);
 
     const delayedRewriteWindow = spawnSync(bash, ['-c', 'sleep 2'], {
@@ -1541,10 +1662,7 @@ exit 5
     assert.match(timedOut.stderr, /reason=timeout/);
     const hangingParentPid = readFileSync(hangingParentPidFile, 'utf8').trim();
     const hangingChildPid = readFileSync(hangingChildPidFile, 'utf8').trim();
-    const processCheck = spawnSync(bash, [
-      '-c', 'for pid in "$@"; do ! kill -0 "$pid" 2>/dev/null || exit 1; done',
-      'provider-process-check', hangingParentPid, hangingChildPid,
-    ], { encoding: 'utf8', timeout: 2_000, killSignal: 'SIGKILL' });
+    const processCheck = processAbsenceCheck([hangingParentPid, hangingChildPid]);
     assert.equal(processCheck.status, 0, `provider process survived: parent=${hangingParentPid} child=${hangingChildPid}`);
     rmSync(download, { force: true });
     const delayedRewriteWindow = spawnSync(bash, ['-c', 'sleep 2'], {
@@ -1796,6 +1914,25 @@ test('production restore requires digest-pinned provider-authenticated immutable
     const validBytes = Buffer.from(JSON.stringify(valid.proof));
     const validSha256 = createHash('sha256').update(validBytes).digest('hex');
     const execution = productionRestoreExecution(fixture.scratch, valid, validSha256);
+    writeFileSync(proofPath, validBytes, { mode: 0o600 });
+    for (const unsafeMode of [0o660, 0o602]) {
+      chmodSync(proofPath, unsafeMode);
+      try {
+        const unsafe = runBashScriptWithBin(bash, fakeBin, 'scripts/restore.sh', {
+          ...baseEnv,
+          ...execution.env,
+          RESTORE_DR_PROVENANCE_FILE: bashPath(proofPath),
+          RESTORE_DR_PROVENANCE_SHA256: validSha256,
+          RESTORE_DR_SOURCE_URI: valid.sourceUri,
+          RESTORE_DR_SOURCE_VERSION: valid.sourceVersion,
+        }, [fixture.backupFile]);
+        assert.notEqual(unsafe.status, 0, 'writable provenance must be refused');
+        assert.match(`${unsafe.stdout}\n${unsafe.stderr}`, /Production provider provenance .*must not be group- or world-writable/);
+        assert.doesNotMatch(`${unsafe.stdout}\n${unsafe.stderr}`, /Required command is missing: psql/);
+      } finally {
+        chmodSync(proofPath, 0o600);
+      }
+    }
     const cases = [
       {
         name: 'provider version mismatch',
@@ -1836,7 +1973,7 @@ test('production restore requires digest-pinned provider-authenticated immutable
     ];
     for (const item of cases) {
       const proofBytes = Buffer.from(JSON.stringify(item.proof));
-      writeFileSync(proofPath, proofBytes);
+      writeFileSync(proofPath, proofBytes, { mode: 0o600 });
       const result = runBashScriptWithBin(bash, fakeBin, 'scripts/restore.sh', {
         ...baseEnv,
         ...execution.env,
@@ -1850,7 +1987,7 @@ test('production restore requires digest-pinned provider-authenticated immutable
       assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, /Required command is missing: psql/, item.name);
     }
 
-    writeFileSync(proofPath, validBytes);
+    writeFileSync(proofPath, validBytes, { mode: 0o600 });
     const missingExecution = runBashScriptWithBin(bash, fakeBin, 'scripts/restore.sh', {
       ...baseEnv,
       RESTORE_DR_PROVENANCE_FILE: bashPath(proofPath),
@@ -2101,9 +2238,9 @@ wait "$child"
       RESTORE_RECONCILIATION_TIMEOUT_SECONDS: '5',
       FAKE_MUTATION_SLEEP_SECONDS: '45',
     }, [fixture.backupFile]);
+    assert.equal(result.status, 70, `${result.stdout}\n${result.stderr}`);
     const mutationStartedAt = Number(readFileSync(mutationStartedAtFile, 'utf8').trim()) * 1_000;
     assert.ok(Date.now() - mutationStartedAt < 20_000, 'aggregate timeout must not wait for a surviving mutation child');
-    assert.equal(result.status, 70, `${result.stdout}\n${result.stderr}`);
     assert.match(result.stderr, /mutation state is unknown and must not be retried blindly/);
     assert.match(result.stderr, /restore_unknown_state_reconciliation target_identity=match table_readback=count:0/);
     const calls = readFileSync(psqlLog, 'utf8');
@@ -2140,7 +2277,7 @@ exit 0
   const provenance = productionRestoreProvenance(fixture.nativeBackupFile, adapter);
   const proofBytes = Buffer.from(JSON.stringify(provenance.proof));
   const proofSha256 = createHash('sha256').update(proofBytes).digest('hex');
-  writeFileSync(proofPath, proofBytes);
+  writeFileSync(proofPath, proofBytes, { mode: 0o600 });
   const execution = productionRestoreExecution(fixture.scratch, provenance, proofSha256);
   try {
     const result = runBashScriptWithBin(bash, fakeBin, 'scripts/restore.sh', {
@@ -2213,7 +2350,7 @@ exit 1
   const provenance = productionRestoreProvenance(fixture.nativeBackupFile, adapter);
   const proofBytes = Buffer.from(JSON.stringify(provenance.proof));
   const proofSha256 = createHash('sha256').update(proofBytes).digest('hex');
-  writeFileSync(proofPath, proofBytes);
+  writeFileSync(proofPath, proofBytes, { mode: 0o600 });
   const execution = productionRestoreExecution(fixture.scratch, provenance, proofSha256);
   try {
     const result = runBashScriptWithBin(bash, fakeBin, 'scripts/restore.sh', {

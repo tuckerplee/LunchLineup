@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { handleLogoutNavigation } from '@/lib/logout-navigation';
 import { Ellipsis, LogOut } from 'lucide-react';
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 
@@ -134,16 +135,18 @@ export function DashboardMobileNavigation({ pathname, primary, more }: Dashboard
                 </Link>
               );
             })}
-            <Link
+            <a
               href="/auth/logout"
-              prefetch={false}
               role="menuitem"
               className="workspace-mobile-more-item"
-              onClick={() => setMoreOpen(false)}
+              onClick={(event) => {
+                handleLogoutNavigation(event);
+                setMoreOpen(false);
+              }}
             >
               <LogOut size={18} aria-hidden="true" />
               <span>Sign out</span>
-            </Link>
+            </a>
           </div>
         ) : null}
       </div>

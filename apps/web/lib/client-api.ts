@@ -13,6 +13,8 @@ import {
 const API_V2 = '/api/v2';
 const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let refreshPromise: Promise<Response> | null = null;
+let sessionNavigationClosed = false;
+const sessionRequests = new Set<AbortController>();
 const SAFE_JSON_CONTENT_TYPE = /^application\/(?:[a-z0-9!#$&^_.+-]+\+)?json(?:\s*;|$)/i;
 const CLIENT_REQUEST_TIMEOUT_MS = 15_000;
 
@@ -24,6 +26,56 @@ export class ApiRequestError extends Error {
         this.name = 'ApiRequestError';
         this.status = status;
     }
+}
+
+/** Irreversible for this document: a fresh sign-in must load a fresh document. */
+export function prepareForLogout(): void {
+    sessionNavigationClosed = true;
+    for (const controller of sessionRequests) controller.abort();
+}
+
+function canceledSessionRequest(signal?: AbortSignal): ApiRequestError {
+    return new ApiRequestError(signal?.reason instanceof Error && signal.reason.name === 'TimeoutError'
+        ? 'The request timed out. Please try again.'
+        : 'Request canceled.');
+}
+
+function assertCurrentSessionRequest(signal?: AbortSignal): void {
+    if (sessionNavigationClosed || signal?.aborted) throw canceledSessionRequest(signal);
+}
+
+async function sessionRequest<T>(init: RequestInit, operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+    const callerSignal = init.signal;
+    assertCurrentSessionRequest(callerSignal ?? undefined);
+    const controller = new AbortController();
+    const forwardAbort = () => controller.abort(callerSignal?.reason);
+    callerSignal?.addEventListener('abort', forwardAbort, { once: true });
+    sessionRequests.add(controller);
+    try {
+        const result = await operation(controller.signal);
+        assertCurrentSessionRequest(controller.signal);
+        return result;
+    } finally {
+        sessionRequests.delete(controller);
+        callerSignal?.removeEventListener('abort', forwardAbort);
+    }
+}
+
+/** Cancel one waiter without canceling the refresh needed by other requests. */
+function waitForRefresh(refresh: Promise<Response>, signal: AbortSignal): Promise<Response> {
+    assertCurrentSessionRequest(signal);
+    return new Promise((resolve, reject) => {
+        const onAbort = () => reject(canceledSessionRequest(signal));
+        signal.addEventListener('abort', onAbort, { once: true });
+        refresh.then(response => {
+            signal.removeEventListener('abort', onAbort);
+            try { assertCurrentSessionRequest(signal); resolve(response); }
+            catch (error) { reject(error); }
+        }, error => {
+            signal.removeEventListener('abort', onAbort);
+            reject(signal.aborted || sessionNavigationClosed ? canceledSessionRequest(signal) : error);
+        });
+    });
 }
 
 export type IdempotentRequestAttempt = {
@@ -106,7 +158,8 @@ function getCsrfTokenFromCookie(): string {
     const pair = document.cookie.split('; ').find((entry) => entry.startsWith('csrf_token='));
     if (!pair) return '';
     try {
-        return decodeURIComponent(pair.slice(pair.indexOf('=') + 1));
+        const token = decodeURIComponent(pair.slice(pair.indexOf('=') + 1));
+        return token === token.trim() ? token : '';
     } catch {
         return '';
     }
@@ -116,6 +169,11 @@ function withSessionDefaults(init: RequestInit = {}): RequestInit {
     const method = (init.method ?? 'GET').toUpperCase();
     const headers = new Headers(init.headers);
     const csrfToken = getCsrfTokenFromCookie();
+
+    // A bodyless action must not advertise a JSON document to the API parser.
+    if (init.body == null && /^application\/json(?:\s*;|$)/i.test(headers.get('content-type') ?? '')) {
+        headers.delete('content-type');
+    }
 
     if (UNSAFE_METHODS.has(method)) {
         if (csrfToken) {
@@ -135,13 +193,13 @@ function withSessionDefaults(init: RequestInit = {}): RequestInit {
 }
 
 function refreshSession(): Promise<Response> {
+    assertCurrentSessionRequest();
+    // An expired/logout cookie cannot satisfy the refresh route's double-submit guard.
+    if (!getCsrfTokenFromCookie()) return Promise.resolve(jsonResponse(401, publicErrorMessage(401)));
     if (refreshPromise) return refreshPromise;
-
-    refreshPromise = safeFetch(
-        toApiPath('/auth/refresh', 'POST'),
-        withSessionDefaults({ method: 'POST' }),
-        true,
-    )
+    refreshPromise = sessionRequest({}, async signal => safeFetch(
+        toApiPath('/auth/refresh', 'POST'), withSessionDefaults({ method: 'POST', signal }), true,
+    ))
         .finally(() => {
             refreshPromise = null;
         });
@@ -364,25 +422,7 @@ function canReplayAfterRefresh(init: RequestInit): boolean {
 export async function fetchWithSession(path: string, init: RequestInit = {}): Promise<Response> {
     const requestInit = withSessionDefaults(init);
     const endpoint = toApiPath(path, applicationMethod(requestInit));
-    let response = await safeFetch(endpoint, requestInit, true);
-    if (response.status !== 401) return response;
-
-    const refresh = await refreshSession();
-
-    if (!refresh.ok) {
-        if (typeof window !== 'undefined') {
-            window.location.assign(loginRedirectPath());
-        }
-        return response;
-    }
-
-    if (!canReplayAfterRefresh(requestInit)) return response;
-
-    response = await safeFetch(endpoint, withSessionDefaults(init), true);
-    if (response.status === 401 && typeof window !== 'undefined') {
-        window.location.assign(loginRedirectPath());
-    }
-    return response;
+    return sessionRequest(init, signal => fetchSessionEndpoint(endpoint, init, signal));
 }
 
 export async function fetchApiV2WithSession(
@@ -390,11 +430,18 @@ export async function fetchApiV2WithSession(
     init: RequestInit = {},
 ): Promise<Response> {
     const endpoint = toApiV2Path(input);
-    const requestInit = withSessionDefaults(init);
+    return sessionRequest(init, signal => fetchSessionEndpoint(endpoint, init, signal));
+}
+
+async function fetchSessionEndpoint(endpoint: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+    const requestInit = withSessionDefaults({ ...init, signal });
+    assertCurrentSessionRequest(signal);
     let response = await safeFetch(endpoint, requestInit, true);
+    assertCurrentSessionRequest(signal);
     if (response.status !== 401) return response;
 
-    const refresh = await refreshSession();
+    const refresh = await waitForRefresh(refreshSession(), signal);
+    assertCurrentSessionRequest(signal);
     if (!refresh.ok) {
         if (typeof window !== 'undefined') {
             window.location.assign(loginRedirectPath());
@@ -403,7 +450,8 @@ export async function fetchApiV2WithSession(
     }
     if (!canReplayAfterRefresh(requestInit)) return response;
 
-    response = await safeFetch(endpoint, withSessionDefaults(init), true);
+    response = await safeFetch(endpoint, withSessionDefaults({ ...init, signal }), true);
+    assertCurrentSessionRequest(signal);
     if (response.status === 401 && typeof window !== 'undefined') {
         window.location.assign(loginRedirectPath());
     }
@@ -421,21 +469,27 @@ export async function fetchApiHealth(): Promise<Response> {
 
 export async function fetchJsonWithSession<T>(path: string, init: RequestInit = {}): Promise<T> {
     const response = await fetchWithSession(path, init);
+    assertCurrentSessionRequest(init.signal ?? undefined);
     if (!response.ok) {
         let message = publicErrorMessage(response.status);
         if (isJsonResponse(response)) {
             const payload = await response.json().catch(() => null) as { message?: unknown } | null;
+            assertCurrentSessionRequest(init.signal ?? undefined);
             if (typeof payload?.message === 'string' && isSafePublicMessage(payload.message)) {
                 message = payload.message;
             }
         }
         throw new ApiRequestError(message, response.status);
     }
+    let payload: T;
     try {
-        return await response.json() as T;
+        payload = await response.json() as T;
     } catch {
+        assertCurrentSessionRequest(init.signal ?? undefined);
         throw new ApiRequestError('The service returned an invalid response.', response.status);
     }
+    assertCurrentSessionRequest(init.signal ?? undefined);
+    return payload;
 }
 
 function isSafePublicMessage(message: string): boolean {

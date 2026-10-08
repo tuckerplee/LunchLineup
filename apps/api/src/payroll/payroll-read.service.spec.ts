@@ -1,8 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
+import { payrollDomainAuthority } from './payroll-domain-authority.fixture';
 
 import { PayrollReadService } from './payroll-read.service';
 
-const actor = { tenantId: 'tenant-1', userId: 'manager-1' };
+const actor = { tenantId: 'tenant-1', userId: 'manager-1', sessionId: 'period-read-session' };
 const startsAt = new Date('2026-06-01T00:00:00Z');
 const endsAt = new Date('2026-06-08T00:00:00Z');
 
@@ -29,6 +32,16 @@ function summaryRow() {
 
 function db(tx: any) {
     return { withTenant: vi.fn((_tenantId: string, work: (value: any) => unknown) => work(tx)) } as any;
+}
+
+// Positive current-authority dependencies keep historical projection methods and
+// the original domain queues/assertions separate from requester authority.
+function periodReader(tx: any) {
+    const tenantDb = db(tx);
+    const historicalUsers = tx.user;
+    const [rbac, observer] = payrollDomainAuthority(tenantDb, tx, actor);
+    Object.assign(tx.user, historicalUsers);
+    return new PayrollReadService(tenantDb, rbac, observer as AuthService);
 }
 
 describe('PayrollReadService', () => {
@@ -60,7 +73,7 @@ describe('PayrollReadService', () => {
             payrollExportBatch: { findFirst: vi.fn().mockResolvedValue(null) },
             $queryRaw: vi.fn().mockResolvedValue(summaryRow()),
         };
-        const service = new PayrollReadService(db(tx));
+        const service = periodReader(tx);
 
         const result = await service.getPeriod(actor, 'period-1', '2');
 
@@ -145,7 +158,7 @@ describe('PayrollReadService', () => {
             }) },
             $queryRaw: vi.fn().mockResolvedValue([{ ...summaryRow()[0], lockedEntryCount: 1 }]),
         };
-        const result = await new PayrollReadService(db(tx)).getPeriod(actor, 'period-1');
+        const result = await periodReader(tx).getPeriod(actor, 'period-1');
 
         expect(result.period.lockedEntrySha256).toBe(lockedHash);
         expect(result.lockedEntries[0]).toMatchObject({
@@ -192,7 +205,7 @@ describe('PayrollReadService', () => {
             $queryRaw: vi.fn().mockResolvedValue(summaryRow()),
         };
 
-        const result = await new PayrollReadService(db(tx)).getPeriod(actor, 'period-1');
+        const result = await periodReader(tx).getPeriod(actor, 'period-1');
 
         expect(result.lockedEntries).toEqual([]);
         expect(result.amendments).toMatchObject([{
@@ -234,10 +247,12 @@ describe('PayrollReadService', () => {
             },
             payrollReconciliationReceipt: { findFirst: vi.fn().mockResolvedValue(null) },
         };
-        const service = new PayrollReadService(db(tx));
+        const exportActor = { ...actor, sessionId: 'export-read-session' };
+        const tenantDb = db(tx);
+        const service = new PayrollReadService(tenantDb, ...payrollDomainAuthority(tenantDb, tx, exportActor));
 
-        const first = await service.getExport(actor, batch.id, '500');
-        const second = await service.getExport(actor, batch.id, '500', 'line-500');
+        const first = await service.getExport(exportActor, batch.id, '500');
+        const second = await service.getExport(exportActor, batch.id, '500', 'line-500');
 
         expect(first.lines).toHaveLength(500);
         expect(first.nextLineCursor).toBe('line-500');

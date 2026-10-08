@@ -13,9 +13,11 @@ describe('validated public-web P1 contracts', () => {
     expect(source).toContain("'/auth/password/verify'");
     expect(source).toContain("headers: { 'Content-Type': 'application/json' }");
     expect(source).toContain('body: JSON.stringify(payload)');
-    expect(source).toContain('if (!response.ok || data.success !== true)');
+    expect(source).toContain('if (!response.ok || data?.success !== true)');
     expect(source).toContain('router.push(redirectTo)');
-    expect(source).toContain('verifyInFlightRef.current = false');
+    expect(source).toContain('loginIntent.current.current(attempt)');
+    expect(source).toContain('loginIntent.current.finish(attempt)');
+    expect(source).toContain('loginIntent.current.cancel()');
     expect(source).not.toContain("document.createElement('form')");
     expect(source).not.toContain('redirect=1');
   });
@@ -23,14 +25,15 @@ describe('validated public-web P1 contracts', () => {
   it('scrubs reset tokens and keeps transient failures distinct from invalid links', () => {
     const page = readWebFile('app/auth/reset-password/page.tsx');
     const proxy = readWebFile('proxy.ts');
+    const contract = readWebFile('app/auth/reset-password/reset-password-contract.ts');
 
     expect(page).toContain('window.history.replaceState');
     expect(page).toContain('readResetTokenCookie()');
     expect(page).toContain('clearResetTokenCookie()');
     expect(page).toContain('body: JSON.stringify({ token, password })');
-    expect(page).toContain("status === 429");
-    expect(page).toContain("status >= 500");
-    expect(page).toContain("'Reset link is invalid or expired.'");
+    expect(contract).toContain("status === 429");
+    expect(contract).toContain("status >= 500");
+    expect(contract).toContain("'Reset link is invalid or expired.'");
     expect(proxy).toContain("NextResponse.redirect(new URL(cleanPath, resetOrigin), 303)");
     expect(proxy).toContain("response.headers.set('Referrer-Policy', 'no-referrer')");
   });

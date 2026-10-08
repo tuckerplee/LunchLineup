@@ -3,6 +3,8 @@
 import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
+    ACCOUNT_DELETION_RECOVERY_KEY,
+    ACCOUNT_DELETION_RECEIPT_STORAGE_KEY,
     accountDeletionReceiptFromResponse,
     storeAccountDeletionReceipt,
     type AccountDeletionReceipt,
@@ -46,6 +48,7 @@ type AccountStatus = {
 };
 
 type CancellationResponse = {
+    billingCancellation?: { action?: string; cancelAtPeriodEnd?: boolean };
     cancellationEffectiveAt?: string | null;
 };
 
@@ -285,6 +288,18 @@ export function AccountLifecyclePanel({
                     reason: cancelReason.trim() || undefined,
                 }),
             });
+            if (result.billingCancellation?.action === 'none' || result.billingCancellation?.action === 'already_canceled') {
+                await loadStatus();
+                setNotice({ tone: 'success', text: result.billingCancellation.action === 'none'
+                    ? 'There is no paid subscription renewal to cancel.'
+                    : 'This subscription has already ended.' });
+                return;
+            }
+            if (!result.billingCancellation?.cancelAtPeriodEnd
+                || !['scheduled', 'already_scheduled'].includes(result.billingCancellation.action ?? '')) {
+                await loadStatus();
+                throw new Error('Cancellation has not been confirmed. Refresh account status before trying again.');
+            }
             setCancelConfirmation('');
             setCancelReason('');
             setStatus((current) => ({
@@ -351,7 +366,13 @@ export function AccountLifecyclePanel({
 
         setAction('delete');
         setNotice(null);
+        let recoveryPrepared = false;
         try {
+            const recovery = await fetchJsonWithSession<{ token: string }>('/account-deletion/prepare', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify({ confirmation: deleteConfirmation }) });
+            if (!/^[a-f0-9]{64}$/.test(recovery.token)) throw new Error('Unable to prepare deletion recovery. No deletion was requested.');
+            window.sessionStorage.setItem(ACCOUNT_DELETION_RECOVERY_KEY, recovery.token);
+            window.sessionStorage.removeItem(ACCOUNT_DELETION_RECEIPT_STORAGE_KEY);
+            recoveryPrepared = true;
             const result = await fetchJsonWithSession<AccountDeletionResponse>('/admin/account', {
                 method: 'DELETE',
                 headers: jsonHeaders(),
@@ -369,6 +390,10 @@ export function AccountLifecyclePanel({
                 });
             }
         } catch (error) {
+            if (recoveryPrepared) {
+                window.location.replace('/auth/account-deleted');
+                return;
+            }
             setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to request deletion.' });
         } finally {
             setAction(null);

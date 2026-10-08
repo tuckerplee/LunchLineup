@@ -46,13 +46,13 @@ export class LunchBreaksController {
     @Get('policy')
     @Permission('lunch_breaks:read')
     async getPolicy(@Req() req: any) {
-        return this.lunchBreaksService.getPolicy(req.user.tenantId);
+        return this.lunchBreaksService.getPolicy(req.user.tenantId, req.user);
     }
 
     @Put('policy')
     @Permission('lunch_breaks:write')
     async updatePolicy(@Req() req: any, @Body() body: Partial<LunchBreakPolicy>) {
-        return this.lunchBreaksService.updatePolicy(req.user.tenantId, body ?? {});
+        return this.lunchBreaksService.updatePolicy(req.user.tenantId, body ?? {}, req.user);
     }
 
     @Post('generate')
@@ -63,7 +63,7 @@ export class LunchBreaksController {
         @Headers('idempotency-key') idempotencyKey?: string,
     ) {
         const attemptKey = normalizeLunchBreakGenerationIdempotencyKey(idempotencyKey);
-        return this.lunchBreaksService.generateLunchBreaks(req.user.tenantId, body ?? {}, attemptKey);
+        return this.lunchBreaksService.generateLunchBreaks(req.user.tenantId, body ?? {}, attemptKey, req.user);
     }
 
     @Post('setup-shifts')

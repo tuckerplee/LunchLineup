@@ -44,7 +44,7 @@ describe('LunchBreaksController', () => {
     it('passes bounded list filters and continuation to the service', async () => {
         const service = { listLunchBreaks: vi.fn().mockResolvedValue({ data: [] }) };
         const controller = new LunchBreaksController(service as any);
-        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session' } };
 
         await controller.list(
             req,
@@ -83,14 +83,15 @@ describe('LunchBreaksController', () => {
         const service = { generateLunchBreaks: vi.fn().mockResolvedValue({ reused: false }) };
         const controller = new LunchBreaksController(service as any);
         const body = { shiftIds: ['shift-1'], persist: true };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session' } };
 
         await controller.generate(
-            { user: { tenantId: 'tenant-1' } },
+            req,
             body,
             ' attempt-1 ',
         );
 
-        expect(service.generateLunchBreaks).toHaveBeenCalledWith('tenant-1', body, 'attempt-1');
+        expect(service.generateLunchBreaks).toHaveBeenCalledWith('tenant-1', body, 'attempt-1', req.user);
     });
 
     it('requires a bounded Idempotency-Key before setup shift work', async () => {
@@ -109,7 +110,7 @@ describe('LunchBreaksController', () => {
     it('passes the normalized setup key and actor to the service', async () => {
         const service = { persistSetupShifts: vi.fn().mockResolvedValue({ shiftIds: [] }) };
         const controller = new LunchBreaksController(service as any);
-        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session' } };
         const body = { locationId: 'location-1', rows: [] };
 
         await controller.persistSetupShifts(req, body, ' setup-attempt-1 ');
@@ -139,7 +140,7 @@ describe('LunchBreaksController', () => {
     it('passes the normalized manual-break key and actor to the service', async () => {
         const service = { updateShiftBreaks: vi.fn().mockResolvedValue({ shiftId: 'shift-1' }) };
         const controller = new LunchBreaksController(service as any);
-        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1' } };
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session' } };
         const body = { locationId: 'location-1', breaks: [] };
 
         await controller.updateShiftBreaks(req, 'shift-1', body, ' break-attempt-1 ');
@@ -151,5 +152,14 @@ describe('LunchBreaksController', () => {
             'break-attempt-1',
             req.user,
         );
+    });
+    it('passes exact current actor/session to retained policy read and write owners', async () => {
+        const service = { getPolicy: vi.fn(), updatePolicy: vi.fn() };
+        const controller = new LunchBreaksController(service as any);
+        const req = { user: { tenantId: 'tenant-1', sub: 'manager-1', sessionId: 'exact-session' } };
+        const body = { lunchDurationMinutes: 45 };
+        await controller.getPolicy(req); await controller.updatePolicy(req, body);
+        expect(service.getPolicy).toHaveBeenCalledWith('tenant-1', req.user);
+        expect(service.updatePolicy).toHaveBeenCalledWith('tenant-1', body, req.user);
     });
 });

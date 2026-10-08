@@ -132,6 +132,31 @@ export class AuthController {
         return `${safeLocal}@${domain}`;
     }
 
+    private assertAuthBody(
+        body: unknown,
+        requiredStrings: readonly string[],
+        optionalStrings: readonly string[] = [],
+        optionalBooleans: readonly string[] = [],
+    ): void {
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            throw new BadRequestException('Invalid authentication request');
+        }
+        const value = body as Record<string, unknown>;
+        if (requiredStrings.some(key => typeof value[key] !== 'string')
+            || optionalStrings.some(key => value[key] !== undefined && typeof value[key] !== 'string')
+            || optionalBooleans.some(key => value[key] !== undefined && typeof value[key] !== 'boolean')) {
+            throw new BadRequestException('Invalid authentication request');
+        }
+    }
+
+    private assertEmailOtpBody(body: unknown, verify: boolean): void {
+        this.assertAuthBody(body, verify ? ['email', 'code'] : ['email'],
+            ['tenantSlug', 'tenantName', 'organizationName', 'signupCode', 'turnstileToken',
+                'signupChallengeToken', 'captchaToken', 'onboardingChallengeToken', 'termsVersion', 'privacyVersion',
+                ...(verify ? [] : ['code'])],
+            ['onboarding', 'termsAccepted', 'privacyAccepted']);
+    }
+
     private normalizeOtpEmail(value: unknown): string | null {
         if (typeof value !== 'string') return null;
         const email = value.trim().toLowerCase();
@@ -392,6 +417,7 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async resolveLoginFlow(@Body() body: { identifier: string; tenantSlug?: string }, @Req() req: Request) {
         this.assertSameOriginRequest(req);
+        this.assertAuthBody(body, ['identifier'], ['tenantSlug']);
         const result = await this.authService.resolveLoginMethod(body.identifier, body.tenantSlug);
         return {
             success: true,
@@ -414,6 +440,7 @@ export class AuthController {
         @Res() res: Response,
     ) {
         this.assertSameOriginRequest(req);
+        this.assertAuthBody(body, ['identifier', 'password'], ['tenantSlug']);
         const identifier = typeof body?.identifier === 'string' ? body.identifier.toLowerCase().trim() : '';
         if (identifier.includes('@') && !this.isBetaPasswordLoginRequest(req)) {
             throw new ForbiddenException('Email password sign-in is available only on the beta site');
@@ -469,6 +496,7 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async requestPasswordReset(@Body() body: PasswordResetRequestBody, @Req() req: Request) {
         this.assertSameOriginRequest(req);
+        this.assertAuthBody(body, [], ['identifier', 'tenantSlug']);
         await this.authService.createPasswordReset(body.identifier ?? '', body.tenantSlug);
         return PASSWORD_RESET_REQUEST_RESPONSE;
     }
@@ -482,6 +510,7 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async confirmPasswordReset(@Body() body: PasswordResetConfirmBody, @Req() req: Request) {
         this.assertSameOriginRequest(req);
+        this.assertAuthBody(body, ['token', 'password']);
         await this.authService.resetPasswordWithToken(body.token, body.password, this.sessionRequestAudit(req));
         return { success: true };
     }
@@ -545,7 +574,9 @@ export class AuthController {
         const result = await this.authService.handleOidcCallback(code, state, oidcState.tenantSlug, this.sessionRequestAudit(req));
         this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
-        if (result.requiresMfa) {
+        if (result.pinResetRequired === true) {
+            res.redirect(this.pinResetRedirect(oidcState.nextPath));
+        } else if (result.requiresMfa) {
             res.redirect(this.mfaRedirect(oidcState.nextPath));
         } else {
             res.redirect(oidcState.nextPath ?? '/dashboard');
@@ -561,6 +592,7 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async sendOtp(@Body() body: EmailOtpBody, @Req() req: Request) {
         this.assertSameOriginRequest(req);
+        this.assertEmailOtpBody(body, false);
         const normalizedEmail = this.normalizeOtpEmail(body.email);
         if (!normalizedEmail) {
             this.authDebug('send_otp_invalid_email');
@@ -639,6 +671,7 @@ export class AuthController {
         @Res() res: Response,
     ) {
         this.assertSameOriginRequest(req);
+        this.assertEmailOtpBody(body, true);
         const email = this.normalizeOtpEmail(body.email);
         if (!email) {
             throw new BadRequestException('Invalid email address');
@@ -675,8 +708,12 @@ export class AuthController {
             }, this.sessionRequestAudit(req));
             this.setSessionCookies(res, result.accessToken, result.refreshToken, result.csrfToken, result.sessionMaxAgeMs);
 
-            const roleRedirect = '/dashboard';
-            const redirectTo = result.requiresMfa ? this.mfaRedirect(safeNext) : safeNext ?? roleRedirect;
+            const pinResetRequired = result.pinResetRequired === true;
+            const redirectTo = pinResetRequired
+                ? this.pinResetRedirect(safeNext)
+                : result.requiresMfa
+                    ? this.mfaRedirect(safeNext)
+                    : safeNext ?? '/dashboard';
             this.authDebug('verify_otp_success', {
                 maskedEmail: this.maskEmail(email),
                 role: result.user.role,
@@ -690,6 +727,7 @@ export class AuthController {
             return res.json({
                 success: true,
                 redirectTo,
+                pinResetRequired,
                 requiresMfa: result.requiresMfa,
                 workspaceSlug: result.workspaceSlug,
             });
@@ -725,6 +763,7 @@ export class AuthController {
         @Res() res: Response,
     ) {
         this.assertSameOriginRequest(req);
+        this.assertAuthBody(body, ['identifier', 'pin'], ['tenantSlug']);
         const identifier = typeof body?.identifier === 'string' ? body.identifier.toLowerCase().trim() : '';
         const redirectMode = String((req.query as any)?.redirect || '') === '1';
         const nextPath = String((req.query as any)?.next || '');
@@ -827,6 +866,7 @@ export class AuthController {
     @Post('mfa/enroll/confirm')
     @HttpCode(HttpStatus.OK)
     async confirmMfaEnrollment(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
+        this.assertAuthBody(body, ['code']);
         const result = await this.authService.confirmMfaEnrollment(
             req.user.sub,
             body.code,
@@ -863,6 +903,7 @@ export class AuthController {
     @Post('mfa/verify')
     @HttpCode(HttpStatus.OK)
     async verifyMfa(@Req() req: any, @Body() body: { code: string }, @Res() res: Response) {
+        this.assertAuthBody(body, ['code']);
         const result = await this.authService.validateMfa(req.user.sub, body.code, req.user);
         if (result.accessToken) {
             res.cookie('access_token', result.accessToken, {
@@ -888,6 +929,7 @@ export class AuthController {
     @Post('mfa/disable')
     @HttpCode(HttpStatus.OK)
     async disableMfa(@Req() req: any, @Body() body: { code: string }) {
+        this.assertAuthBody(body, ['code']);
         return this.authService.disableMfa(req.user.sub, body.code, req.user, this.sessionRequestAudit(req));
     }
 

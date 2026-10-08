@@ -1,5 +1,17 @@
 # Runbook: Deployment Rollback
 
+**Current user scope:** keep public legacy VM4014 online until LunchLineup 2.0 has been fully tested for months. The immediate outcome is isolated, long-duration 2.0 qualification. Production migration and activation are entirely deferred. No production access, test traffic, settings, runtime, data, recovery, or routing action is authorized. The production bridge below is future source planning only; references to external production verification do not authorize performing it now.
+
+## Current incident boundary — 2026-09-29
+
+**The GitHub/VM217 automatic and emergency rollback procedures below are historical design contracts, not an available rollback path for current public production.** GitHub Actions is disabled; `.ci/pipeline.json` is the authoritative internal-beta qualification pipeline and has no approved public-production mutation or rollback stage. Do not dispatch the historical workflow, re-enable Actions, or invoke VM217 transports against a different host.
+
+Current public production is the legacy PHP/MariaDB service on **ProxmoxS VM4014 (`10.224.40.30`, `/var/www/html`)**, per the estate owner runfile retained under `Proxmox2/hosts/lunchlineup-prod/RUNFILE.md`. Coordinate any current production incident with that owner and its current recovery procedure. Proxmox1 VM106 is the protected legacy source/rollback reference; its retained source role does not authorize a restart, restore, export, migration experiment, or routing change. VM107 remains the held private rewrite environment and is not the public rollback destination. Recorded topology must be freshly verified by the owner before any authorized mutation.
+
+A rewritten application release needs the [production qualification bridge](production-qualification-bridge.md), an owner-approved destination and legacy recovery plan, and an independently rehearsed rollback before activation. Preserve exact release identity, independent signature verification, schema compatibility, bounded execution and cleanup, protected secrets, backup/PITR integrity, public-health readback, and conditional registry reconciliation. Do not weaken these gates to make the internal-beta receipt fit the former production verifier. No approved production signer or deployment authorization is created by this document.
+
+## Historical v2 rollback design reference
+
 ## Symptom
 
 Production smoke tests fail after a deployment, health checks regress, or users report broken functionality tied to the latest deploy.

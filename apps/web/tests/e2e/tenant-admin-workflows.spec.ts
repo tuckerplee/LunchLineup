@@ -1,4 +1,5 @@
-import { expect, test } from '@playwright/test';
+import { expect, test } from './qa-isolation-fixture';
+import type { Page } from '@playwright/test';
 
 import {
   e2eAdminPin,
@@ -8,6 +9,15 @@ import {
   loginWithPin,
   seedTenant,
 } from './support';
+
+async function openAdminNavigation(page: Page) {
+  const toggle = page.getByRole('button', { name: 'Admin navigation', exact: true });
+  if (await toggle.isVisible()) {
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  }
+  await expect(page.getByRole('navigation', { name: 'Admin navigation', exact: true })).toBeVisible();
+}
 
 test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, () => {
 
@@ -23,7 +33,7 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
       expectedPath: '/dashboard',
     });
 
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Admin Console' })).toHaveCount(0);
 
     const denial = await page.request.get('/admin/tenants', { maxRedirects: 0 });
@@ -32,13 +42,14 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
 
     await page.goto('/dashboard');
     await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
-    await expect(page.getByRole('heading', { name: 'Manager dashboard' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Your dashboard' })).toBeVisible();
   });
 
   test('lets super admins inspect tenants, users, and return to tenant scheduling', async ({ page }) => {
     await loginAsSeedSuperAdmin(page, '/admin');
 
     await expect(page.getByRole('heading', { name: 'System Overview' })).toBeVisible();
+    await openAdminNavigation(page);
     await expect(page.getByRole('link', { name: 'Admin Overview', exact: true })).toBeVisible();
     await expect(page.getByRole('link', { name: 'Calendar', exact: true })).toBeVisible();
 
@@ -50,6 +61,7 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
     await page.getByLabel('Search').fill('e2e-operations');
     await expect(operationsTenantRow).toContainText('e2e-operations');
 
+    await openAdminNavigation(page);
     await page.getByRole('link', { name: 'Users', exact: true }).click();
     await expect(page).toHaveURL(/\/admin\/users/);
     await expect(page.getByRole('heading', { name: 'Users' })).toBeVisible();
@@ -57,6 +69,7 @@ test.describe.serial('Tenant and admin SaaS workflows', { tag: '@full-stack' }, 
     await expect(page.getByText('E2E Super Admin')).toBeVisible();
     await expect(page.getByText(e2eSuperAdminUsername)).toBeVisible();
 
+    await openAdminNavigation(page);
     await page.getByRole('link', { name: 'Calendar', exact: true }).click();
     await expect(page).toHaveURL(/\/dashboard\/scheduling/);
     await expect(page.getByRole('heading', { name: 'Calendar' })).toBeVisible();

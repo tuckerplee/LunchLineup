@@ -130,7 +130,7 @@ export class OnboardingSignupService {
                 if (!attempt.recoveryExpiresAt || attempt.recoveryExpiresAt <= now) {
                     return null;
                 }
-                return this.loadClaimedOwner(tx, attempt.tenantId, attempt.userId);
+                return this.loadClaimedOwner(tx, attempt.tenantId, attempt.userId, identityHash);
             }
 
             if (
@@ -156,7 +156,7 @@ export class OnboardingSignupService {
                     where: { id: attempt.id },
                     data: { verifiedAt: now, recoveryExpiresAt },
                 });
-                return this.loadClaimedOwner(tx, attempt.tenantId, attempt.userId);
+                return this.loadClaimedOwner(tx, attempt.tenantId, attempt.userId, identityHash);
             }
 
             const tenant = await tx.tenant.create({
@@ -229,6 +229,7 @@ export class OnboardingSignupService {
         tx: TenantPrismaTransaction,
         tenantId: string | null,
         userId: string | null,
+        verifiedIdentityHash: string,
     ): Promise<ClaimedOnboardingOwner | null> {
         if (!tenantId || !userId) return null;
         const [tenant, user] = await Promise.all([
@@ -248,7 +249,8 @@ export class OnboardingSignupService {
                 },
             }),
         ]);
-        if (!tenant || !user) return null;
+        if (!tenant || !user || !user.email
+            || !this.hashesMatch(verifiedIdentityHash, this.hash(user.email))) return null;
         return {
             user,
             workspaceSlug: tenant.slug,

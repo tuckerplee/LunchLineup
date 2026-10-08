@@ -33,7 +33,7 @@ test('Prometheus runtime glob sees production groups but not promtool fixtures',
     .filter((entry) => entry.isFile() && entry.name.endsWith('.test.yml'))
     .map((entry) => entry.name)
     .sort();
-  assert.deepEqual(fixtureFiles, ['lunchlineup.test.yml', 'tenant-deletion-billing.test.yml']);
+  assert.deepEqual(fixtureFiles, ['lunchlineup.test.yml', 'native-api.test.yml', 'tenant-deletion-billing.test.yml']);
   for (const file of fixtureFiles) {
     const fixture = read(`infrastructure/prometheus/alerts/tests/${file}`);
     assert.match(fixture, /^rule_files:/m);

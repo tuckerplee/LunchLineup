@@ -8,6 +8,8 @@ import {
 } from '@nestjs/common';
 
 import { FeatureAccessService } from '../billing/feature-access.service';
+import { AuthService } from '../auth/auth.service';
+import { RbacService } from '../auth/rbac.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import {
     buildPayrollCsv,
@@ -24,7 +26,6 @@ import { serializeDateOnly } from './payroll-policy';
 import { serializePayrollExport } from './payroll-records';
 import { payrollLockAggregateSha256 } from './payroll-lock-snapshot';
 import {
-    applyPayrollTransactionTimeouts,
     isPayrollLockTimeout,
     isPrismaUniqueConflict,
     lockPayrollPeriod,
@@ -32,8 +33,7 @@ import {
     PAYROLL_CONCURRENT_CHANGE,
     PAYROLL_INTEGRITY_FAILURE,
     PAYROLL_REPLAY_CONFLICT,
-    PAYROLL_TRANSACTION_OPTIONS,
-    retryPayrollSerializableMutation,
+    runCurrentPayrollMutation,
     type PayrollActor,
     writePayrollAudit,
 } from './payroll-transaction';
@@ -44,6 +44,8 @@ export class PayrollExportService {
     constructor(
         private readonly tenantDb: TenantPrismaService,
         private readonly featureAccess: FeatureAccessService,
+        private readonly rbac: RbacService,
+        private readonly authService: AuthService,
     ) {}
 
     async entitlement(actor: PayrollActor) {
@@ -61,6 +63,7 @@ export class PayrollExportService {
     }
 
     async create(actor: PayrollActor, periodIdRaw: unknown, body: unknown, idempotencyKeyRaw: unknown) {
+        actor = Object.freeze({ ...actor });
         const periodId = requiredId(periodIdRaw, 'periodId');
         const request = body && typeof body === 'object' && !Array.isArray(body)
             ? body as Record<string, unknown>
@@ -73,32 +76,43 @@ export class PayrollExportService {
             idempotencyKey: normalizePayrollIdempotencyKey(idempotencyKeyRaw),
             body: { periodId, expectedCreditCost },
         });
-        const replay = await this.findReplay(actor, periodId, identity);
-        if (replay) return replay;
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:export',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, periodId, identity);
+                assertCurrent();
+                if (replay) return replay;
 
-        return retryPayrollSerializableMutation(async () => {
-            try {
-                return await this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-                await applyPayrollTransactionTimeouts(tx);
+                assertCurrent();
                 await this.featureAccess.lockTenantInTransaction(tx, actor.tenantId);
+                assertCurrent();
                 await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
                 await lockPayrollPeriod(tx, actor.tenantId, periodId);
+                assertCurrent();
                 const insideReplay = await this.findReplayInTransaction(tx, actor, periodId, identity);
+                assertCurrent();
                 if (insideReplay) return insideReplay;
 
+                assertCurrent();
                 const period = await tx.payrollPeriod.findFirst({ where: { id: periodId, tenantId: actor.tenantId } });
+                assertCurrent();
                 if (!period) throw new NotFoundException('Payroll period not found.');
                 if (period.status !== 'LOCKED') throw new ConflictException('Only a locked payroll period can be exported.');
+                assertCurrent();
                 const existing = await tx.payrollExportBatch.findFirst({
                     where: { tenantId: actor.tenantId, periodId: period.id },
                     select: { id: true },
                 });
+                assertCurrent();
                 if (existing) throw new ConflictException('Payroll period already has its canonical export batch.');
+                assertCurrent();
                 const entitlement = await this.featureAccess.assertFeatureEnabledInTransaction(
                     tx,
                     actor.tenantId,
                     'time_cards',
                 );
+                assertCurrent();
                 if (
                     entitlement.source !== 'credits'
                     || !Number.isSafeInteger(entitlement.creditCost)
@@ -111,11 +125,13 @@ export class PayrollExportService {
                 if (Number(entitlement.creditCost) !== expectedCreditCost) {
                     throw new ConflictException('Payroll export credit cost changed; refresh and confirm the current cost.');
                 }
+                assertCurrent();
                 const entries = await tx.payrollLockedEntry.findMany({
                     where: { tenantId: actor.tenantId, periodId: period.id },
                     orderBy: [{ sequence: 'asc' }, { id: 'asc' }],
                     take: MAX_PAYROLL_LOCK_ENTRIES + 1,
                 });
+                assertCurrent();
                 if (
                     entries.length === 0
                     || entries.length > MAX_PAYROLL_LOCK_ENTRIES
@@ -180,13 +196,17 @@ export class PayrollExportService {
                 }
                 const contentSha256 = payrollContentSha256(csv);
                 const creditTransactionId = `feature-usage-payroll-export:${identity.operationId}`;
+                assertCurrent();
                 const settlement = await this.featureAccess.recordFeatureUsageInTransaction(
                     tx,
                     actor.tenantId,
                     entitlement,
                     `Payroll export (${period.id})`,
                     `payroll-export:${identity.operationId}`,
+                    undefined,
+                    assertCurrent,
                 );
+                assertCurrent();
                 if (
                     settlement.consumedCredits !== entitlement.creditCost
                     || !Number.isSafeInteger(settlement.newBalance)
@@ -194,6 +214,7 @@ export class PayrollExportService {
                 ) {
                     throw new ServiceUnavailableException('Payroll export settlement is unavailable.');
                 }
+                assertCurrent();
                 const batch = await tx.payrollExportBatch.create({
                     data: {
                         id: batchId,
@@ -210,6 +231,7 @@ export class PayrollExportService {
                         newBalance: Number(settlement.newBalance),
                     },
                 });
+                assertCurrent();
                 await tx.payrollExportLine.createMany({
                     data: lines.map(({ line, lockedEntryId, canonicalSha256 }) => ({
                         id: line.id,
@@ -229,28 +251,27 @@ export class PayrollExportService {
                         canonicalSha256,
                     })),
                 });
+                assertCurrent();
                 const response = serializePayrollExport(batch);
+                assertCurrent();
                 await writePayrollAudit(tx, actor, {
                     action: 'PAYROLL_EXPORT_GENERATED',
                     resource: 'PayrollExportBatch',
                     resourceId: batch.id,
                     newValue: response,
-                });
+                }, assertCurrent);
+                assertCurrent();
                 return response;
-                }, PAYROLL_TRANSACTION_OPTIONS);
-            } catch (error) {
-                if (isPrismaUniqueConflict(error)) {
-                    const racedReplay = await this.findReplay(actor, periodId, identity);
-                    if (racedReplay) return racedReplay;
-                    throw new ConflictException('Payroll period already has its canonical export batch.');
-                }
-                if (isPayrollLockTimeout(error)) {
-                    const racedReplay = await this.findReplay(actor, periodId, identity);
-                    if (racedReplay) return racedReplay;
-                    throw new ServiceUnavailableException(PAYROLL_CONCURRENT_CHANGE);
-                }
-                throw error;
-            }
+            }, {
+            isRecoverable: error => isPrismaUniqueConflict(error) || isPayrollLockTimeout(error),
+            operation: async (tx, assertCurrent, actor, error) => {
+                assertCurrent();
+                const replay = await this.findReplayInTransaction(tx, actor, periodId, identity);
+                assertCurrent();
+                if (replay) return replay;
+                if (isPayrollLockTimeout(error)) throw new ServiceUnavailableException(PAYROLL_CONCURRENT_CHANGE);
+                throw new ConflictException('Payroll period already has its canonical export batch.');
+            },
         });
     }
 
@@ -265,57 +286,62 @@ export class PayrollExportService {
         filename: string;
         content: Buffer;
     }> {
+        actor = Object.freeze({ ...actor });
         const batchId = requiredId(batchIdRaw, 'exportId');
-        return retryPayrollSerializableMutation(() => this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            await applyPayrollTransactionTimeouts(tx);
-            await lockPayrollTenant(tx, actor.tenantId);
-            await this.lockBatchRow(tx, actor.tenantId, batchId);
-            const batch = await tx.payrollExportBatch.findFirst({ where: { id: batchId, tenantId: actor.tenantId } });
-            if (!batch) throw new NotFoundException('Payroll export not found.');
-            await this.verifyCreditProvenance(tx, batch);
-            const period = await tx.payrollPeriod.findFirst({
-                where: { id: batch.periodId, tenantId: actor.tenantId },
-                select: { localStartDate: true },
+        return runCurrentPayrollMutation(this.rbac, this.authService, actor, 'payroll:export',
+            async (tx, assertCurrent, actor) => {
+                assertCurrent();
+                await lockPayrollTenant(tx, actor.tenantId);
+                assertCurrent();
+                await this.lockBatchRow(tx, actor.tenantId, batchId);
+                assertCurrent();
+                const batch = await tx.payrollExportBatch.findFirst({ where: { id: batchId, tenantId: actor.tenantId } });
+                assertCurrent();
+                if (!batch) throw new NotFoundException('Payroll export not found.');
+                assertCurrent();
+                await this.verifyCreditProvenance(tx, batch);
+                assertCurrent();
+                const period = await tx.payrollPeriod.findFirst({
+                    where: { id: batch.periodId, tenantId: actor.tenantId },
+                    select: { localStartDate: true },
+                });
+                assertCurrent();
+                if (!period) throw new NotFoundException('Payroll period not found.');
+                assertCurrent();
+                const lines = await this.loadAndVerifyLines(tx, actor.tenantId, batch);
+                assertCurrent();
+                let content: Buffer;
+                try {
+                    content = buildPayrollCsv(lines);
+                } catch {
+                    throw new ServiceUnavailableException(PAYROLL_INTEGRITY_FAILURE);
+                }
+                if (payrollContentSha256(content) !== batch.contentSha256) {
+                    throw new ServiceUnavailableException(PAYROLL_INTEGRITY_FAILURE);
+                }
+                if (batch.status === 'GENERATED') {
+                    const downloadedAt = new Date();
+                    assertCurrent();
+                    const changed = await tx.payrollExportBatch.updateMany({
+                        where: { id: batch.id, tenantId: actor.tenantId, status: 'GENERATED' },
+                        data: { status: 'DOWNLOADED', downloadedAt },
+                    });
+                    assertCurrent();
+                    if (changed.count !== 1) throw new ConflictException('Payroll export download state changed. Retry.');
+                    assertCurrent();
+                    await writePayrollAudit(tx, actor, {
+                        action: 'PAYROLL_EXPORT_DOWNLOADED',
+                        resource: 'PayrollExportBatch',
+                        resourceId: batch.id,
+                        newValue: { downloadedAt: downloadedAt.toISOString() },
+                    }, assertCurrent);
+                    assertCurrent();
+                }
+                return {
+                    filename: `payroll-${serializeDateOnly(period.localStartDate)}-${batch.id}.csv`,
+                    content,
+                };
             });
-            if (!period) throw new NotFoundException('Payroll period not found.');
-            const lines = await this.loadAndVerifyLines(tx, actor.tenantId, batch);
-            let content: Buffer;
-            try {
-                content = buildPayrollCsv(lines);
-            } catch {
-                throw new ServiceUnavailableException(PAYROLL_INTEGRITY_FAILURE);
-            }
-            if (payrollContentSha256(content) !== batch.contentSha256) {
-                throw new ServiceUnavailableException(PAYROLL_INTEGRITY_FAILURE);
-            }
-            if (batch.status === 'GENERATED') {
-                const downloadedAt = new Date();
-                const changed = await tx.payrollExportBatch.updateMany({
-                    where: { id: batch.id, tenantId: actor.tenantId, status: 'GENERATED' },
-                    data: { status: 'DOWNLOADED', downloadedAt },
-                });
-                if (changed.count !== 1) throw new ConflictException('Payroll export download state changed. Retry.');
-                await writePayrollAudit(tx, actor, {
-                    action: 'PAYROLL_EXPORT_DOWNLOADED',
-                    resource: 'PayrollExportBatch',
-                    resourceId: batch.id,
-                    newValue: { downloadedAt: downloadedAt.toISOString() },
-                });
-            }
-            return {
-                filename: `payroll-${serializeDateOnly(period.localStartDate)}-${batch.id}.csv`,
-                content,
-            };
-        }, PAYROLL_TRANSACTION_OPTIONS));
-    }
-
-    private async findReplay(
-        actor: PayrollActor,
-        periodId: string,
-        identity: { operationId: string; requestHash: string },
-    ) {
-        return this.tenantDb.withTenant(actor.tenantId, (tx) =>
-            this.findReplayInTransaction(tx, actor, periodId, identity));
     }
 
     private async findReplayInTransaction(

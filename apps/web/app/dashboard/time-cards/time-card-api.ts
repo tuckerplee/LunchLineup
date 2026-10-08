@@ -1,3 +1,4 @@
+import { requireTimeCardMutationSuccess } from './time-card-mutation-result';
 import { fetchWithSession } from '@/lib/client-api';
 import { fetchAllBoundedPages, type BoundedPage } from '@/lib/bounded-pagination';
 import type {
@@ -98,8 +99,7 @@ export async function clockOutTimeCard(
     payload: { breakMinutes: number; notes?: string },
 ): Promise<void> {
     const response = await fetchWithSession('/time-cards/' + cardId + '/clock-out', jsonWriteInit('POST', payload));
-    const body = (await response.json().catch(() => ({}))) as { message?: string };
-    if (!response.ok) throw new Error(body.message ?? 'Unable to clock out.');
+    await requireTimeCardMutationSuccess(response, 'Unable to clock out.');
 }
 
 export function jsonWriteInit(

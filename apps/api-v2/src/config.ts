@@ -1,4 +1,5 @@
 import { isIP } from 'node:net';
+import { resolveNativeMetricsToken, type MetricsTokenReader } from './platform/metrics-token.js';
 
 export type ApiV2Config = {
   port: number;
@@ -16,8 +17,9 @@ export type ApiV2Config = {
   oidcSsoAvailable: boolean;
   cookieSecure: boolean;
   releaseSha: string;
-  trustProxy: boolean | number | string[];
+  trustProxy: boolean | string[];
   logLevel: string;
+  readonly metricsToken: string;
 };
 
 function boundedInteger(value: string | undefined, fallback: number, minimum: number, maximum: number): number {
@@ -111,22 +113,29 @@ function trustedNetwork(value: string): boolean {
   return bits >= 0 && bits <= (family === 4 ? 32 : 128);
 }
 
-function trustProxy(value: string | undefined): boolean | number | string[] {
+function trustProxy(value: string | undefined): boolean | string[] {
   const normalized = value?.trim().toLowerCase();
   if (!normalized || normalized === 'false' || normalized === '0') return false;
-  if (normalized === 'true') return 1;
-  if (/^\d+$/.test(normalized)) return boundedInteger(normalized, 1, 1, 10);
+  // Hop counts cannot authenticate the immediate proxy peer. Fastify 5.12
+  // removed them; reject legacy settings rather than silently losing trust or
+  // recreating an unsafe hop-only predicate.
+  if (normalized === 'true' || /^\d+$/.test(normalized)) {
+    throw new Error('TRUST_PROXY no longer accepts true or hop counts. Specify trusted named networks, IP addresses, or CIDRs, or false.');
+  }
 
   const networks = normalized.split(',').map((entry) => entry.trim());
   if (networks.some((entry) => !trustedNetwork(entry))) {
     throw new Error(
-      'TRUST_PROXY must be false, a hop count from 1 to 10, or a comma-separated list of trusted named networks, IP addresses, or CIDRs.',
+      'TRUST_PROXY must be false or a comma-separated list of trusted named networks, IP addresses, or CIDRs.',
     );
   }
   return networks;
 }
 
-export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
+export function loadConfig(
+  env: NodeJS.ProcessEnv = process.env,
+  metricsSecretReader?: MetricsTokenReader,
+): ApiV2Config {
   const appOrigin = normalizedOrigin(env.APP_ORIGIN ?? 'http://localhost:3000');
   const internalBetaEntitlementsEnabled = booleanSetting(
     env.INTERNAL_BETA_ENTITLEMENTS_ENABLED,
@@ -176,5 +185,6 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ApiV2Config {
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),
     logLevel: env.LOG_LEVEL?.trim() || 'info',
+    metricsToken: resolveNativeMetricsToken(env, metricsSecretReader),
   };
 }

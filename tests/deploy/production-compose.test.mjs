@@ -1750,6 +1750,7 @@ test('smoke environment generator writes the requested env and metrics token fil
       'JWT_REFRESH_SECRET',
       'SESSION_SECRET',
       'MFA_SECRET_ENCRYPTION_KEY_CURRENT',
+      'OTP_HMAC_SECRET',
       'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT',
       'PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY',
       'AVAILABILITY_IMPORT_ENCRYPTION_KEY',
@@ -1790,6 +1791,11 @@ test('smoke environment generator writes the requested env and metrics token fil
     assert.match(env.DATABASE_URL, /%3A%40%2F%3F%5B%5D%25@postgres/);
     assert.match(env.RABBITMQ_URL, /%3A%40%2F%3F%5B%5D%25@rabbitmq/);
     assert.match(env.JWT_SECRET, /^jwt_[A-Za-z0-9_-]{32,}$/);
+    assert.ok(/^otp_[A-Za-z0-9_-]{43}$/.test(env.OTP_HMAC_SECRET), 'smoke OTP must encode fresh 32-byte material');
+    assert.ok(Buffer.from(env.OTP_HMAC_SECRET.slice(4), 'base64url').length === 32, 'smoke OTP material must be 32 bytes');
+    for (const key of ['JWT_SECRET', 'JWT_REFRESH_SECRET', 'SESSION_SECRET', 'CSRF_SECRET']) {
+      assert.ok(env.OTP_HMAC_SECRET !== env[key], `smoke OTP must be independent from ${key}`);
+    }
     assert.equal(Buffer.from(env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT, 'base64').length, 32);
     assert.equal(Buffer.from(env.PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY, 'base64').length, 32);
     assert.equal(Buffer.from(env.AVAILABILITY_IMPORT_ENCRYPTION_KEY, 'base64').length, 32);
@@ -1879,7 +1885,17 @@ test('Grafana dashboard exposes backup freshness and host filesystem pressure', 
   assert.match(dashboard, /time\(\) - lunchlineup_backup_last_success_timestamp_seconds/);
   assert.match(dashboard, /Host Filesystem Free/);
   assert.match(dashboard, /node_filesystem_avail_bytes/);
-  assert.match(dashboard, /API Availability SLO \(30d\)/);
+  const nativeAvailability = JSON.parse(dashboard).panels.filter((panel) => panel.id === 13);
+  assert.equal(nativeAvailability.length, 1);
+  const [availability] = nativeAvailability;
+  assert.equal(availability.title, 'Native API Availability (30d, provisional)');
+  assert.deepEqual(availability.datasource, { type: 'prometheus', uid: 'prometheus' });
+  const failures = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[30d]))';
+  const eligible = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30d]))';
+  assert.deepEqual(availability.targets, [{ refId: 'A', expr: `(100 * (1 - ((${failures} or vector(0)) / ${eligible}))) and (${eligible} > 0)`, legendFormat: 'availability', instant: true }]);
+  assert.match(availability.description, /No traffic yields no data/);
+  assert.match(availability.description, /provisional until complete historical collection and independent launch evidence exist/);
+  assert.match(availability.description, /cannot certify a complete 30-day SLO or months of private testing/);
   assert.match(dashboard, /Public Web Availability SLO \(30d\)/);
   assert.match(dashboard, /lunchlineup_public_web_probe_success/);
   assert.match(dashboard, /"id": "tempo"/);

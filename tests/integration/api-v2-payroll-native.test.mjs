@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import test from 'node:test';
@@ -36,6 +37,32 @@ function identity(tenantId, user, role, permissions) {
   };
 }
 
+// Explicit synthetic MFA capability: native fixture proves database domain
+// behavior, not a physical Redis challenge or marker lifetime qualification.
+const mutationObserver = {
+  async observeSessionMfa(selected) {
+    return { ...selected, expiresAtEpochMs: Date.now() + 60_000,
+      expiresAtMonotonicMs: performance.now() + 60_000 };
+  },
+};
+
+async function seedMutationAuthority(owner, tenantId, user, role, permissions) {
+  const actor = identity(tenantId, user, role, permissions);
+  const catalog = await owner.permission.findMany({ where: { key: { in: permissions } }, select: { id: true, key: true } });
+  assert.deepEqual(catalog.map(row => row.key).sort(), [...permissions].sort(), 'existing permission catalog is required');
+  const scopedRole = await owner.role.create({ data: {
+    tenantId, name: `Payroll fixture ${user.id}`, slug: `payroll-fixture-${randomUUID()}`,
+    isSystem: false, isDefault: false,
+    rolePermissions: { create: catalog.map(permission => ({ permissionId: permission.id })) },
+  } });
+  await owner.roleAssignment.create({ data: { tenantId, userId: user.id, roleId: scopedRole.id } });
+  await owner.session.create({ data: { id: actor.sessionId, userId: user.id, refreshTokenHash: randomUUID(),
+    createdAt: new Date(), expiresAt: new Date(Date.now() + 60 * 60_000) } });
+  actor.roles = [{ id: scopedRole.publicId, name: scopedRole.name, isSystem: false, legacyRole: null }];
+  actor.pinResetRequired = false;
+  return actor;
+}
+
 function assertPublic(value, internalIds) {
   const body = JSON.stringify(value);
   for (const internalId of internalIds.filter((id) => typeof id === 'string' && id)) {
@@ -67,6 +94,10 @@ async function cleanup(owner, tenantIds) {
     ]) {
       await transaction.$executeRawUnsafe(`DELETE FROM "${table}" WHERE "tenantId" = ANY($1::text[])`, tenantIds);
     }
+    await transaction.session.deleteMany({ where: { user: { tenantId: { in: tenantIds } } } });
+    await transaction.roleAssignment.deleteMany({ where: { tenantId: { in: tenantIds } } });
+    await transaction.rolePermission.deleteMany({ where: { role: { tenantId: { in: tenantIds } } } });
+    await transaction.role.deleteMany({ where: { tenantId: { in: tenantIds } } });
     await transaction.location.deleteMany({ where: { tenantId: { in: tenantIds } } });
     await transaction.user.deleteMany({ where: { tenantId: { in: tenantIds } } });
     await transaction.tenant.deleteMany({ where: { id: { in: tenantIds } } });
@@ -85,7 +116,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
     employeeId: `api-v2-payroll-employee-${runId}`,
     locationId: `api-v2-payroll-location-${runId}`,
   };
-  const payroll = new PayrollService(new TenantDatabase(app));
+  const payroll = new PayrollService(new TenantDatabase(app), mutationObserver);
 
   try {
     const tenant = await owner.tenant.create({
@@ -126,7 +157,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
         data: { id: fixture.locationId, tenantId: tenant.id, name: 'API v2 Payroll Location', timezone: 'UTC' },
       }),
     ]);
-    const adminIdentity = identity(tenant.id, admin, 'ADMIN', [
+    const adminIdentity = await seedMutationAuthority(owner, tenant.id, admin, 'ADMIN', [
       'payroll:read',
       'payroll:policy_write',
       'payroll:lock',
@@ -135,7 +166,7 @@ test('native API v2 Payroll uses public IDs, tenant RLS, immutable evidence, exa
       'time_cards:approve',
     ]);
     const otherIdentity = identity(otherTenant.id, otherUser, 'ADMIN', ['payroll:read']);
-    const approverIdentity = identity(tenant.id, approver, 'ADMIN', ['time_cards:approve']);
+    const approverIdentity = await seedMutationAuthority(owner, tenant.id, approver, 'ADMIN', ['time_cards:approve']);
     const policyKey = `api-v2-payroll-policy-${runId}`;
     const policy = await payroll.createPolicy(adminIdentity, {
       timeZone: 'UTC',

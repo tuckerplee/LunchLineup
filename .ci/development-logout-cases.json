@@ -1,0 +1,44 @@
+{
+  "version": 1,
+  "releaseQualified": false,
+  "lanes": {
+    "fullstack": [
+      {
+        "file": "logout-surfaces-acceptance.spec.ts",
+        "titlePath": [
+          "logout-surfaces-acceptance.spec.ts",
+          "Proposed native document logout surfaces",
+          "revokes the enrolled platform session through the actual desktop Admin sidebar document link"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "logout-surfaces-acceptance.spec.ts",
+        "titlePath": [
+          "logout-surfaces-acceptance.spec.ts",
+          "Proposed native document logout surfaces",
+          "revokes the enrolled platform session through keyboard activation of the actual mobile Admin document link"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "logout-surfaces-acceptance.spec.ts",
+        "titlePath": [
+          "logout-surfaces-acceptance.spec.ts",
+          "Proposed native document logout surfaces",
+          "revokes the native mandatory-PIN-reset session through its actual document sign-out link"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "logout-surfaces-acceptance.spec.ts",
+        "titlePath": [
+          "logout-surfaces-acceptance.spec.ts",
+          "Proposed native document logout surfaces",
+          "retains its session on invalid PIN confirmation and clears the revoked session after genuine native PIN replacement"
+        ],
+        "project": "chromium"
+      }
+    ]
+  }
+}
