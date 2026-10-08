@@ -34,6 +34,11 @@ Production restore also requires:
 Non-empty target databases also require:
   RESTORE_ALLOW_NONEMPTY=YES_OVERWRITE
 
+Recovery permissions:
+  Migration-defined PUBLIC routine restrictions are reapplied atomically.
+  The configured APP_DB_USER receives application access after restore.
+  Arbitrary DBA-added ACLs are not preserved by role-portable logical archives.
+
 Postgres-only DR after RabbitMQ volume loss:
   RESTORE_REHYDRATE_DURABLE_QUEUES=true
 USAGE
@@ -889,6 +894,11 @@ stream_restore_sql() {
     printf "\nDO \$\$ BEGIN RAISE EXCEPTION 'backup stream validation failed'; END \$\$;\n"
     return 1
   fi
+  printf '\n'
+  if ! cat "${RESTORE_MANAGED_PERMISSIONS_SQL}"; then
+    printf "\nDO \$\$ BEGIN RAISE EXCEPTION 'restore permission policy unavailable'; END \$\$;\n"
+    return 1
+  fi
 }
 
 provision_and_verify_app_role() {
@@ -1001,6 +1011,8 @@ PLATFORM_ADMIN_DB_CONTEXT_SECRET="${PLATFORM_ADMIN_DB_CONTEXT_SECRET:-}"
 MIGRATION_DATABASE_URL="${MIGRATION_DATABASE_URL:-}"
 REQUIRED_CONFIRM="restore-${POSTGRES_DB}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RESTORE_MANAGED_PERMISSIONS_SQL="${SCRIPT_DIR}/restore-managed-permissions.sql"
+[ -r "${RESTORE_MANAGED_PERMISSIONS_SQL}" ] || fail "Application recovery permission policy is missing."
 for command_name in chmod head mkdir mktemp node rm stat timeout; do
   require_command "${command_name}"
 done
@@ -1082,7 +1094,7 @@ echo "Starting restore from ${BACKUP_DECLARED_FILE} into ${RESTORE_TARGET_ENV} d
 begin_restore_mutation_budget
 export -f stream_restore_sql
 export BACKUP_FILE BACKUP_KEY POSTGRES_USER POSTGRES_HOST POSTGRES_PORT POSTGRES_DB
-export RESTORE_TARGET_ENV RESTORE_PRODUCTION_SYSTEM_IDENTIFIER TABLE_COUNT
+export RESTORE_TARGET_ENV RESTORE_PRODUCTION_SYSTEM_IDENTIFIER TABLE_COUNT RESTORE_MANAGED_PERMISSIONS_SQL
 run_restore_mutation_command 'destructive restore transaction' bash -c '
 set -euo pipefail
 stream_restore_sql | psql \
