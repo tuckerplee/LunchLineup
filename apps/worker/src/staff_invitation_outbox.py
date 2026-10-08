@@ -549,9 +549,8 @@ async def sweep_staff_invitation_outbox(
     limit = batch_size if batch_size is not None else runtime.sweep_batch_size
     if limit < 1 or limit > 100:
         raise ValueError("staff invitation sweep batch must be between 1 and 100")
-    items = await asyncio.to_thread(active_store.claim_batch, limit)
     outcomes = {
-        "claimed": len(items),
+        "claimed": 0,
         "delivered": 0,
         "retrying": 0,
         "dead_lettered": 0,
@@ -560,7 +559,14 @@ async def sweep_staff_invitation_outbox(
         "lease_lost": 0,
         "provider_auth_configuration_failure": 0,
     }
-    for item in items:
+    for _ in range(limit):
+        # Start the lease only when this sequential sender is ready. Leasing the
+        # whole batch first can exhaust later rows' attempts before any handoff.
+        items = await asyncio.to_thread(active_store.claim_batch, 1)
+        if not items:
+            break
+        item = items[0]
+        outcomes["claimed"] += 1
         try:
             outcome = await deliver_invitation(item, store=active_store, provider=active_provider)
         except InvitationLeaseLostError:

@@ -19,6 +19,7 @@ from src.staff_invitation_store import (
     GlobalClaimCapabilityError,
     InvitationDiagnostics,
     InvitationItem,
+    InvitationLeaseLostError,
     PostgresInvitationStore,
 )
 
@@ -388,9 +389,60 @@ class InvitationDeliveryTests(IsolatedAsyncioTestCase):
             batch_size=7,
         )
 
-        self.assertEqual(store.claim_limits, [7])
+        self.assertEqual(store.claim_limits, [1, 1])
         self.assertEqual(result["delivered"], 1)
         self.assertEqual(result["systemic_provider_failure"], 1)
+
+    async def test_slow_sends_claim_fresh_leases_within_total_batch_budget(self):
+        clock = [0.0]
+        expirations = {}
+        claim_times = []
+
+        class LeaseStore(FakeStore):
+            def claim_batch(self, limit):
+                items = super().claim_batch(limit)
+                for item in items:
+                    claim_times.append(clock[0])
+                    expirations[item.id] = clock[0] + 120
+                return items
+
+            def deliver_if_eligible(self, item, recipient_email, deliver):
+                if clock[0] >= expirations[item.id]:
+                    raise InvitationLeaseLostError("lease expired before provider handoff")
+                return super().deliver_if_eligible(item, recipient_email, deliver)
+
+        class SlowProvider(FakeProvider):
+            def send(self, item, payload):
+                clock[0] += 9  # Below the supported default10s provider timeout.
+                return super().send(item, payload)
+
+        items = [encrypted_item(attempts=8, item_id=f"final-attempt-{i}") for i in range(26)]
+        store = LeaseStore(items=items, outcomes=["delivered"] * 25)
+        provider = SlowProvider([f"provider-{i}" for i in range(25)])
+        result = await delivery.sweep_staff_invitation_outbox(
+            store=store, provider=provider, batch_size=25,
+        )
+
+        self.assertEqual(result["claimed"], 25)
+        self.assertEqual(result["delivered"], 25)
+        self.assertEqual(result["lease_lost"], 0)
+        self.assertEqual(result["dead_lettered"], 0)
+        self.assertEqual(store.claim_limits, [1] * 25)
+        self.assertEqual(claim_times, list(range(0, 225, 9)))
+        self.assertEqual([item.id for item in provider.items], [item.id for item in items[:25]])
+        self.assertEqual(store.items, items[25:])
+        self.assertEqual(store.failed, [])
+
+    async def test_empty_sweep_stops_after_one_claim_without_provider_handoff(self):
+        store = FakeStore(items=[])
+        provider = FakeProvider()
+        result = await delivery.sweep_staff_invitation_outbox(
+            store=store, provider=provider, batch_size=25,
+        )
+        self.assertEqual(store.claim_limits, [1])
+        self.assertEqual(result["claimed"], 0)
+        self.assertEqual(result["delivered"], 0)
+        self.assertEqual(provider.items, [])
 
     async def test_loop_publishes_fresh_readiness_then_fails_closed_on_shutdown(self):
         delivery.SWEEP_LAST_SUCCESS.set(0)
