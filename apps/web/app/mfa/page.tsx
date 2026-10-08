@@ -1,14 +1,15 @@
 'use client';
 
 import Link from 'next/link';
-import { Suspense, useCallback, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Copy, Printer } from 'lucide-react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchPublicApi } from '@/lib/client-api';
 import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import { legalContacts } from '../legal-config';
-import { readOneTimeRecoveryCodes, recoveryCodesAsText } from './recovery-codes';
+import { recoveryCodesAsText } from './recovery-codes';
+import { requireMfaConfirmation, requireMfaEnrollmentState, requireMfaSetupChallenge } from '../dashboard/settings/mfa-enrollment-contract';
 
 type MfaMode = 'checking' | 'verify' | 'setup' | 'recovery-codes' | 'recovery';
 
@@ -31,27 +32,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
     return typeof value === 'string' && value.trim() ? value : undefined;
-}
-
-function readEnrollmentEnabled(payload: unknown): boolean | null {
-    if (!isRecord(payload)) return null;
-    for (const key of ['enabled', 'mfaEnabled', 'enrolled']) {
-        if (typeof payload[key] === 'boolean') return payload[key];
-    }
-    return null;
-}
-
-function readSetup(payload: unknown): MfaSetup | null {
-    if (!isRecord(payload)) return null;
-    const nestedSetup = isRecord(payload.setup) ? payload.setup : null;
-    const source = nestedSetup ?? payload;
-    const setup: MfaSetup = {
-        manualEntryKey: readString(source.manualEntryKey) ?? readString(source.secret),
-        otpauthUrl: readString(source.otpauthUrl),
-        qrCodeDataUrl: readString(source.qrCodeDataUrl),
-        expiresAt: readString(source.expiresAt),
-    };
-    return setup.manualEntryKey || setup.otpauthUrl || setup.qrCodeDataUrl ? setup : null;
 }
 
 function readMessage(payload: unknown, fallback: string): string {
@@ -111,12 +91,15 @@ function MfaContent() {
     const [recoveryMessage, setRecoveryMessage] = useState('Contact your workspace administrator to finish MFA setup, then sign in again.');
     const [isHydrated, setIsHydrated] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
+    const requestInFlight = useRef(false);
 
     useEffect(() => {
         setIsHydrated(true);
     }, []);
 
     const beginEnrollment = useCallback(async () => {
+        if (requestInFlight.current) return false;
+        requestInFlight.current = true;
         setIsLoading(true);
         setError(null);
         try {
@@ -132,14 +115,14 @@ function MfaContent() {
                 return false;
             }
 
-            const nextSetup = readSetup(data);
-            if (!nextSetup) {
-                setRecoveryMessage('MFA setup is required, but the server did not return setup details. Contact your workspace administrator, then sign in again.');
-                setMode('recovery');
-                return false;
-            }
-
-            setSetup(nextSetup);
+            const nextSetup = requireMfaSetupChallenge(data);
+            setSetup({
+                manualEntryKey: nextSetup.manualEntryKey,
+                otpauthUrl: nextSetup.otpauthUrl ?? undefined,
+                qrCodeDataUrl: nextSetup.qrCodeDataUrl ?? undefined,
+                expiresAt: nextSetup.expiresAt ?? undefined,
+            });
+            setCode('');
             setMode('setup');
             return true;
         } catch {
@@ -147,6 +130,7 @@ function MfaContent() {
             setMode('recovery');
             return false;
         } finally {
+            requestInFlight.current = false;
             setIsLoading(false);
         }
     }, []);
@@ -175,15 +159,8 @@ function MfaContent() {
                     return;
                 }
 
-                const existingSetup = readSetup(data);
-                if (existingSetup) {
-                    setSetup(existingSetup);
-                    setMode('setup');
-                    return;
-                }
-
-                const enabled = readEnrollmentEnabled(data);
-                if (enabled === false) {
+                const enrollment = requireMfaEnrollmentState(data);
+                if (!enrollment.enabled) {
                     await beginEnrollment();
                     return;
                 }
@@ -202,12 +179,14 @@ function MfaContent() {
 
     const verifyCode = async (event: React.FormEvent) => {
         event.preventDefault();
+        if (requestInFlight.current) return;
         const normalizedCode = code.trim().replace(/\s+/g, '');
         if (normalizedCode.length < 6) {
             setError('Enter your authentication code.');
             return;
         }
 
+        requestInFlight.current = true;
         setIsLoading(true);
         setError(null);
         try {
@@ -218,9 +197,10 @@ function MfaContent() {
                 body: JSON.stringify({ code: normalizedCode }),
             });
             const data = await res.json().catch(() => ({}));
-            if (!res.ok || !data.success) {
+            if (!res.ok || data.success !== true || data.mfaVerified !== true) {
                 const message = readMessage(data, 'Invalid authentication code.');
                 if (res.status === 409 || /enroll|setup|required/i.test(message)) {
+                    requestInFlight.current = false;
                     await beginEnrollment();
                     return;
                 }
@@ -229,18 +209,22 @@ function MfaContent() {
             window.location.assign(nextPath);
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to verify the code.');
+        } finally {
+            requestInFlight.current = false;
             setIsLoading(false);
         }
     };
 
     const confirmEnrollment = async (event: React.FormEvent) => {
         event.preventDefault();
+        if (requestInFlight.current) return;
         const normalizedCode = code.trim().replace(/\s+/g, '');
         if (normalizedCode.length < 6) {
             setError('Enter your authenticator code.');
             return;
         }
 
+        requestInFlight.current = true;
         setIsLoading(true);
         setError(null);
         try {
@@ -254,10 +238,7 @@ function MfaContent() {
             if (!res.ok) {
                 throw new Error(readMessage(data, 'Unable to enable MFA.'));
             }
-            const oneTimeCodes = readOneTimeRecoveryCodes(data);
-            if (oneTimeCodes.length === 0) {
-                throw new Error('MFA was enabled, but no recovery codes were returned. Contact your workspace administrator before continuing.');
-            }
+            const oneTimeCodes = requireMfaConfirmation(data);
             setCode('');
             setSetup(null);
             setRecoveryCodes(oneTimeCodes);
@@ -266,6 +247,8 @@ function MfaContent() {
             setMode('recovery-codes');
         } catch (err) {
             setError(err instanceof Error ? err.message : 'Unable to enable MFA.');
+        } finally {
+            requestInFlight.current = false;
             setIsLoading(false);
         }
     };
@@ -379,6 +362,9 @@ function MfaContent() {
                                 {isLoading ? 'Enabling...' : 'Enable MFA and continue'}
                             </button>
                         </form>
+                        <button type="button" className="btn btn-secondary" disabled={isLoading} onClick={() => void beginEnrollment()}>
+                            Restart MFA setup
+                        </button>
                     </>
                 ) : null}
 
@@ -436,6 +422,9 @@ function MfaContent() {
                     <>
                         <h1>MFA setup needs help</h1>
                         <p>{recoveryMessage}</p>
+                        <button type="button" className="btn btn-secondary" disabled={isLoading} onClick={() => void beginEnrollment()}>
+                            Retry MFA setup
+                        </button>
                         <PrivilegedAccountRecovery />
                     </>
                 ) : null}

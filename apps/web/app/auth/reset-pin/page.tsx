@@ -57,7 +57,7 @@ function ResetPinContent() {
                 body: JSON.stringify({ currentPin, newPin }),
             });
             const rotatePayload = await rotateResponse.json().catch(() => ({}));
-            if (!rotateResponse.ok) {
+            if (!rotateResponse.ok || rotatePayload?.success !== true) {
                 throw new Error(readMessage(rotatePayload, 'Unable to update PIN.'));
             }
 

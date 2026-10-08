@@ -104,7 +104,8 @@ function harness(action: Action, pinEffectStage?: PinEffectStage) {
                     return state.user.deletedAt || state.user.suspendedAt || state.user.tenantId !== ids.tenantId ? null : structuredClone(state.user);
                 }),
                 update: vi.fn(async ({ where, data }: any) => {
-                    expect(where).toEqual({ id: ids.userId }); writes('user', data); staged.push(data); return {};
+                    expect(where).toEqual({ id: ids.userId }); writes('user', data); staged.push(data);
+                    await afterPinEffect('user', { where, data }); return {};
                 }),
                 updateMany: vi.fn(async ({ where, data }: any) => {
                     writes('user', data); staged.push(data);
@@ -572,4 +573,44 @@ describe('retained PIN late-effect bounded current authority', () => {
             expect(result.error).toBeUndefined(); assertPinCommitted(h);
         });
     }
+});
+
+
+// Reuse the existing staged transaction effect gate for the actual disableMfa
+// owner. This models rollback; it is not native PG/TOTP/Redis acceptance.
+describe('MFA removal expiry after staged account/session/audit waits', () => {
+  for (const stage of ['user', 'sessions', 'audit'] as const) {
+    for (const lifetime of ['stored session', 'effective policy'] as const) {
+      for (const proof of ['totp', 'recovery'] as const) {
+        it.each([true, false])(`${stage}, ${lifetime}, ${proof}: exact-deadline refusal=%s is atomic`, async expires => {
+          const h = harness('disable', stage);
+          if (proof === 'recovery') h.useBackupProof();
+          const userBefore = structuredClone(h.state.user); const sessionBefore = structuredClone(h.state.session);
+          const remaining = configurePinDeadline(h, lifetime);
+          const expirySession = structuredClone(h.state.session);
+          const result = await throughPinEffect(h, remaining - (expires ? 0 : 1));
+          const expectedStages = ['user', 'sessions', 'audit'];
+          expect(h.pinAttempts.map(attempt => attempt.stage)).toEqual(expires ? expectedStages.slice(0, expectedStages.indexOf(stage) + 1) : expectedStages);
+          expect(h.activeTransactions()).toBe(0);
+          expect(h.proofs).toHaveBeenCalledTimes(proof === 'totp' ? 1 : 0);
+          const userAttempt = h.pinAttempts[0];
+          expect(userAttempt.args).toEqual({ where: { id: ids.userId }, data: { mfaEnabled: false, mfaSecret: null, mfaBackupCodes: [] } });
+          for (const attempt of h.pinAttempts) expect(attempt.active).toBe(1);
+          if (expires) {
+            expect(result.error).toBeInstanceOf(UnauthorizedException); expect(result.value).toBeUndefined();
+            expect(h.committed).not.toHaveBeenCalled(); expect(h.state.user).toEqual(userBefore);
+            expect(h.state.session).toEqual(expirySession); expect(h.redis.del).not.toHaveBeenCalled();
+          } else {
+            expect(result.error).toBeUndefined(); expect(result.value).toEqual({ success: true, mfaEnabled: false });
+            expect(h.state.user).toMatchObject({ mfaEnabled: false, mfaSecret: null, mfaBackupCodes: [] });
+            expect(h.state.session.revokedAt).toBeInstanceOf(Date);
+            expect(h.committed).toHaveBeenCalledTimes(proof === 'totp' ? 4 : 3);
+            expect(h.audits).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ action: 'MFA_DISABLED', resourceId: ids.userId }));
+            expect(h.redis.del).toHaveBeenCalledExactlyOnceWith(`session_mfa:${ids.sessionId}`);
+          }
+          expect(sessionBefore.revokedAt).toBeNull(); expect(h.jwt.generateAccessToken).not.toHaveBeenCalled();
+        });
+      }
+    }
+  }
 });

@@ -2095,6 +2095,7 @@ export class AuthService implements OnModuleDestroy {
             const settings = await this.tenantSecuritySettingsInTransaction(tx, locator.tenantId);
             const effectiveExpiresAt = this.assertSessionActive(session, settings);
             const access = await this.rbacService.getEffectiveAccessInTransaction(tx, locator.userId, locator.tenantId);
+            this.assertSessionActive(session, settings);
             const mfaRequired = this.isMfaRequired(session.user, settings, access);
             const markerMatches = marker?.sessionId === session.id
                 && marker.userId === locator.userId && marker.tenantId === locator.tenantId;
@@ -2112,6 +2113,7 @@ export class AuthService implements OnModuleDestroy {
                 },
             });
 
+            this.assertSessionActive(session, settings);
             const rotated = await tx.session.updateMany({
                 where: {
                     id: session.id,
@@ -2135,6 +2137,7 @@ export class AuthService implements OnModuleDestroy {
                 throw new UnauthorizedException('Invalid or expired refresh token');
             }
 
+            this.assertSessionActive(session, settings);
             return { status: 'rotated', authorization: { session, access, effectiveExpiresAt, mfaRequired, mfaVerified } };
         });
     }
@@ -2872,10 +2875,12 @@ export class AuthService implements OnModuleDestroy {
                         mfaBackupCodes: [],
                     },
                 });
+                this.assertSessionActive(currentSession, settings);
                 const sessions = await tx.session.updateMany({
                     where: { userId: user.id, revokedAt: null },
                     data: { revokedAt: new Date() },
                 });
+                this.assertSessionActive(currentSession, settings);
                 await tx.auditLog.create({
                     data: {
                         tenantId: user.tenantId,
@@ -2894,6 +2899,10 @@ export class AuthService implements OnModuleDestroy {
                     },
                 });
 
+                // A write or audit can wait past the effective deadline too.
+                // Reject inside this transaction so proof, enrollment, sessions
+                // and audit all roll back together on expired authority.
+                this.assertSessionActive(currentSession, settings);
                 return activeSessions.map((session) => session.id);
             }
 
