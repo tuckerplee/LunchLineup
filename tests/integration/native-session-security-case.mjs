@@ -560,3 +560,150 @@ export async function runNativeCredentialSecurity(context){
   }
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native credential scenario or owned cleanup failed; preserve first attempt.');
 }
+
+/** Authenticated synthetic callback over retained HTTP and real PostgreSQL.
+ * No provider traffic or public Caddy ingress qualification. */
+export async function runNativeSignedCallback(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');assert.equal(context.exclusiveRedis,true);
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));assert.equal(context.redisUrl.toString(),redisUrl.toString());assert.equal(context.targetReceiptSha256,undefined);
+  const require=createRequire(import.meta.url);require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory}=require('@nestjs/core'),{ConfigService}=require('@nestjs/config');
+  const express=require('express'),{Webhook}=require('standardwebhooks');
+  const {EmailDeliveryFeedbackController}=require('../../apps/api/src/email-delivery/email-delivery-feedback.controller.ts');
+  const {EmailDeliveryFeedbackService}=require('../../apps/api/src/email-delivery/email-delivery-feedback.service.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {captureRawBody}=require('../../apps/api/src/common/bootstrap-security.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString()),client=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const nonce=randomUUID(),tenantIds=[`native-callback-${nonce}`,`native-callback-foreign-${nonce}`],users=[],apps=[],checks=[],cleanupFailures=[];
+  const key=`whsec_${randomBytes(32).toString('base64')}`,signer=new Webhook(key),wrongSigner=new Webhook(`whsec_${randomBytes(32).toString('base64')}`);
+  const capability=process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET;assert.ok(capability);
+  let primary,complete=false,databaseCleaned=false,ownedAppsClosed=false;
+  const startedAt=new Date().toISOString(),checkpoint=name=>checks.push(name);
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const fields={id:true,tenantId:true,email:true,deletedAt:true,emailDeliverySuppressedAt:true,emailDeliverySuppressionReason:true,emailDeliveryLastEventAt:true};
+  const read=()=>owner.user.findMany({where:{id:{in:users.map(row=>row.id)}},select:fields,orderBy:{id:'asc'}});
+  const signed=(bytes,offset=0,sign=signer)=>{const id=`msg_${randomUUID()}`,date=new Date(Date.now()+offset*1000);return {'svix-id':id,'svix-timestamp':String(Math.floor(date.getTime()/1000)),'svix-signature':sign.sign(id,date,bytes)};};
+  const start=async apiKey=>{
+    const config=new ConfigService({RESEND_API_KEY:apiKey,RESEND_WEBHOOK_SECRET:key});
+    class CallbackModule{}
+    Module({controllers:[EmailDeliveryFeedbackController],providers:[EmailDeliveryFeedbackService,{provide:ConfigService,useValue:config},{provide:TenantPrismaService,useValue:new TenantPrismaService(client)}]})(CallbackModule);
+    const app=await bounded(NestFactory.create(CallbackModule,{bodyParser:false,logger:false,abortOnError:false}),'Callback retained composition');
+    const sockets=track(app.getHttpServer()),entry={app,sockets,config};apps.push(entry);
+    app.use(express.json({limit:cap,verify:captureRawBody}));app.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    app.useGlobalFilters(new ProductionExceptionFilter());await bounded(app.listen(0,'127.0.0.1'),'Callback retained listen');entry.port=app.getHttpServer().address().port;return entry;
+  };
+  const request=(entry,bytes,headers=signed(bytes),contentType='application/json')=>{
+    assert.ok(Buffer.isBuffer(bytes)&&bytes.length<=cap);
+    return new Promise((done,reject)=>{
+      let ended=false,size=0;const chunks=[];
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:entry.port,path:'/v1/email-delivery/provider-events',method:'POST',agent:false,
+        headers:{...headers,'Content-Type':contentType,'Content-Length':bytes.length}},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Callback response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Callback response failed')));res.once('aborted',()=>finish(new Error('Callback response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Callback response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Callback request deadline'));},10000);
+      req.once('error',()=>finish(new Error('Callback HTTP request failed')));req.end(bytes);
+    });
+  };
+  const unchanged=async(before,operation,status)=>{const response=await operation();assert.equal(response.status,status);assert.deepEqual(await read(),before);return response;};
+  try{
+    const [role]=await client.$queryRawUnsafe('SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user');
+    assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+    for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+    const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    const [table]=await client.$queryRawUnsafe(`SELECT relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid='"User"'::regclass`);assert.equal(table.relrowsecurity,true);assert.equal(table.relforcerowsecurity,true);
+    const main=await start(`re_fixture_${randomBytes(16).toString('hex')}`),unconfigured=await start('');
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'Private callback fixture',status:'ACTIVE'}});
+    const recipient=`callback-${nonce}@example.invalid`,unrelated=`unrelated-${nonce}@example.invalid`;
+    for(const [index,tenantId]of [tenantIds[0],tenantIds[1],tenantIds[0],tenantIds[1]].entries()){
+      users.push(await owner.user.create({data:{tenantId,username:`callback${nonce.replaceAll('-','')}${index}`,name:'Callback fixture',role:'STAFF',
+        email:index===2?unrelated:index===1?recipient.toUpperCase():recipient,deletedAt:index===3?new Date():null,
+        emailDeliverySuppressedAt:null,emailDeliverySuppressionReason:null,emailDeliveryLastEventAt:null}}));
+    }
+    const baseline=await read();assert.equal(baseline.length,4);
+    for(const row of baseline){
+      const deleted=row.id===users[3].id;assert.equal(Boolean(row.deletedAt),deleted);
+      // Canonical BEFORE INSERT/UPDATE privacy trigger removes deleted-user email.
+      // Preserve that supported tombstone; never bypass the trigger to fake a match.
+      if(deleted)assert.equal(row.email,null);
+      else assert.equal(row.email.toLowerCase(),row.id===users[2].id?unrelated:recipient);
+      assert.equal(row.emailDeliverySuppressedAt,null);assert.equal(row.emailDeliveryLastEventAt,null);assert.equal(row.emailDeliverySuppressionReason,null);
+    }
+    checkpoint('restricted-role-forced-RLS-and-four-owned-recipients');
+    const occurred=new Date(Date.now()-60000),payload=(type='email.bounced',time=occurred,to=[recipient,recipient.toUpperCase()],bounce='Permanent')=>Buffer.from(JSON.stringify({type,created_at:time instanceof Date?time.toISOString():time,data:{to,bounce:{type:bounce}}},null,2));
+    const bytes=payload();
+    for(const header of ['svix-id','svix-timestamp','svix-signature']){const headers=signed(bytes);delete headers[header];await unchanged(baseline,()=>request(main,bytes,headers),400);}
+    checkpoint('each-missing-signature-header-refused-without-write');
+    await unchanged(baseline,()=>request(main,Buffer.concat([bytes,Buffer.from(' ')]),signed(bytes)),400);
+    await unchanged(baseline,()=>request(main,bytes,signed(bytes,0,wrongSigner)),400);
+    await unchanged(baseline,()=>request(main,bytes,{'svix-id':'invalid','svix-timestamp':'not-a-number','svix-signature':'v1,invalid'}),400);
+    await unchanged(baseline,()=>request(main,bytes,signed(bytes),'text/plain'),400);checkpoint('raw-byte-tamper-wrong-key-invalid-header-missing-raw-body-refused');
+    for(const offset of [-600,600])await unchanged(baseline,()=>request(main,bytes,signed(bytes,offset)),400);
+    checkpoint('expired-and-future-signed-timestamps-refused');
+    await unchanged(baseline,()=>request(unconfigured,bytes),503);main.config.set('RESEND_WEBHOOK_SECRET','');
+    try{await unchanged(baseline,()=>request(main,bytes),503);}finally{main.config.set('RESEND_WEBHOOK_SECRET',key);}
+    checkpoint('missing-key-and-missing-secret-fail-closed');
+    await unchanged(baseline,()=>request(main,payload('email.complained','invalid-date')),400);checkpoint('authenticated-invalid-event-time-refused');
+    for(const body of [payload('email.bounced',occurred,[recipient],'Transient'),payload('email.delivered'),payload('email.complained',occurred,[]),payload('email.complained',occurred,[null,42,'invalid'])]){
+      const response=await unchanged(baseline,()=>request(main,body),200);assert.deepEqual(response.body,{received:true,suppressed:false,matchedUsers:0});
+    }checkpoint('transient-unrecognized-empty-invalid-recipients-no-effect');
+    // Real SQL capability refusal, never a mocked persistence exception.
+    process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET=randomBytes(32).toString('hex');
+    try{await unchanged(baseline,()=>request(main,bytes),500);}finally{process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET=capability;}
+    checkpoint('database-capability-refusal-not-acknowledged-no-mutation');
+    const assertSuppressed=async(reason,time)=>{
+      const rows=await read();for(const row of rows){const original=baseline.find(item=>item.id===row.id);
+        if([users[0].id,users[1].id].includes(row.id))assert.deepEqual(row,{...original,emailDeliverySuppressedAt:time,emailDeliverySuppressionReason:reason,emailDeliveryLastEventAt:time});
+        else assert.deepEqual(row,original);
+      }return rows;
+    };
+    const eventHeaders=signed(bytes),accepted=await request(main,bytes,eventHeaders);assert.equal(accepted.status,200);assert.deepEqual(accepted.body,{received:true,suppressed:true,matchedUsers:2});
+    const hard=await assertSuppressed('hard_bounce',occurred);checkpoint('signed-hard-bounce-cross-tenant-active-only-independent-readback');
+    const replay=await unchanged(hard,()=>request(main,bytes,eventHeaders),200);assert.deepEqual(replay.body,{received:true,suppressed:true,matchedUsers:2});checkpoint('equal-time-authenticated-replay-no-additional-business-effect');
+    const older=await unchanged(hard,()=>request(main,payload('email.complained',new Date(occurred.getTime()-1000))),200);assert.deepEqual(older.body,{received:true,suppressed:true,matchedUsers:0});checkpoint('older-authenticated-event-cannot-regress-suppression');
+    const complaintAt=new Date(occurred.getTime()+1000),complaint=await request(main,payload('email.complained',complaintAt));assert.equal(complaint.status,200);assert.deepEqual(complaint.body,{received:true,suppressed:true,matchedUsers:2});await assertSuppressed('complaint',complaintAt);checkpoint('newer-authenticated-complaint-exact-readback');
+    const suppressedAt=new Date(occurred.getTime()+2000),suppressed=await request(main,payload('email.suppressed',suppressedAt));assert.equal(suppressed.status,200);assert.deepEqual(suppressed.body,{received:true,suppressed:true,matchedUsers:2});await assertSuppressed('provider_suppressed',suppressedAt);checkpoint('newer-authenticated-provider-suppression-exact-readback');
+    assert.equal(await owner.auditLog.count({where:{tenantId:{in:tenantIds}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:tenantIds}}}),0);checkpoint('no-fixture-audit-or-mail-outbox-side-effects');
+    assert.equal(checks.length,14);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET=capability;
+    for(const entry of apps){
+      await attempt(()=>bounded(entry.app.close(),'Callback app close',15000));
+      await attempt(()=>bounded(Promise.all([...entry.sockets].map(socket=>new Promise(done=>{socket.once('close',done);socket.destroy();}))),'Callback socket close events',15000));
+      await attempt(async()=>{assert.equal(entry.app.getHttpServer().listening,false);assert.equal(entry.sockets.size,0);});
+    }
+    await attempt(async()=>{assert.equal(cleanupFailures.length,0);ownedAppsClosed=true;});
+    await attempt(async()=>{
+      assert.equal(ownedAppsClosed,true);const userIds=users.map(row=>row.id);
+      assert.equal(await owner.auditLog.count({where:{tenantId:{in:tenantIds}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:tenantIds}}}),0);
+      assert.equal(await owner.session.count({where:{userId:{in:userIds}}}),0);
+      await owner.$transaction(async tx=>{
+        const rows=await tx.tenant.findMany({where:{id:{in:tenantIds}},select:{id:true,slug:true}});for(const row of rows)assert.equal(row.id,row.slug);
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:tenantIds}}});await tx.tenant.deleteMany({where:{id:{in:tenantIds},slug:{in:tenantIds}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.user.count({where:{OR:[{id:{in:userIds}},{tenantId:{in:tenantIds}}]}}),0);assert.equal(await owner.tenant.count({where:{id:{in:tenantIds}}}),0);databaseCleaned=true;
+    });
+    for(const db of [client,owner])await attempt(()=>bounded(db.$disconnect(),'Callback Prisma disconnect'));
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-signed-callback-local-integration',runId:context.runId,sourceSha:context.sourceSha,startedAt,finishedAt:new Date().toISOString(),
+        status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',releaseQualified:false,expectedCheckpointCount:14,completedCheckpointCount:checks.length,checkpoints:checks,
+        databaseCleaned,ownedAppsClosed,fixturePreserved:!databaseCleaned,providerTraffic:false,redisUsed:false,
+        transport:'owned-loopback-retained-Nest-raw-body',signing:'ephemeral-standardwebhooks-signature-verified-by-real-Resend-SDK',
+        limitations:['Synthetic signed events only; no actual provider delivery/configuration','Deleted fixture is trigger-anonymized with null email; matching-email deleted-row predicate is not independently exercised','Direct retained owner only; Caddy/public ingress unexecuted','No worker, inbox, provider retention or whole-release qualification'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-signed-callback-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Callback durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native signed callback or owned cleanup failed; preserve first attempt.');
+}
