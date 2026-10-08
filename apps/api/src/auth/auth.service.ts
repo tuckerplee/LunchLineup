@@ -1599,6 +1599,11 @@ export class AuthService implements OnModuleDestroy {
      * Used by the verify-otp endpoint after OTP is confirmed.
      */
     async loginWithEmail(emailRaw: string, options: EmailLoginOptions = {}, audit: SessionRequestAudit = {}) {
+        // Onboarding proves ownership through its durable challenge; workspace
+        // login requires the ordinary OTP proof checked by the caller.
+        if (options.allowProvision && options.tenantSlug !== undefined) {
+            throw new BadRequestException('Onboarding cannot target an existing workspace');
+        }
         const email = this.normalizeIdentifier(emailRaw);
         if (!this.isEmailIdentifier(email)) {
             throw new BadRequestException('Email is required');

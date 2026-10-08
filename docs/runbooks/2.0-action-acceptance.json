@@ -5647,7 +5647,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 1668,
+          "line": 1673,
           "sourceLine": "    async loginWithUsernamePin("
         }
       ],
@@ -5736,7 +5736,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2136,
+          "line": 2141,
           "sourceLine": "    async refreshAccessToken(refreshTokenRaw: unknown) {"
         }
       ],
@@ -5833,7 +5833,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2551,
+          "line": 2556,
           "sourceLine": "    async getMfaEnrollmentState("
         }
       ],
@@ -5924,7 +5924,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2669,
+          "line": 2674,
           "sourceLine": "    async beginMfaEnrollment("
         },
         {
@@ -6078,7 +6078,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2708,
+          "line": 2713,
           "sourceLine": "    async confirmMfaEnrollment("
         },
         {
@@ -6274,7 +6274,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2818,
+          "line": 2823,
           "sourceLine": "    async disableMfa("
         }
       ],
@@ -6378,7 +6378,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 2907,
+          "line": 2912,
           "sourceLine": "    async validateMfa("
         }
       ],
@@ -6465,7 +6465,7 @@
         },
         {
           "path": "apps/api/src/auth/auth.service.ts",
-          "line": 3064,
+          "line": 3069,
           "sourceLine": "    async revokeSessionByRefreshToken("
         }
       ],

@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, ForbiddenException, ServiceUnav
 import { runSerializableMutationWithRetry } from './serializable-mutation';
 import { freezeMutationActor } from './current-mutation';
 import { AuthService } from './auth.service';
+import { AuthController } from './auth.controller';
 import * as bcrypt from 'bcryptjs';
 import * as crypto from 'crypto';
 import { secureHttpRequest } from '../common/secure-http-client';
@@ -908,6 +909,55 @@ describe('AuthService - public onboarding provisioning', () => {
         mockPrisma.onboardingSignupAttempt.findUnique.mockResolvedValue(onboardingAttempt());
         service = new AuthService(mockConfigService as any, mockJwtService as any, mockRbacService as any);
         (service as any).prisma = mockPrisma;
+    });
+
+    it.each(['demo', ' DEMO ', '', '   '])('rejects mixed onboarding and workspace login for slug %j', async (tenantSlug) => {
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'existing-user', tenantId: 't-1', email: 'owner@example.com',
+            username: null, role: 'STAFF', mfaEnabled: false,
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 'unexpected-session' });
+
+        await expect(service.loginWithEmail('owner@example.com', {
+            allowProvision: true, tenantSlug,
+            provisionTenantName: 'Acme Dining',
+            termsAccepted: true, privacyAccepted: true,
+            termsVersion: CURRENT_TERMS_VERSION, privacyVersion: CURRENT_PRIVACY_VERSION,
+            onboardingChallengeToken: 'challenge-token', onboardingOtpCode: '123456',
+        })).rejects.toThrow('Onboarding cannot target an existing workspace');
+        expect(mockPrisma.tenant.findUnique).not.toHaveBeenCalled();
+        expect(mockPrisma.user.findFirst).not.toHaveBeenCalled();
+        expect(mockPrisma.onboardingSignupAttempt.findUnique).not.toHaveBeenCalled();
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+    });
+
+    it.each([
+        { query: {}, challenge: undefined },
+        { query: { redirect: '1', next: '/dashboard' }, challenge: 'forged-challenge' },
+    ])('refuses unverified onboarding login to an existing account through the controller: %j', async ({ query, challenge }) => {
+        mockPrisma.user.findFirst.mockResolvedValue({
+            id: 'existing-user', tenantId: 't-1', email: 'owner@example.com',
+            username: null, role: 'STAFF', mfaEnabled: false,
+        });
+        mockPrisma.session.create.mockResolvedValue({ id: 'unexpected-session' });
+        const otp = { verifyOtp: vi.fn() };
+        const controller = new AuthController(service, otp as any, {} as any);
+        const response = { cookie: vi.fn(), json: vi.fn(), redirect: vi.fn() };
+        const request = { headers: {}, protocol: 'https', query, get: () => undefined };
+
+        await expect(controller.verifyOtp({
+            email: 'owner@example.com', code: '000000', onboarding: true,
+            tenantSlug: 'demo', tenantName: 'Acme Dining',
+            termsAccepted: true, privacyAccepted: true,
+            onboardingChallengeToken: challenge,
+        }, request as any, response as any)).rejects.toBeInstanceOf(BadRequestException);
+        expect(otp.verifyOtp).not.toHaveBeenCalled();
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockJwtService.generateAccessToken).not.toHaveBeenCalled();
+        expect(response.cookie).not.toHaveBeenCalled();
+        expect(response.json).not.toHaveBeenCalled();
+        expect(response.redirect).not.toHaveBeenCalled();
     });
 
     it('requires an organization name before allowing public email provisioning', async () => {
