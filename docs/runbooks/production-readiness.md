@@ -24,6 +24,12 @@ Use the tracked platform-overview.json dashboard. Its native 30-day response est
 
 Before this gate closes, retain independent reviews of the exact selection, test-inclusive type/loader checks, non-skipped source/HTTP/socket/parser/rule/dashboard/privacy results, critical and resolved alert-delivery receipts, the approved private status route and owner-led recovery drill. Complete30-day telemetry and months of full application acceptance remain required. The source mutation/lifecycle/rule counts are proposed coverage only, with no execution or production-readiness credit.
 
+## Native API drain budget
+
+The native API keeps its 15-second application shutdown deadline: Fastify closes active responses before its close hook releases metrics, identity, quota storage and database resources. Its Compose service has an explicit `stop_grace_period: 30s`, giving application shutdown time to complete before Docker can force termination. The observability source verifier requires this exact reviewed grace period. The internal-beta lifecycle owner defaults `BETA_STOP_TIMEOUT_SECONDS` to 45 seconds and accepts only 30–120 seconds; its explicit `docker stop --time` must not shorten the native drain window.
+
+These source budgets do not prove successful draining. The Test Agent must retain admitted native request/stream completion, dependency cleanup, process exit and forced-deadline evidence, including a response lasting more than 10 seconds but completing before the 15-second application deadline. A stalled response must also demonstrate the bounded application timeout and exit outcome. Record the actual stop timeout and elapsed time with the exact candidate and controller identities. Local configuration checks do not replace this runtime evidence or the other inventoried services' lifecycle gates. VM218 retains its sole runtime owner; VM107 stays stopped with its hold intact, and no production installation or activation is authorized.
+
 ## Authentication policy serialization source checks
 
 Nest MFA validation acquires Tenant, scoped User and exact Session row locks in that order. It reads security policy and effective role access in the same transaction before claiming a TOTP time-step or removing a backup code. The response uses that transaction's role and effective expiry. Redis marker publication and token generation occur after commit.

@@ -167,3 +167,31 @@ test('internal beta operation files are indexed beside their operator contract',
   assert.match(runbook, /bounded test alert/);
   assert.match(runbook, /VM106/);
 });
+
+// Execute only the existing pure integer validator and its exact stop-budget
+// assignment/call. Never source the lifecycle entrypoint or invoke its owners.
+for (const [value, accepted, expected] of [
+  [undefined, true, '45'], ['30', true, '30'], ['45', true, '45'], ['120', true, '120'],
+  ['10', false], ['29', false], ['121', false], ['0', false], ['30.5', false], ['030', false],
+]) {
+  test(`lifecycle stop-budget boundary ${value ?? 'default'} ${accepted ? 'accepts' : 'rejects'}`, { skip: !findBash() }, () => {
+    const validator = lifecycle.match(/^require_bounded_integer\(\) \{\n[\s\S]*?^\}/m)?.[0];
+    const assignment = lifecycle.match(/^STOP_TIMEOUT_SECONDS=.*$/m)?.[0];
+    const call = lifecycle.match(/^  require_bounded_integer BETA_STOP_TIMEOUT_SECONDS .*$/m)?.[0];
+    assert.ok(validator && assignment && call, 'exact existing validation fragment required');
+    const script = ['set -eu', 'fail() { printf "%s\n" "$*" >&2; exit 64; }',
+      validator, assignment, call, 'printf "accepted=%s\n" "$STOP_TIMEOUT_SECONDS"'].join('\n');
+    const environment = { PATH: process.env.PATH, LANG: 'C.UTF-8' };
+    if (value !== undefined) environment.BETA_STOP_TIMEOUT_SECONDS = value;
+    const result = spawnSync(findBash(), ['--noprofile', '--norc', '-c', script], {
+      env: environment, encoding: 'utf8', timeout: 5000,
+    });
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, accepted ? 0 : 64, result.stderr);
+    if (accepted) assert.equal(result.stdout.trim(), `accepted=${expected}`);
+    else {
+      assert.equal(result.stdout, '');
+      assert.match(result.stderr, /BETA_STOP_TIMEOUT_SECONDS must be (?:from 30 through 120|a positive integer)/);
+    }
+  });
+}
