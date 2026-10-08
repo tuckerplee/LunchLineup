@@ -50,7 +50,7 @@ BASE_PINS = {
     "apps/api/package.json": "a72ead28e2fd3a7e7e2e2103dbc99f63cac3435698869b08b5d3ead2511a7a77",
     "scripts/run-internal-ci-integration.sh": "e73a0d3f9b428e2cd31e291ce1f9079cc2af240a65af452eef1ef4c76ae0579e",
     "scripts/check-internal-ci-target.py": "fb0fa3411872431533b585db7880911da081086d912aabca4f72c1318e76323a",
-    "scripts/check-internal-ci-storage.py": "da417e4c28eed913632aeb5e4b02edeac7f029c60118970f54104dcd53c5eec7",
+    "scripts/check-internal-ci-storage.py": "8f1136433699cd65b4e374973e1517824c91df8266d7f5626f1c1b5ca4067f82",
 }
 
 
