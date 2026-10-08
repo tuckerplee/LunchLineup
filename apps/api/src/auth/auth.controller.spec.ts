@@ -214,6 +214,36 @@ describe('AuthController', () => {
         expect(Reflect.getMetadata('isPublic', controller.logout)).toBe(true);
         expect(Reflect.getMetadata(ALLOW_AUTHENTICATED_METADATA_KEY, controller.logout)).toBeUndefined();
     });
+    it.each([
+        ['https://accounts.google.com', 'https://accounts.google.com/o/oauth2/v2/auth'],
+        ['https://accounts.google.com/', 'https://accounts.google.com/o/oauth2/v2/auth'],
+        ['http://accounts.google.com', 'http://accounts.google.com/o/oauth2/auth'],
+        ['https://accounts.google.com.evil.example', 'https://accounts.google.com.evil.example/o/oauth2/auth'],
+        ['https://auth.example.com/realm', 'https://auth.example.com/realm/o/oauth2/auth'],
+        ['https://auth.example.com/realm/', 'https://auth.example.com/realm/o/oauth2/auth'],
+        ['https://auth.example.com/realm//', 'https://auth.example.com/realm//o/oauth2/auth'],
+        ['https://accounts.google.com//', 'https://accounts.google.com//o/oauth2/auth'],
+    ])('OIDC authorization endpoint preserves exact issuer behavior %s', async (issuer, endpoint) => {
+        const keys = ['OIDC_ISSUER_URL', 'OIDC_CLIENT_ID', 'OIDC_REDIRECT_URI', 'COOKIE_SECURE'] as const;
+        const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+        try {
+            process.env.OIDC_ISSUER_URL = issuer; process.env.OIDC_CLIENT_ID = 'exact-client';
+            process.env.OIDC_REDIRECT_URI = 'https://app.example.com/auth/callback'; process.env.COOKIE_SECURE = 'true';
+            authService.createOidcState.mockResolvedValue({ state: 'exact-state', correlationNonce: 'exact-nonce', expiresInSeconds: 600 });
+            const res = createResponseMock();
+            await controller.login({ query: { next: '/dashboard/staff', tenantSlug: 'demo' } } as any, res);
+            const url = new URL(res.redirect.mock.calls[0][0]);
+            expect(url.origin + url.pathname).toBe(endpoint);
+            expect(url.searchParams.get('client_id')).toBe('exact-client');
+            expect(url.searchParams.get('redirect_uri')).toBe('https://app.example.com/auth/callback');
+            expect(url.searchParams.get('response_type')).toBe('code');
+            expect(url.searchParams.get('state')).toBe('exact-state');
+            expect(authService.createOidcState).toHaveBeenCalledWith('/dashboard/staff', 'demo');
+            expect(res.cookie).toHaveBeenCalledWith('oidc_correlation', 'exact-nonce', expect.objectContaining({ httpOnly: true, secure: true, sameSite: 'lax' }));
+            expect(authService.handleOidcCallback).not.toHaveBeenCalled();
+        } finally { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } }
+    });
+
     it('starts OIDC login with a persisted state value', async () => {
         const previous = {
             issuer: process.env.OIDC_ISSUER_URL,

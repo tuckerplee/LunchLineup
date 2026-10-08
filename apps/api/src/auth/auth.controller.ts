@@ -10,6 +10,7 @@ import { Res } from '@nestjs/common';
 import { AllowAuthenticated } from './require-permission.decorator';
 import { operationalErrorDiagnostics, type OperationalErrorCategory } from './operational-error';
 import { resolvePreAuthThrottleLimits } from './pre-auth-throttle.config';
+import { resolveOidcProviderEndpoints } from './oidc-provider-endpoints';
 
 const Public = () => SetMetadata('isPublic', true);
 const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
@@ -541,7 +542,7 @@ export class AuthController {
             maxAge: oidcState.expiresInSeconds * 1000,
         });
 
-        const authUrl = new URL('o/oauth2/auth', issuerUrl.endsWith('/') ? issuerUrl : `${issuerUrl}/`);
+        const authUrl = new URL(resolveOidcProviderEndpoints(issuerUrl).authorizationEndpoint);
         authUrl.searchParams.set('response_type', 'code');
         authUrl.searchParams.set('client_id', String(clientId));
         authUrl.searchParams.set('redirect_uri', String(redirectUri));
