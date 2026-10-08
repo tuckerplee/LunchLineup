@@ -1,3 +1,4 @@
+import { resolveCookieSecure } from '@lunchlineup/config';
 import { Injectable, CanActivate, ExecutionContext, UnauthorizedException, ForbiddenException, Logger } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import crypto from 'crypto';
@@ -10,11 +11,7 @@ const ACCESS_TOKEN_COOKIE_MAX_AGE_MS = 30 * 60 * 1000;
 const RETENTION_PURGE_PERMISSION = 'admin_portal:access';
 
 function useSecureCookies(): boolean {
-    const configured = process.env.COOKIE_SECURE;
-    if (configured !== undefined) {
-        return ['1', 'true', 'yes', 'on'].includes(configured.toLowerCase());
-    }
-    return process.env.NODE_ENV === 'production';
+    return resolveCookieSecure(process.env.COOKIE_SECURE, process.env.NODE_ENV);
 }
 
 /**

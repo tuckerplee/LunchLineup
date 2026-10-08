@@ -14,6 +14,20 @@ function config(trustProxy: string) {
 }
 
 describe('API v2 runtime configuration', () => {
+  it.each(['false', ' 0 ', ' OFF ', ' No ', '', '   ', 'enabled'])('refuses unsafe production cookie mode %j', value => {
+    expect(() => loadConfig({ APP_ORIGIN: 'https://app.example.com', LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-config-jwt-secret', NODE_ENV: 'production',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000', COOKIE_SECURE: value,
+    })).toThrow(/COOKIE_SECURE/);
+  });
+
+  it.each([undefined, 'true', ' TrUe ', ' 1 ', ' YES ', ' on '])('accepts secure production cookie mode %j', value => {
+    expect(loadConfig({ APP_ORIGIN: 'https://app.example.com', LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-config-jwt-secret', NODE_ENV: 'production',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000', COOKIE_SECURE: value,
+    }).cookieSecure).toBe(true);
+  });
+
   it('accepts the explicit named proxy networks used by the hardened deployment', () => {
     expect(config('loopback, linklocal, uniquelocal').trustProxy).toEqual([
       'loopback',

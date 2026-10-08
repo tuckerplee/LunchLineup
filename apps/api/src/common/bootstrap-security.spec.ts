@@ -77,6 +77,15 @@ describe('bootstrap security policy', () => {
         })).toThrow(/public HTTPS origin/);
     });
 
+    it.each(['false', ' 0 ', ' OFF ', ' No ', '', '   ', 'enabled', 'true,false'])('rejects unsafe production cookie mode %j', value => {
+        expect(() => validateProductionEnvironment(productionEnv({ COOKIE_SECURE: value, MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x73).toString('base64') })))
+            .toThrow(/COOKIE_SECURE/);
+    });
+
+    it.each([undefined, 'true', ' TrUe ', ' 1 ', ' YES ', ' on '])('accepts secure production cookie mode %j', value => {
+        expect(() => validateProductionEnvironment(productionEnv({ COOKIE_SECURE: value, MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x73).toString('base64') }))).not.toThrow();
+    });
+
     it('rejects unsafe production defaults before the API starts', () => {
         expect(() => validateProductionEnvironment({
             NODE_ENV: 'production',

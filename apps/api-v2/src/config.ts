@@ -1,3 +1,4 @@
+import { resolveCookieSecure } from '@lunchlineup/config';
 import { isIP } from 'node:net';
 import { resolveNativeMetricsToken, type MetricsTokenReader } from './platform/metrics-token.js';
 
@@ -57,14 +58,6 @@ function redisUrl(value: string | undefined): string {
     throw new Error('REDIS_URL must be a valid redis:// or rediss:// URL.');
   }
   return parsed.toString();
-}
-
-function cookieSecure(value: string | undefined, nodeEnvironment: string | undefined): boolean {
-  if (value === undefined) return nodeEnvironment === 'production';
-  const normalized = value.trim().toLowerCase();
-  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
-  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
-  throw new Error('COOKIE_SECURE must be a boolean value.');
 }
 
 function booleanSetting(value: string | undefined, fallback: boolean, name: string): boolean {
@@ -181,7 +174,7 @@ export function loadConfig(
     staffInvitationOutboxEncryptionKey: env.STAFF_INVITATION_OUTBOX_ENCRYPTION_KEY?.trim() ?? '',
     staffInvitationMaxAttempts: boundedInteger(env.STAFF_INVITATION_MAX_ATTEMPTS, 8, 1, 8),
     oidcSsoAvailable: oidcSsoAvailable(env),
-    cookieSecure: cookieSecure(env.COOKIE_SECURE, env.NODE_ENV),
+    cookieSecure: resolveCookieSecure(env.COOKIE_SECURE, env.NODE_ENV),
     releaseSha: releaseSha(env.DEPLOY_RELEASE_SHA ?? env.IMAGE_TAG),
     trustProxy: trustProxy(env.TRUST_PROXY),
     logLevel: env.LOG_LEVEL?.trim() || 'info',
