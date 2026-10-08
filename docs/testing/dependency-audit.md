@@ -27,3 +27,27 @@ corepack npm run audit:prod
 corepack npm run typecheck --workspace @lunchlineup/web
 corepack npm run build --workspace @lunchlineup/web
 ```
+
+## October 8, 2026 selector-parser compatibility override
+
+Two exact-parent overrides select `postcss-selector-parser@7.1.6` for
+`tailwindcss@3.4.19` and `postcss-nested@6.2.0`, addressing
+[GHSA-rj75-hqrm-r3gf](https://github.com/postcss/postcss-selector-parser/security/advisories/GHSA-rj75-hqrm-r3gf).
+This is a reviewed compatibility override; the parents still declare 6.x.
+The [upstream 6.1.4–7.1.6 comparison](https://github.com/postcss/postcss-selector-parser/compare/6.1.4...7.1.6)
+changes only the parser among executable source files. The container iteration
+behavior cited as a 7.0 breaking change is already present in installed 6.1.4;
+the consumer APIs and Tailwind's deep unescape import remain available.
+
+A clean install resolves both inspected parents to 7.1.6. Generating the current
+application stylesheet with its existing Tailwind configuration produces
+identical output before and after: 73,086 bytes, SHA-256
+`d376fda2cc47abfd9a9e113679fe0d3e9fba541f8749f38f523baa916de67d73`.
+Tailwind, its configuration, authored CSS and supported browser contract are unchanged.
+Parser fixes can change handling of malformed or namespace selectors, so review
+these exact-parent overrides when either parent changes and remove them once
+the supported parent versions select a patched parser without overrides.
+
+The advisory describes synchronous parsing of untrusted selectors. The
+identified application use is trusted build-time CSS; this change does not
+claim a demonstrated production exploit or dismiss the advisory.
