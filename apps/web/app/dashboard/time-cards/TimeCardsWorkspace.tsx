@@ -419,7 +419,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const canClockOut = Boolean(activeCardForSelectedUser && hasCurrentCards && teamClockOutTargetIsExplicit);
 
     return (
-        <div style={{ display: 'grid', gap: '1rem', maxWidth: 1280 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr)', gap: '1rem', minWidth: 0, maxWidth: 1280 }}>
             <section className="surface-card" style={{ padding: '1rem', display: 'grid', gap: '0.85rem' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.8rem', flexWrap: 'wrap' }}>
                     <div>
