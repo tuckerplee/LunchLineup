@@ -906,8 +906,8 @@ provision_and_verify_app_role() {
       -d "${POSTGRES_DB}" \
       -At \
       -v ON_ERROR_STOP=1 \
-      -v expected_role="${APP_DB_USER}" \
-      -c "SELECT CASE WHEN current_user = :'expected_role'
+      -v expected_role="${APP_DB_USER}" -f - <<'SQL'
+SELECT CASE WHEN current_user = :'expected_role'
         AND has_schema_privilege(current_user, 'public', 'USAGE')
         AND NOT EXISTS (
           SELECT 1
@@ -934,7 +934,8 @@ provision_and_verify_app_role() {
               AND has_sequence_privilege(current_user, sequence.oid, 'UPDATE')
             )
         )
-        THEN 1 ELSE 0 END;"
+        THEN 1 ELSE 0 END;
+SQL
   access_proof="$(<"${access_proof_file}")"
   [ "${access_proof}" = "1" ] || fail "Restricted application role could not access the restored public schema."
 }
