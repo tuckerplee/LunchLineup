@@ -152,6 +152,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'activateAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/activate', tag: 'Administration', summary: 'Activate a platform tenant' },
   { operationId: 'archiveAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/archive', tag: 'Administration', summary: 'Archive a platform tenant' },
   { operationId: 'restoreAdminTenant', method: 'POST', path: '/admin/tenants/:tenantId/restore', tag: 'Administration', summary: 'Restore a platform tenant' },
+  { operationId: 'requestArchivedTenantDeletion', method: 'POST', path: '/admin/tenants/:tenantId/deletion-request', tag: 'Administration', summary: 'Request deletion of an archived workspace after verified privacy intake', bodyLimitBytes: 2048 },
   { operationId: 'deleteAdminTenant', method: 'DELETE', path: '/admin/tenants/:tenantId', tag: 'Administration', summary: 'Permanently delete an eligible platform tenant' },
   { operationId: 'createAccountExport', method: 'POST', path: '/admin/account/export', tag: 'Administration', summary: 'Create a tenant account export' },
   { operationId: 'listAccountExports', method: 'GET', path: '/admin/account/exports', tag: 'Administration', summary: 'List tenant account exports' },

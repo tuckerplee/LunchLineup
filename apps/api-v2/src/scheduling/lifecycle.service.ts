@@ -1,3 +1,5 @@
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { immutableOperationsInput, operationsIdentity, operationsWait, prepareOperationsAuthority } from '../operations/operations.service';
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleReopenResponseSchema,
@@ -36,15 +38,19 @@ function inputJson(value: unknown): Prisma.InputJsonValue {
 }
 
 export class ScheduleLifecycleService {
-  constructor(private readonly database: TenantDatabase) {}
+  constructor(
+    private readonly database: TenantDatabase,
+    private readonly observer?: Partial<MfaSessionObserver>,
+  ) {}
 
   private async replay(
     transaction: TenantTransaction,
     tenantId: string,
     idempotencyKeyHash: string,
     expectedRequestHash: string,
+    assertCurrent: () => void,
   ): Promise<ScheduleReopenResponse | null> {
-    const stored = await transaction.scheduleChangeSet.findUnique({
+    const stored = await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.findUnique({
       where: {
         tenantId_idempotencyKeyHash: {
           tenantId,
@@ -52,7 +58,7 @@ export class ScheduleLifecycleService {
         },
       },
       select: { requestHash: true, response: true },
-    });
+    }));
     if (!stored) return null;
     if (stored.requestHash !== expectedRequestHash) {
       throw new ProblemError(
@@ -79,6 +85,9 @@ export class ScheduleLifecycleService {
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<ScheduleReopenResponse> {
+    identity = operationsIdentity(identity);
+    headers = immutableOperationsInput(headers);
+    metadata = immutableOperationsInput(metadata);
     authorizeScheduleReopen(identity);
     const baseRevision = requireScheduleRevision(headers.ifMatch, schedulePublicId);
     const idempotencyKey = requireIdempotencyKey(headers.idempotencyKey);
@@ -88,26 +97,29 @@ export class ScheduleLifecycleService {
       schedulePublicId,
     });
 
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const initialReplay = await this.replay(
+    const scope = await prepareOperationsAuthority(this.database, identity, ['schedules:publish'], this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const initialReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (initialReplay) return initialReplay;
 
-      await assertSchedulingEntitled(transaction, identity.tenantId);
-      await lockSchedulingAggregate(transaction, identity.tenantId);
-      const lockedReplay = await this.replay(
+      await operationsWait(assertCurrent, () => assertSchedulingEntitled(transaction, identity.tenantId));
+      await operationsWait(assertCurrent, () => lockSchedulingAggregate(transaction, identity.tenantId));
+      const lockedReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (lockedReplay) return lockedReplay;
 
-      const rows = await transaction.$queryRaw<LockedSchedule[]>(Prisma.sql`
+      const rows = await operationsWait(assertCurrent, () => transaction.$queryRaw<LockedSchedule[]>(Prisma.sql`
         SELECT
           schedule_row."id",
           schedule_row."publicId"::text AS "publicId",
@@ -127,7 +139,7 @@ export class ScheduleLifecycleService {
           AND schedule_row."publicId" = CAST(${schedulePublicId} AS uuid)
           AND schedule_row."deletedAt" IS NULL
         FOR UPDATE OF schedule_row
-      `);
+      `));
       const schedule = rows[0];
       if (!schedule) {
         throw new ProblemError(404, 'schedule_not_found', 'The selected schedule was not found.', 'Schedule not found');
@@ -151,7 +163,7 @@ export class ScheduleLifecycleService {
         );
       }
 
-      const updated = await transaction.schedule.updateMany({
+      const updated = await operationsWait(assertCurrent, () => transaction.schedule.updateMany({
         where: {
           id: schedule.id,
           tenantId: identity.tenantId,
@@ -164,7 +176,7 @@ export class ScheduleLifecycleService {
           publishedAt: null,
           revision: { increment: 1 },
         },
-      });
+      }));
       if (updated.count !== 1) {
         throw new ProblemError(
           412,
@@ -184,7 +196,7 @@ export class ScheduleLifecycleService {
           revision,
         }, schedule.locationPublicId),
       };
-      await transaction.scheduleChangeSet.create({
+      await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.create({
         data: {
           id: changeSetId,
           tenantId: identity.tenantId,
@@ -197,8 +209,8 @@ export class ScheduleLifecycleService {
           request: inputJson({ operation: 'schedule.reopen' }),
           response: inputJson(response),
         },
-      });
-      await transaction.auditLog.create({
+      }));
+      await operationsWait(assertCurrent, () => transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
           userId: identity.sub,
@@ -212,8 +224,8 @@ export class ScheduleLifecycleService {
           ipAddress: metadata.ipAddress?.slice(0, 128),
           userAgent: metadata.userAgent?.slice(0, 512),
         },
-      });
+      }));
       return response;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 }

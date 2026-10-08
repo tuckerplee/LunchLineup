@@ -1,3 +1,4 @@
+import { schedulingAuthority } from './scheduling-authority.fixture';
 import type { SessionIdentity, ScheduleChangeSetRequest } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { requestHash } from './contract-helpers';
@@ -44,20 +45,15 @@ function replayDatabase(requestHashValue: string, response: unknown = storedResp
       })),
     },
   };
-  return {
-    transaction,
-    database: {
-      withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
-    },
-  };
+  return schedulingAuthority(transaction, identity);
 }
 
 describe('schedule change-set idempotency replay', () => {
   it('returns the committed result when a reloaded board sends a newer If-Match', async () => {
-    const { database, transaction } = replayDatabase(
+    const { database, transaction, observer } = replayDatabase(
       requestHash({ schedulePublicId: scheduleId, body }),
     );
-    const service = new ScheduleChangeSetService(database as never);
+    const service = new ScheduleChangeSetService(database as never, observer);
 
     await expect(service.apply(identity, scheduleId, body, {
       ifMatch: `"schedule:${scheduleId}:99"`,
@@ -73,10 +69,10 @@ describe('schedule change-set idempotency replay', () => {
   });
 
   it('rejects a reused key before evaluating a different change payload', async () => {
-    const { database, transaction } = replayDatabase(
+    const { database, transaction, observer } = replayDatabase(
       requestHash({ schedulePublicId: scheduleId, body }),
     );
-    const service = new ScheduleChangeSetService(database as never);
+    const service = new ScheduleChangeSetService(database as never, observer);
     const changedBody: ScheduleChangeSetRequest = {
       operations: [{
         op: 'shift.delete',
@@ -96,7 +92,7 @@ describe('schedule change-set idempotency replay', () => {
   });
 
   it('fails closed when the exact replay record has an incomplete response', async () => {
-    const { database, transaction } = replayDatabase(
+    const { database, transaction, observer } = replayDatabase(
       requestHash({ schedulePublicId: scheduleId, body }),
       {
         data: {
@@ -105,7 +101,7 @@ describe('schedule change-set idempotency replay', () => {
         },
       },
     );
-    const service = new ScheduleChangeSetService(database as never);
+    const service = new ScheduleChangeSetService(database as never, observer);
 
     await expect(service.apply(identity, scheduleId, body, {
       ifMatch: `"schedule:${scheduleId}:5"`,

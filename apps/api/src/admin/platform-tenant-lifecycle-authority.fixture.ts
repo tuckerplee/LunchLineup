@@ -36,7 +36,11 @@ export function installPlatformTenantAuthorityModel(prisma: any,
         ? flatten(value.values) : [value]);
     const previous = prisma.$queryRaw;
     prisma.$queryRaw = vi.fn(async (query: any, ...args: any[]) => {
-        const sql = text(query), values = flatten(args.length ? args : query.values ?? []);
+        // Tagged-template arrays expose Array.prototype.values even with no bindings.
+        // Prisma.Sql instead carries an own values array; preserve both call forms.
+        const bindings = Array.isArray(query) ? args
+            : Array.isArray(query?.values) ? query.values : args;
+        const sql = text(query), values = flatten(bindings);
         if (sql.includes('FROM "Session"') && sql.includes('FOR UPDATE')) {
             return [state.session, state.otherSession].filter(row => values.includes(row.id) && values.includes(row.userId)).map(row => ({ ...row }));
         }

@@ -1,3 +1,4 @@
+import { schedulingAuthority } from './scheduling-authority.fixture';
 import type {
   DemandWindowReplaceRequest,
   SessionIdentity,
@@ -30,12 +31,7 @@ function replayDatabase(response: unknown, hash: string) {
       })),
     },
   };
-  return {
-    transaction,
-    database: {
-      withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
-    },
-  };
+  return schedulingAuthority(transaction, identity);
 }
 
 describe('schedule mutation idempotency replay', () => {
@@ -49,7 +45,7 @@ describe('schedule mutation idempotency replay', () => {
       revision: 5,
       etag: `"schedule:${scheduleId}:5"`,
     };
-    const { database, transaction } = replayDatabase(
+    const { database, transaction, observer } = replayDatabase(
       storedResponse,
       requestHash({
         operation: 'demand-windows.replace',
@@ -57,7 +53,7 @@ describe('schedule mutation idempotency replay', () => {
         body,
       }),
     );
-    const service = new DemandWindowService(database as never);
+    const service = new DemandWindowService(database as never, observer);
 
     await expect(service.replace(identity, scheduleId, body, {
       ifMatch: `"schedule:${scheduleId}:99"`,
@@ -80,14 +76,14 @@ describe('schedule mutation idempotency replay', () => {
         etag: `"schedule:${scheduleId}:5"`,
       },
     };
-    const { database, transaction } = replayDatabase(
+    const { database, transaction, observer } = replayDatabase(
       storedResponse,
       requestHash({
         operation: 'schedule.reopen',
         schedulePublicId: scheduleId,
       }),
     );
-    const service = new ScheduleLifecycleService(database as never);
+    const service = new ScheduleLifecycleService(database as never, observer);
 
     await expect(service.reopen(identity, scheduleId, {
       ifMatch: `"schedule:${scheduleId}:99"`,

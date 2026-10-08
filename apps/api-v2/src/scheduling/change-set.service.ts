@@ -1,3 +1,5 @@
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { immutableOperationsInput, operationsIdentity, operationsWait, prepareOperationsAuthority } from '../operations/operations.service';
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleChangeSetResponseSchema,
@@ -75,7 +77,10 @@ function plannedShift(row: StoredShift): PlannedShift {
 }
 
 export class ScheduleChangeSetService {
-  constructor(private readonly database: TenantDatabase) {}
+  constructor(
+    private readonly database: TenantDatabase,
+    private readonly observer?: Partial<MfaSessionObserver>,
+  ) {}
 
   private authorize(identity: SessionIdentity, body: ScheduleChangeSetRequest): void {
     authorizeScheduleChangeSet(identity, body);
@@ -86,8 +91,9 @@ export class ScheduleChangeSetService {
     tenantId: string,
     idempotencyKeyHash: string,
     expectedRequestHash: string,
+    assertCurrent: () => void,
   ): Promise<ScheduleChangeSetResponse | null> {
-    const stored = await transaction.scheduleChangeSet.findUnique({
+    const stored = await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.findUnique({
       where: {
         tenantId_idempotencyKeyHash: {
           tenantId,
@@ -98,7 +104,7 @@ export class ScheduleChangeSetService {
         requestHash: true,
         response: true,
       },
-    });
+    }));
     if (!stored) return null;
     if (stored.requestHash !== expectedRequestHash) {
       throw new ProblemError(
@@ -125,9 +131,10 @@ export class ScheduleChangeSetService {
     schedule: LockedSchedule,
     mutation: ShiftMutation,
     deletedAt: Date,
+    assertCurrent: () => void,
   ): Promise<void> {
     if (mutation.kind === 'delete') {
-      const deleted = await transaction.shift.updateMany({
+      const deleted = await operationsWait(assertCurrent, () => transaction.shift.updateMany({
         where: {
           id: mutation.before.internalId as string,
           tenantId: identity.tenantId,
@@ -135,14 +142,14 @@ export class ScheduleChangeSetService {
           deletedAt: null,
         },
         data: { deletedAt },
-      });
+      }));
       if (deleted.count !== 1) {
         throw new ProblemError(409, 'concurrent_change', 'A shift changed while the change set was applying.', 'Concurrent change');
       }
       return;
     }
     if (mutation.kind === 'create') {
-      await transaction.shift.create({
+      await operationsWait(assertCurrent, () => transaction.shift.create({
         data: {
           publicId: mutation.after.publicId,
           tenantId: identity.tenantId,
@@ -153,11 +160,11 @@ export class ScheduleChangeSetService {
           endTime: mutation.after.endTime,
           role: mutation.after.role,
         },
-      });
+      }));
       return;
     }
 
-    const updated = await transaction.shift.updateMany({
+    const updated = await operationsWait(assertCurrent, () => transaction.shift.updateMany({
       where: {
         id: mutation.before.internalId as string,
         tenantId: identity.tenantId,
@@ -170,12 +177,12 @@ export class ScheduleChangeSetService {
         endTime: mutation.after.endTime,
         role: mutation.after.role,
       },
-    });
+    }));
     if (updated.count !== 1) {
       throw new ProblemError(409, 'concurrent_change', 'A shift changed while the change set was applying.', 'Concurrent change');
     }
     for (const item of mutation.after.breaks) {
-      const translated = await transaction.break.updateMany({
+      const translated = await operationsWait(assertCurrent, () => transaction.break.updateMany({
         where: {
           id: item.internalId,
           shiftId: mutation.before.internalId as string,
@@ -184,7 +191,7 @@ export class ScheduleChangeSetService {
           startTime: item.startTime,
           endTime: item.endTime,
         },
-      });
+      }));
       if (translated.count !== 1) {
         throw new ProblemError(
           409,
@@ -203,7 +210,16 @@ export class ScheduleChangeSetService {
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<ScheduleChangeSetResponse> {
+    identity = operationsIdentity(identity);
+    body = immutableOperationsInput(body);
+    headers = immutableOperationsInput(headers);
+    metadata = immutableOperationsInput(metadata);
     this.authorize(identity, body);
+    const permissions: [string, ...string[]] = body.operations.some(operation => operation.op === 'shift.delete')
+      ? ['shifts:delete'] : ['shifts:write'];
+    if (permissions[0] === 'shifts:delete' && body.operations.some(operation => operation.op !== 'shift.delete')) {
+      permissions.push('shifts:write');
+    }
     const baseRevision = requireScheduleRevision(headers.ifMatch, schedulePublicId);
     const idempotencyKey = requireIdempotencyKey(headers.idempotencyKey);
     const idempotencyKeyHash = sha256(idempotencyKey);
@@ -212,26 +228,29 @@ export class ScheduleChangeSetService {
       body,
     });
 
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const initialReplay = await this.replay(
+    const scope = await prepareOperationsAuthority(this.database, identity, permissions, this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const initialReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (initialReplay) return initialReplay;
 
-      await assertSchedulingEntitled(transaction, identity.tenantId);
-      await lockSchedulingAggregate(transaction, identity.tenantId);
-      const lockedReplay = await this.replay(
+      await operationsWait(assertCurrent, () => assertSchedulingEntitled(transaction, identity.tenantId));
+      await operationsWait(assertCurrent, () => lockSchedulingAggregate(transaction, identity.tenantId));
+      const lockedReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (lockedReplay) return lockedReplay;
 
-      const schedules = await transaction.$queryRaw<LockedSchedule[]>(Prisma.sql`
+      const schedules = await operationsWait(assertCurrent, () => transaction.$queryRaw<LockedSchedule[]>(Prisma.sql`
         SELECT
           schedule_row."id",
           schedule_row."publicId"::text AS "publicId",
@@ -250,7 +269,7 @@ export class ScheduleChangeSetService {
           AND schedule_row."publicId" = CAST(${schedulePublicId} AS uuid)
           AND schedule_row."deletedAt" IS NULL
         FOR UPDATE OF schedule_row
-      `);
+      `));
       const schedule = schedules[0];
       if (!schedule) {
         throw new ProblemError(404, 'schedule_not_found', 'The selected schedule was not found.', 'Schedule not found');
@@ -274,7 +293,7 @@ export class ScheduleChangeSetService {
         );
       }
 
-      const rows = await transaction.shift.findMany({
+      const rows = await operationsWait(assertCurrent, () => transaction.shift.findMany({
         where: {
           tenantId: identity.tenantId,
           scheduleId: schedule.id,
@@ -309,7 +328,7 @@ export class ScheduleChangeSetService {
             },
           },
         },
-      });
+      }));
       if (rows.length > MAX_SCHEDULE_SHIFTS) {
         throw new ProblemError(
           422,
@@ -326,7 +345,7 @@ export class ScheduleChangeSetService {
         }
       }
       const requestedUsers = requestedUserIds.size > 0
-        ? await transaction.user.findMany({
+        ? await operationsWait(assertCurrent, () => transaction.user.findMany({
             where: {
               tenantId: identity.tenantId,
               publicId: { in: [...requestedUserIds] },
@@ -338,7 +357,7 @@ export class ScheduleChangeSetService {
               id: true,
               publicId: true,
             },
-          })
+          }))
         : [];
       const usersByPublicId = new Map(requestedUsers.map((user) => [
         user.publicId,
@@ -349,7 +368,7 @@ export class ScheduleChangeSetService {
         ...requestedUsers.map((user) => user.id),
       ]);
       const externalRows = involvedUserIds.size > 0
-        ? await transaction.shift.findMany({
+        ? await operationsWait(assertCurrent, () => transaction.shift.findMany({
             where: {
               tenantId: identity.tenantId,
               OR: [{ scheduleId: null }, { scheduleId: { not: schedule.id } }],
@@ -366,7 +385,7 @@ export class ScheduleChangeSetService {
               startTime: true,
               endTime: true,
             },
-          })
+          }))
         : [];
       if (externalRows.length > MAX_EXTERNAL_SHIFTS) {
         throw new ProblemError(
@@ -393,19 +412,19 @@ export class ScheduleChangeSetService {
         operations: body.operations,
       });
 
-      await transaction.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED');
+      await operationsWait(assertCurrent, () => transaction.$executeRawUnsafe('SET CONSTRAINTS ALL DEFERRED'));
       const deletedAt = new Date();
       for (const mutation of plan.mutations.filter((item) => item.kind === 'delete')) {
-        await this.applyMutation(transaction, identity, schedule, mutation, deletedAt);
+        await operationsWait(assertCurrent, () => this.applyMutation(transaction, identity, schedule, mutation, deletedAt, assertCurrent));
       }
       for (const mutation of plan.mutations.filter((item) => item.kind === 'update')) {
-        await this.applyMutation(transaction, identity, schedule, mutation, deletedAt);
+        await operationsWait(assertCurrent, () => this.applyMutation(transaction, identity, schedule, mutation, deletedAt, assertCurrent));
       }
       for (const mutation of plan.mutations.filter((item) => item.kind === 'create')) {
-        await this.applyMutation(transaction, identity, schedule, mutation, deletedAt);
+        await operationsWait(assertCurrent, () => this.applyMutation(transaction, identity, schedule, mutation, deletedAt, assertCurrent));
       }
 
-      const revised = await transaction.schedule.updateMany({
+      const revised = await operationsWait(assertCurrent, () => transaction.schedule.updateMany({
         where: {
           id: schedule.id,
           tenantId: identity.tenantId,
@@ -414,7 +433,7 @@ export class ScheduleChangeSetService {
           revision: baseRevision,
         },
         data: { revision: { increment: 1 } },
-      });
+      }));
       if (revised.count !== 1) {
         throw new ProblemError(
           412,
@@ -424,7 +443,7 @@ export class ScheduleChangeSetService {
         );
       }
 
-      const resultRows = await transaction.shift.findMany({
+      const resultRows = await operationsWait(assertCurrent, () => transaction.shift.findMany({
         where: {
           tenantId: identity.tenantId,
           scheduleId: schedule.id,
@@ -457,7 +476,7 @@ export class ScheduleChangeSetService {
             },
           },
         },
-      });
+      }));
       const changeSetId = randomUUID();
       const revision = baseRevision + 1;
       const response: ScheduleChangeSetResponse = {
@@ -473,7 +492,7 @@ export class ScheduleChangeSetService {
           created: plan.created,
         },
       };
-      await transaction.scheduleChangeSet.create({
+      await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.create({
         data: {
           id: changeSetId,
           tenantId: identity.tenantId,
@@ -486,8 +505,8 @@ export class ScheduleChangeSetService {
           request: inputJson(body),
           response: inputJson(response),
         },
-      });
-      await transaction.auditLog.create({
+      }));
+      await operationsWait(assertCurrent, () => transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
           userId: identity.sub,
@@ -511,8 +530,8 @@ export class ScheduleChangeSetService {
           ipAddress: metadata.ipAddress?.slice(0, 128),
           userAgent: metadata.userAgent?.slice(0, 512),
         },
-      });
+      }));
       return response;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 }

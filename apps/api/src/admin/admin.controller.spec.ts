@@ -401,6 +401,8 @@ describe('AdminController tenant provisioning', () => {
 });
 
 function buildTenantLifecyclePrisma() {
+    const settings = new Map<string, { tenantId: string; key: string; value: unknown }>();
+    const settingKey = (where: any) => JSON.stringify([where.tenantId_key.tenantId, where.tenantId_key.key]);
     return addTransactionMock({
         tenant: {
             findUnique: vi.fn(),
@@ -409,7 +411,14 @@ function buildTenantLifecyclePrisma() {
         },
         tenantSetting: {
             findMany: vi.fn().mockResolvedValue([]),
-            findUnique: vi.fn().mockResolvedValue(null),
+            findUnique: vi.fn(async ({ where }: any) => structuredClone(settings.get(settingKey(where)) ?? null)),
+            upsert: vi.fn(async ({ where, create, update }: any) => {
+                const key = settingKey(where);
+                const prior = settings.get(key);
+                const row = structuredClone(prior ? { ...prior, ...update } : create);
+                settings.set(key, row);
+                return structuredClone(row);
+            }),
         },
         location: { findMany: vi.fn().mockResolvedValue([]) },
         user: { findMany: vi.fn().mockResolvedValue([]) },
@@ -455,7 +464,7 @@ function buildTenantLifecyclePrisma() {
 function mockDeletionReconciliationClaim(prisma: ReturnType<typeof buildTenantLifecyclePrisma>) {
     const queryRaw = (prisma as any).$queryRaw;
     const fallback = queryRaw.getMockImplementation();
-    queryRaw.mockImplementation(async (query: any) => {
+    queryRaw.mockImplementation(async (query: any, ...bindings: any[]) => {
         const queryText = rawQueryText(query);
         if (queryText.includes('RETURNING reconciliation."operationId"')) {
             const barrierCall = prisma.auditLog.create.mock.calls.find(
@@ -474,7 +483,7 @@ function mockDeletionReconciliationClaim(prisma: ReturnType<typeof buildTenantLi
                 terminalizedWebhookCount: 0,
             }];
         }
-        return fallback(query);
+        return fallback(query, ...bindings);
     });
 }
 
@@ -562,6 +571,17 @@ function buildRetentionPrisma() {
 }
 
 describe('AdminController tenant account lifecycle', () => {
+    const liveCustomerReq = { ...tenantAdminReq, user: { ...tenantAdminReq.user, sessionId: 'customer-session-1' } };
+    function installCustomerAuthority(status = 'ACTIVE', deletedAt: Date | null = null) {
+        const authority = installPlatformTenantAuthorityModel(prisma, {
+            tenantId: 'tenant-1', userId: 'user-admin-1', sessionId: 'customer-session-1',
+        });
+        authority.permissions = ['tenant_account:lifecycle'];
+        Object.assign(authority.workspace, { status, deletedAt });
+        controller = buildController(prisma, { grantCredits: vi.fn() }, stripeBilling);
+        return authority;
+    }
+
     const billingPurge = {
         expiredCheckoutSessionIds: [],
         canceledSubscriptionIds: [],
@@ -911,26 +931,11 @@ describe('AdminController tenant account lifecycle', () => {
         expect(prisma.tenant.update).not.toHaveBeenCalled();
     });
 
-    it('returns the existing deletion receipt idempotently when deletion was already finalized', async () => {
-        const requestedAt = new Date('2026-07-08T12:00:00.000Z');
-        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
-            id: 'tenant-1',
-            slug: 'acme-dining',
-            status: 'PURGED',
-            deletedAt: requestedAt,
-        });
-
-        const result = await controller.requestOwnTenantDeletion(
-            tenantAdminReq,
-            { confirmation: 'acme-dining' },
-        );
-
-        expect(result).toMatchObject({
-            status: 'PURGED',
-            deletionState: 'FINALIZED',
-            billingCleanupPending: false,
-            deletionRequestedAt: requestedAt,
-        });
+    it('refuses a finalized workspace through the revoked customer mutation path', async () => {
+        installCustomerAuthority('PURGED', new Date('2026-07-08T12:00:00.000Z'));
+        await expect(controller.requestOwnTenantDeletion(liveCustomerReq,
+            { confirmation: 'acme-dining' })).rejects.toThrow('The workspace is no longer active');
+        expect(prisma.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
         expect(prisma.tenant.update).not.toHaveBeenCalled();
         expect(stripeBilling.finalizeTenantBillingForPurge).not.toHaveBeenCalled();
     });
@@ -938,6 +943,7 @@ describe('AdminController tenant account lifecycle', () => {
         const requestedAt = new Date('2026-07-09T12:00:00.000Z');
         vi.useFakeTimers();
         vi.setSystemTime(requestedAt);
+        installCustomerAuthority();
         mockDeletionReconciliationClaim(prisma);
         stripeBilling.finalizeTenantBillingForPurge
             .mockRejectedValueOnce(new Error('temporary Stripe outage'))
@@ -971,7 +977,7 @@ describe('AdminController tenant account lifecycle', () => {
             });
 
         const phaseOneReceipt = await controller.requestOwnTenantDeletion(
-            tenantAdminReq,
+            liveCustomerReq,
             { confirmation: 'acme-dining' },
         );
 
@@ -1024,6 +1030,15 @@ describe('AdminController tenant account lifecycle', () => {
 
         const reconciliation = await (controller as any).tenantAccountLifecycle
             .reconcilePendingDeletionBillingCandidate('tenant-1');
+        const lifecycleWrites = prisma.tenantSetting.upsert.mock.calls.map(([args]: any[]) => args);
+        expect(lifecycleWrites).toHaveLength(2);
+        expect(lifecycleWrites[0].create.value).toEqual({ requestId: operationId, kind: 'DELETION',
+            state: 'PENDING', requestedAt: requestedAt.toISOString(), updatedAt: requestedAt.toISOString() });
+        expect(lifecycleWrites[1].update.value).toEqual({ requestId: operationId, kind: 'DELETION',
+            state: 'COMPLETED', requestedAt: requestedAt.toISOString(), updatedAt: requestedAt.toISOString() });
+        expect(await prisma.tenantSetting.findUnique({ where: lifecycleWrites[1].where })).toMatchObject({
+            value: lifecycleWrites[1].update.value,
+        });
 
         expect(stripeBilling.finalizeTenantBillingForPurge).toHaveBeenNthCalledWith(2, 'tenant-1', {
             operationId,
@@ -1075,6 +1090,7 @@ describe('AdminController tenant account lifecycle', () => {
         const requestedAt = new Date('2026-07-09T12:00:00.000Z');
         vi.useFakeTimers();
         vi.setSystemTime(requestedAt);
+        installCustomerAuthority('CANCELLED', null);
         mockDeletionReconciliationClaim(prisma);
         stripeBilling.finalizeTenantBillingForPurge
             .mockRejectedValueOnce(new Error('temporary Stripe outage'))
@@ -1084,7 +1100,7 @@ describe('AdminController tenant account lifecycle', () => {
                 id: 'tenant-1',
                 slug: 'acme-dining',
                 status: 'CANCELLED',
-                deletedAt: cancelledAt,
+                deletedAt: null,
                 stripeSubscriptionId: null,
             })
             .mockResolvedValueOnce({
@@ -1108,7 +1124,7 @@ describe('AdminController tenant account lifecycle', () => {
             });
 
         const phaseOneReceipt = await controller.requestOwnTenantDeletion(
-            tenantAdminReq,
+            liveCustomerReq,
             { confirmation: 'acme-dining' },
         );
 
@@ -1132,6 +1148,15 @@ describe('AdminController tenant account lifecycle', () => {
         const operationId = mockPendingDeletionBarrierRead(prisma, requestedAt);
         const reconciliation = await (controller as any).tenantAccountLifecycle
             .reconcilePendingDeletionBillingCandidate('tenant-1');
+        const lifecycleWrites = prisma.tenantSetting.upsert.mock.calls.map(([args]: any[]) => args);
+        expect(lifecycleWrites).toHaveLength(2);
+        expect(lifecycleWrites[0].create.value).toEqual({ requestId: operationId, kind: 'DELETION',
+            state: 'PENDING', requestedAt: requestedAt.toISOString(), updatedAt: requestedAt.toISOString() });
+        expect(lifecycleWrites[1].update.value).toEqual({ requestId: operationId, kind: 'DELETION',
+            state: 'COMPLETED', requestedAt: requestedAt.toISOString(), updatedAt: requestedAt.toISOString() });
+        expect(await prisma.tenantSetting.findUnique({ where: lifecycleWrites[1].where })).toMatchObject({
+            value: lifecycleWrites[1].update.value,
+        });
 
         expect(stripeBilling.finalizeTenantBillingForPurge).toHaveBeenCalledTimes(2);
         expect(stripeBilling.finalizeTenantBillingForPurge).toHaveBeenLastCalledWith('tenant-1', {
@@ -1156,6 +1181,18 @@ describe('AdminController tenant account lifecycle', () => {
             },
         });
     });
+    it('refuses a previously cancelled and deleted workspace before starting a new retention clock', async () => {
+        const cancelledAt = new Date('2026-01-09T12:00:00.000Z');
+        installCustomerAuthority('CANCELLED', cancelledAt);
+        await expect(controller.requestOwnTenantDeletion(liveCustomerReq,
+            { confirmation: 'acme-dining' })).rejects.toThrow('The workspace is no longer active');
+        expect(prisma.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(prisma.tenant.update).not.toHaveBeenCalled();
+        expect(prisma.session.updateMany).not.toHaveBeenCalled();
+        expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(stripeBilling.finalizeTenantBillingForPurge).not.toHaveBeenCalled();
+    });
+
 });
 
 describe('AdminController platform billing lifecycle', () => {
@@ -3411,5 +3448,24 @@ describe('AdminController MFA recovery', () => {
             reason: 'Lost all registered MFA factors',
         })).rejects.toBeInstanceOf(ForbiddenException);
         expect(reset).not.toHaveBeenCalled();
+    });
+});
+
+describe('AdminController audit integer boundary', () => {
+    it.each(['1.5', '-1', 'NaN', 'Infinity', 'abc'])('rejects invalid audit limit %s before any Prisma query', async limit => {
+        const prisma = addTransactionMock({ auditLog: { findMany: vi.fn().mockResolvedValue([]) } });
+        const controller = buildController(prisma, {});
+        await expect(controller.audit(superAdminReq, limit)).rejects.toBeInstanceOf(BadRequestException);
+        expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
+    });
+    it.each([[undefined, 25], ['0', 1], ['1', 1], ['100', 100], ['101', 100]] as const)('bounds audit limit %s to integer %i', async (limit, take) => {
+        const prisma = addTransactionMock({ auditLog: { findMany: vi.fn().mockResolvedValue([]) } });
+        await expect(buildController(prisma, {}).audit(superAdminReq, limit)).resolves.toEqual({ data: [] });
+        expect(prisma.auditLog.findMany).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ take }));
+    });
+    it('refuses ordinary tenant admin audit access before querying records', async () => {
+        const prisma = addTransactionMock({ auditLog: { findMany: vi.fn().mockResolvedValue([]) } });
+        await expect(buildController(prisma, {}).audit(tenantAdminReq, '25')).rejects.toBeInstanceOf(ForbiddenException);
+        expect(prisma.auditLog.findMany).not.toHaveBeenCalled();
     });
 });

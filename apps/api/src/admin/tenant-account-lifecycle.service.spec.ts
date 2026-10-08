@@ -1,8 +1,11 @@
+import { RbacService } from '../auth/rbac.service';
+import { TenantDeletionBillingService } from './tenant-deletion-billing.service';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { createPlatformArchiveActorFixture } from './platform-archive-actor.fixture';
+import { installPlatformTenantAuthorityModel } from './platform-tenant-lifecycle-authority.fixture';
 import {
     TenantAccountLifecycleService,
     type TenantLifecycleActor,
@@ -17,6 +20,7 @@ const postgresIntegrationCapability = process.env.TENANT_DATA_GOVERNANCE_TEST_CA
 const actor: TenantLifecycleActor = {
     tenantId: 'tenant-1',
     userId: 'user-admin-1',
+    sessionId: 'customer-session-1',
     ipAddress: '203.0.113.10',
     userAgent: 'vitest',
 };
@@ -115,11 +119,19 @@ function buildPrisma(): any {
         },
         tenantSetting: {
             findUnique: vi.fn().mockResolvedValue(null),
+            findMany: vi.fn().mockResolvedValue([]),
+            upsert: vi.fn().mockResolvedValue({}),
         },
     });
 }
 
 function buildService(prisma = buildPrisma()) {
+    // Complete read model for the actual customer admission owner. The helper
+    // name is historical; permission is customer lifecycle, not platform access.
+    const authority = installPlatformTenantAuthorityModel(prisma, {
+        tenantId: actor.tenantId, userId: actor.userId!, sessionId: actor.sessionId!,
+    });
+    authority.permissions = ['tenant_account:lifecycle'];
     const stripeBilling = {
         cancelTenantSubscriptionAtPeriodEnd: vi.fn().mockResolvedValue(scheduledCancellation),
         finalizeTenantBillingForPurge: vi.fn().mockResolvedValue(billingPurge),
@@ -136,12 +148,14 @@ function buildService(prisma = buildPrisma()) {
     };
     return {
         prisma,
+        authority,
         stripeBilling,
         tenantCancellationLifecycle,
         service: new TenantAccountLifecycleService(
             new TenantPrismaService(prisma as any),
             stripeBilling as any,
             tenantCancellationLifecycle as any,
+            undefined, authority.observer,
         ),
     };
 }
@@ -322,12 +336,21 @@ describe('TenantAccountLifecycleService deletion saga', () => {
         });
         const lifecycleLocks = executeRawCallIndexesContaining(prisma, 'public.lock_tenant_lifecycle(');
         const billingLocks = executeRawCallIndexesContaining(prisma, 'billing-checkout:');
-        expect(lifecycleLocks).toHaveLength(2);
-        expect(billingLocks).toHaveLength(2);
-        expect(prisma.$executeRaw.mock.invocationCallOrder[lifecycleLocks[0]])
-            .toBeLessThan(prisma.$executeRaw.mock.invocationCallOrder[billingLocks[0]]);
-        expect(prisma.$executeRaw.mock.invocationCallOrder[lifecycleLocks[1]])
-            .toBeLessThan(prisma.$executeRaw.mock.invocationCallOrder[billingLocks[1]]);
+        // Admission first fences the tenant, then acquires the domain pair before
+        // final authorization. The operation reacquires its pair; finalization
+        // acquires the third domain pair after external billing completes.
+        expect(lifecycleLocks).toHaveLength(4);
+        expect(billingLocks).toHaveLength(3);
+        const lockOrder = (index: number) => prisma.$executeRaw.mock.invocationCallOrder[index];
+        expect(lockOrder(lifecycleLocks[0])).toBeLessThan(lockOrder(lifecycleLocks[1]));
+        for (let pair = 0; pair < 3; pair += 1) {
+            expect(lockOrder(lifecycleLocks[pair + 1])).toBeLessThan(lockOrder(billingLocks[pair]));
+            if (pair < 2) expect(lockOrder(billingLocks[pair])).toBeLessThan(lockOrder(lifecycleLocks[pair + 2]));
+        }
+        expect(lockOrder(billingLocks[1]))
+            .toBeLessThan(stripeBilling.finalizeTenantBillingForPurge.mock.invocationCallOrder[0]);
+        expect(stripeBilling.finalizeTenantBillingForPurge.mock.invocationCallOrder[0])
+            .toBeLessThan(lockOrder(lifecycleLocks[3]));
         const providerEntryLeaseRenewals = executeRawCallIndexesContaining(
             prisma,
             'SET "leaseExpiresAt" =',
@@ -335,18 +358,12 @@ describe('TenantAccountLifecycleService deletion saga', () => {
         expect(providerEntryLeaseRenewals).toHaveLength(1);
         expect(prisma.$executeRaw.mock.invocationCallOrder[providerEntryLeaseRenewals[0]])
             .toBeLessThan(stripeBilling.finalizeTenantBillingForPurge.mock.invocationCallOrder[0]);
-        expect(prisma.$transaction).toHaveBeenCalledTimes(3);
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
+        expect(prisma.$transaction).toHaveBeenCalledTimes(4);
+        for (const ordinal of [1, 2]) expect(prisma.$transaction).toHaveBeenNthCalledWith(ordinal, expect.any(Function), {
+            isolationLevel: 'Serializable', maxWait: 5_000, timeout: 60_000,
         });
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
-        });
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(3, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
+        for (const ordinal of [3, 4]) expect(prisma.$transaction).toHaveBeenNthCalledWith(ordinal, expect.any(Function), {
+            maxWait: 5_000, timeout: 60_000,
         });
         expect(result).toMatchObject({
             status: 'PURGED',
@@ -386,18 +403,12 @@ describe('TenantAccountLifecycleService deletion saga', () => {
         expect(prisma.auditLog.create).toHaveBeenCalledWith({
             data: expect.objectContaining({ action: 'TENANT_DELETION_BARRIER_COMMITTED' }),
         });
-        expect(prisma.$transaction).toHaveBeenCalledTimes(3);
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(1, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
+        expect(prisma.$transaction).toHaveBeenCalledTimes(4);
+        for (const ordinal of [1, 2]) expect(prisma.$transaction).toHaveBeenNthCalledWith(ordinal, expect.any(Function), {
+            isolationLevel: 'Serializable', maxWait: 5_000, timeout: 60_000,
         });
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(2, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
-        });
-        expect(prisma.$transaction).toHaveBeenNthCalledWith(3, expect.any(Function), {
-            maxWait: 5_000,
-            timeout: 60_000,
+        for (const ordinal of [3, 4]) expect(prisma.$transaction).toHaveBeenNthCalledWith(ordinal, expect.any(Function), {
+            maxWait: 5_000, timeout: 60_000,
         });
         const claimCalls = queryRawCallIndexesContaining(
             prisma,
@@ -421,75 +432,21 @@ describe('TenantAccountLifecycleService deletion saga', () => {
         expect(stripeBilling.finalizeTenantBillingForPurge.mock.invocationCallOrder[0])
             .toBeLessThan(prisma.$executeRaw.mock.invocationCallOrder[failureStateCalls[0]]);
     });
-    it('retries safely from an existing SUSPENDED barrier using the original request time', async () => {
-        const barrierCommittedAt = new Date('2026-07-08T12:00:00.000Z');
-        const retriedAt = new Date('2026-07-09T12:00:00.000Z');
-        vi.useFakeTimers();
-        vi.setSystemTime(retriedAt);
-        const { service, prisma, stripeBilling } = buildService();
-        prisma.tenant.findUniqueOrThrow
-            .mockResolvedValueOnce(suspendedTenant)
-            .mockResolvedValueOnce(suspendedTenant);
-        prisma.auditLog.findFirst.mockResolvedValue({
-            id: 'audit-barrier-1',
-            userId: actor.userId,
-            actorUserId: actor.userId,
-            actorTenantId: actor.tenantId,
-            ipAddress: actor.ipAddress,
-            userAgent: actor.userAgent,
-            createdAt: barrierCommittedAt,
-        });
-        prisma.tenant.update.mockResolvedValue({
-            ...suspendedTenant,
-            status: 'PURGED',
-            deletedAt: barrierCommittedAt,
-        });
-
-        const result = await service.requestDeletion(actor, { confirmation: 'acme-dining' });
-
-        expect(stripeBilling.finalizeTenantBillingForPurge).toHaveBeenCalledOnce();
-        expect(queryRawCallIndexesContaining(prisma, 'terminalized_jobs AS')).toHaveLength(0);
-        expect(prisma.session.updateMany).not.toHaveBeenCalled();
-        expect(prisma.webhookEndpoint.updateMany).not.toHaveBeenCalled();
-        expect(prisma.webhookDelivery.updateMany).not.toHaveBeenCalled();
-        expect(prisma.tenant.update).toHaveBeenCalledOnce();
-        expect(prisma.tenant.update).toHaveBeenCalledWith(expect.objectContaining({
-            data: expect.objectContaining({ status: 'PURGED', deletedAt: barrierCommittedAt }),
-        }));
-        expect(prisma.auditLog.create).toHaveBeenCalledOnce();
-        expect(prisma.auditLog.create).toHaveBeenCalledWith({
-            data: expect.objectContaining({ action: 'TENANT_DELETION_REQUESTED_BY_CUSTOMER' }),
-        });
-        expect(result).toMatchObject({
-            status: 'PURGED',
-            deletionState: 'FINALIZED',
-            billingCleanupPending: false,
-            deletionRequestedAt: barrierCommittedAt,
-        });
-    });
-    it('returns the existing finalized receipt without repeating Stripe or database side effects', async () => {
-        const requestedAt = new Date('2026-07-09T12:00:00.000Z');
-        const { service, prisma, stripeBilling } = buildService();
-        prisma.tenant.findUniqueOrThrow.mockResolvedValue({
-            id: 'tenant-1',
-            slug: 'acme-dining',
-            status: 'PURGED',
-            deletedAt: requestedAt,
-        });
-
-        const result = await service.requestDeletion(actor, { confirmation: 'acme-dining' });
-
-        expect(result).toMatchObject({
-            status: 'PURGED',
-            deletionState: 'FINALIZED',
-            billingCleanupPending: false,
-            deletionRequestedAt: requestedAt,
-        });
+    it.each(['SUSPENDED', 'PURGED'] as const)('refuses fresh customer admission after a %s barrier without retrying provider work', async status => {
+        const { service, prisma, stripeBilling, authority } = buildService();
+        authority.workspace.status = status;
+        if (status === 'PURGED') authority.workspace.deletedAt = new Date('2026-07-09T12:00:00Z');
+        authority.session.revokedAt = new Date();
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue({ ...suspendedTenant, status });
+        await expect(service.requestDeletion(actor, { confirmation: 'acme-dining' })).rejects.toThrow();
         expect(stripeBilling.finalizeTenantBillingForPurge).not.toHaveBeenCalled();
+        expect(prisma.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
         expect(prisma.tenant.update).not.toHaveBeenCalled();
         expect(prisma.session.updateMany).not.toHaveBeenCalled();
-        expect(queryRawCallIndexesContaining(prisma, 'terminalized_jobs AS')).toHaveLength(0);
+        expect(prisma.webhookEndpoint.updateMany).not.toHaveBeenCalled();
+        expect(prisma.tenantSetting.upsert).not.toHaveBeenCalled();
         expect(prisma.auditLog.create).not.toHaveBeenCalled();
+        expect(queryRawCallIndexesContaining(prisma, 'terminalized_jobs AS')).toHaveLength(0);
     });
     it('returns the pending receipt when phase-two database finalization fails', async () => {
         const { service, prisma, stripeBilling } = buildService();
@@ -1150,3 +1107,151 @@ if (postgresIntegrationUrl && postgresIntegrationCapability) {
         }, 20_000);
     });
 }
+
+describe('customer lifecycle sanitized status history', () => {
+    it('queries latest twenty exact-tenant request records and omits malformed rows', async () => {
+        const { service, prisma } = buildService();
+        const row = { requestId: 'request-1', kind: 'CANCELLATION', state: 'PENDING',
+            requestedAt: '2026-10-01T00:00:00.000Z', updatedAt: '2026-10-08T00:00:00.000Z' };
+        prisma.tenant.findUniqueOrThrow.mockResolvedValue(activeTenant);
+        prisma.tenantSetting.findMany.mockResolvedValue([
+            { value: { ...row, actorUserId: 'private-user', leaseOwner: 'private-lease', providerResult: { secret: 'private' } } },
+            { value: { ...row, state: 'UNKNOWN' } }, { value: null },
+        ]);
+        const result = await service.getStatus(actor);
+        expect(result.requests).toEqual([row]);
+        expect(prisma.tenantSetting.findMany).toHaveBeenCalledExactlyOnceWith({
+            where: { tenantId: actor.tenantId, key: { startsWith: 'internal:account-lifecycle-request:' } },
+            orderBy: [{ updatedAt: 'desc' }, { key: 'asc' }], take: 20, select: { value: true },
+        });
+        expect(JSON.stringify(result.requests)).not.toContain('private');
+    });
+});
+
+// Operator source regression model: actual authority/saga code with controlled
+// SQL/provider seams. Not native transaction, restricted-RLS or provider proof.
+describe('archived workspace operator deletion source contract', () => {
+    afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); });
+    const platformActor = { tenantId: 'platform', userId: 'operator', sessionId: 'operator-session',
+        ipAddress: '203.0.113.42', userAgent: 'qa-operator' };
+    const intake = { confirmation: 'acme-dining', privacyRequestReference: 'privacy_42', exportDisposition: 'declined' };
+    function operatorFixture() {
+        vi.stubEnv('PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'controlled-platform-capability');
+        const prisma = buildPrisma();
+        const target: any = { ...activeTenant, status: 'CANCELLED',
+            deletedAt: new Date('2026-01-01T00:00:00Z'), retentionLegalHoldAt: new Date('2026-02-01T00:00:00Z') };
+        const audits: any[] = [], settings = new Map<string, any>();
+        prisma.tenant.findUniqueOrThrow.mockImplementation(async ({ where }: any) => {
+            expect(where).toEqual({ id: 'tenant-1' }); return { ...target };
+        });
+        prisma.tenant.update.mockImplementation(async ({ where, data }: any) => {
+            expect(where).toEqual({ id: 'tenant-1' }); Object.assign(target, data); return { ...target };
+        });
+        prisma.auditLog.findFirst.mockImplementation(async () => audits[0] ?? null);
+        prisma.auditLog.create.mockImplementation(async ({ data }: any) => { audits.push(structuredClone(data)); return data; });
+        prisma.tenantSetting.findUnique.mockImplementation(async ({ where }: any) => settings.get(JSON.stringify(where)) ?? null);
+        prisma.tenantSetting.upsert.mockImplementation(async ({ where, create, update }: any) => {
+            const key = JSON.stringify(where), row = settings.has(key) ? { ...settings.get(key), ...update } : create;
+            settings.set(key, structuredClone(row)); return structuredClone(row);
+        });
+        const fallback = prisma.$queryRaw.getMockImplementation();
+        prisma.$queryRaw.mockImplementation(async (query: any, ...bindings: any[]) => {
+            const text = (Array.isArray(query) ? query : query.strings).join(' ');
+            // No provider lease acquired in this bounded admission/replay fixture.
+            if (text.includes('RETURNING reconciliation."operationId"')) return [];
+            return fallback(query, ...bindings);
+        });
+        const authority = installPlatformTenantAuthorityModel(prisma, platformActor);
+        const tenantDb = new TenantPrismaService(prisma), rbac = new RbacService(tenantDb);
+        const provider = vi.fn().mockResolvedValue(billingPurge);
+        const owner = new TenantDeletionBillingService(tenantDb,
+            () => ({ finalizeTenantBillingForPurge: provider }) as any, {}, rbac, authority.observer);
+        return { prisma, target, audits, authority, provider, owner,
+            call: (body: any = intake, targetId = 'tenant-1') => owner.requestArchivedDeletion(targetId, platformActor, body) };
+    }
+    it.each(['completed', 'declined'])('records %s intake with fresh retention origin, scoped actor and preserved hold', async exportDisposition => {
+        const f = operatorFixture(), archiveTime = f.target.deletedAt, hold = f.target.retentionLegalHoldAt;
+        const before = Date.now();
+        const result = await f.call({ ...intake, exportDisposition });
+        expect(result).toMatchObject({ id: 'tenant-1', status: 'SUSPENDED', deletionState: 'PENDING_BILLING_CLEANUP',
+            privacyRequestReference: intake.privacyRequestReference, exportDisposition });
+        expect(result.deletionRequestedAt.getTime()).toBeGreaterThanOrEqual(before);
+        expect(result.deletionRequestedAt).not.toEqual(archiveTime);
+        expect(f.target).toMatchObject({ status: 'SUSPENDED', deletedAt: null, retentionLegalHoldAt: hold });
+        expect(f.audits).toHaveLength(1);
+        expect(f.audits[0]).toMatchObject({ tenantId: 'tenant-1', userId: null,
+            actorUserId: platformActor.userId, actorTenantId: platformActor.tenantId,
+            action: 'TENANT_DELETION_BARRIER_COMMITTED', newValue: {
+                privacyRequestReference: intake.privacyRequestReference, exportDisposition,
+                archivedAt: archiveTime.toISOString(),
+            } });
+        expect(f.prisma.session.updateMany).toHaveBeenCalledWith(expect.objectContaining({
+            where: { user: { tenantId: 'tenant-1' }, revokedAt: null },
+        }));
+        expect(f.provider).not.toHaveBeenCalled();
+        expect(f.prisma.tenant.update.mock.calls.some(([args]: any[]) => args.data.status === 'ACTIVE')).toBe(false);
+        const again = await f.call({ ...intake, exportDisposition });
+        expect(again).toEqual(result);
+        expect(f.audits).toHaveLength(1);
+        expect(f.prisma.session.updateMany).toHaveBeenCalledTimes(1);
+    });
+    it('same finalized intake replays original identity/time without provider or barrier duplication', async () => {
+        const f = operatorFixture(); const pending = await f.call();
+        Object.assign(f.target, { status: 'PURGED', deletedAt: new Date(pending.deletionRequestedAt.getTime()) });
+        const finalized = await f.call();
+        expect(finalized).toMatchObject({ requestId: pending.requestId, deletionRequestedAt: pending.deletionRequestedAt,
+            deletionState: 'FINALIZED', status: 'PURGED' });
+        expect(f.audits).toHaveLength(1); expect(f.prisma.tenant.update).toHaveBeenCalledTimes(1);
+        expect(f.provider).not.toHaveBeenCalled();
+    });
+    for (const field of ['privacyRequestReference', 'exportDisposition', 'customer-barrier', 'minimized-audit']) {
+        it(`refuses ${field} mismatch without relabeling an existing barrier`, async () => {
+            const f = operatorFixture(); await f.call();
+            if (field === 'customer-barrier' || field === 'minimized-audit') f.audits[0].newValue = field === 'customer-barrier' ? {} : null;
+            const body = { ...intake, ...(field === 'privacyRequestReference' ? { privacyRequestReference: 'different' } : {}),
+                ...(field === 'exportDisposition' ? { exportDisposition: 'completed' } : {}) };
+            const before = structuredClone(f.target);
+            await expect(f.call(body)).rejects.toThrow('intake differs');
+            expect(f.target).toEqual(before); expect(f.audits).toHaveLength(1);
+            expect(f.prisma.tenant.update).toHaveBeenCalledTimes(1); expect(f.provider).not.toHaveBeenCalled();
+        });
+    }
+    for (const [status, deletedAt] of [['ACTIVE', null], ['TRIAL', null], ['SUSPENDED', null], ['CANCELLED', null]] as const) {
+        it(`refuses unarchived ${status} without mutation`, async () => {
+            const f = operatorFixture(); Object.assign(f.target, { status, deletedAt });
+            await expect(f.call()).rejects.toThrow('Only an archived workspace');
+            expect(f.audits).toEqual([]); expect(f.prisma.tenant.update).not.toHaveBeenCalled();
+            expect(f.prisma.session.updateMany).not.toHaveBeenCalled(); expect(f.provider).not.toHaveBeenCalled();
+        });
+    }
+    it.each([{ privacyRequestReference: 'https://private/ticket' }, { privacyRequestReference: '' },
+        { privacyRequestReference: 'a'.repeat(81) }, { exportDisposition: 'pending' }])('rejects invalid intake %j before admission', async invalid => {
+        const f = operatorFixture();
+        await expect(f.call({ ...intake, ...invalid })).rejects.toThrow();
+        expect(f.prisma.$transaction).not.toHaveBeenCalled(); expect(f.provider).not.toHaveBeenCalled();
+    });
+    it('rejects own-target and wrong slug without barrier effects', async () => {
+        const f = operatorFixture();
+        await expect(f.call(intake, platformActor.tenantId)).rejects.toThrow('own workspace');
+        expect(f.prisma.$transaction).not.toHaveBeenCalled();
+        await expect(f.call({ ...intake, confirmation: 'wrong' })).rejects.toThrow();
+        expect(f.audits).toEqual([]); expect(f.prisma.tenant.update).not.toHaveBeenCalled();
+    });
+    for (const loss of ['session', 'permission', 'pin', 'tenant']) {
+        it(`refuses current platform ${loss} before barrier effects`, async () => {
+            const f = operatorFixture();
+            const observe = f.authority.observer.observeSessionMfa.getMockImplementation()!;
+            f.authority.observer.observeSessionMfa.mockImplementation(async (selected: any) => {
+                const proof = await observe(selected);
+                if (loss === 'session') f.authority.session.revokedAt = new Date();
+                else if (loss === 'permission') f.authority.permissions = [];
+                else if (loss === 'pin') f.authority.actor.pinResetRequired = true;
+                else f.authority.workspace.status = 'SUSPENDED';
+                return proof;
+            });
+            await expect(f.call()).rejects.toMatchObject({ status: 403 });
+            expect(f.audits).toEqual([]); expect(f.prisma.tenant.update).not.toHaveBeenCalled();
+            expect(f.provider).not.toHaveBeenCalled();
+        });
+    }
+});

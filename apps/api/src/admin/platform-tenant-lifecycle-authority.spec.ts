@@ -282,9 +282,20 @@ describe('Platform tenant live authority and durable admission', () => {
     });
     it('keeps customer cancellation outside platform request authorization', async () => {
         const h = harness('ACTIVE', true); h.authority.present = false;
-        await expect(h.service.cancelCustomer({ tenantId: T, userId: 'customer', ipAddress: null, userAgent: null },
-            { confirmation: 'opaque-target' })).resolves.toMatchObject({ id: T, status: 'ACTIVE' });
+        const customer = { tenantId: T, userId: 'customer', sessionId: 'exact-customer-session',
+            ipAddress: null, userAgent: null };
+        const customerAuthority = installPlatformTenantAuthorityModel(h.prisma, customer);
+        customerAuthority.permissions = ['tenant_account:lifecycle'];
+        Object.assign(customerAuthority.workspace, h.snapshot().tenant);
+        const customerStore = new PrismaTenantCancellationIntentStore(h.tenantDb, 120_000,
+            () => new Date(), h.rbac, customerAuthority.observer);
+        const customerService = new TenantCancellationLifecycleService(h.tenantDb, () => h.billing, customerStore);
+        await expect(customerService.cancelCustomer(customer, { confirmation: 'opaque-target' }))
+            .resolves.toMatchObject({ id: T, status: 'ACTIVE' });
+        expect(customerAuthority.observer.observeSessionMfa).toHaveBeenCalledOnce();
+        expect(h.authority.observer.observeSessionMfa).not.toHaveBeenCalled();
         expect(h.authorize).not.toHaveBeenCalled();
+        expect(h.billing.cancelTenantSubscriptionAtPeriodEnd).toHaveBeenCalledOnce();
     });
     it('does not reacquire request authority when completing an already prepared archive', async () => {
         const h = harness(); const admitted = await h.store.prepare({ kind: 'PLATFORM_ARCHIVE', tenantId: T, actor });

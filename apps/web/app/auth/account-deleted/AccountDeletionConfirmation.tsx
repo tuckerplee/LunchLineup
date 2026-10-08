@@ -119,6 +119,7 @@ export function AccountDeletionConfirmation() {
         </p>
       </div>
 
+      {receipt.requestId ? <p style={{ overflowWrap: 'anywhere' }}>Request reference: <strong>{receipt.requestId}</strong></p> : null}
       {billingCleanupPending ? <button className="btn btn-secondary" onClick={() => {
         window.sessionStorage.removeItem(ACCOUNT_DELETION_RECEIPT_STORAGE_KEY);
         setRetry((value) => value + 1);

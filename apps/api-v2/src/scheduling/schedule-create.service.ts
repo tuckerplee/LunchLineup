@@ -1,3 +1,6 @@
+import { requireAnyPermission } from '../platform/identity';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { immutableOperationsInput, operationsIdentity, operationsWait, prepareOperationsAuthority } from '../operations/operations.service';
 import { randomUUID } from 'node:crypto';
 import {
   ScheduleCreateResponseSchema,
@@ -32,15 +35,19 @@ function asInputJson(value: unknown): Prisma.InputJsonValue {
 }
 
 export class ScheduleCreateService {
-  constructor(private readonly database: TenantDatabase) {}
+  constructor(
+    private readonly database: TenantDatabase,
+    private readonly observer?: Partial<MfaSessionObserver>,
+  ) {}
 
   private async replay(
     transaction: TenantTransaction,
     tenantId: string,
     operationId: string,
     expectedRequestHash: string,
+    assertCurrent: () => void,
   ): Promise<ScheduleCreateResponse | null> {
-    const audit = await transaction.auditLog.findFirst({
+    const audit = await operationsWait(assertCurrent, () => transaction.auditLog.findFirst({
       where: {
         tenantId,
         action: CREATE_ACTION,
@@ -49,7 +56,7 @@ export class ScheduleCreateService {
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
       select: { newValue: true },
-    });
+    }));
     if (!audit) return null;
     if (
       !audit.newValue
@@ -83,6 +90,12 @@ export class ScheduleCreateService {
     idempotencyKeyValue: string | undefined,
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<ScheduleCreateResponse> {
+    identity = operationsIdentity(identity);
+    body = immutableOperationsInput(body);
+    metadata = immutableOperationsInput(metadata);
+    requireAnyPermission(identity, ['schedules:write', 'shifts:write']);
+    // Bind this request to one captured eligible capability; loss requires a fresh request.
+    const permission = identity.permissions.includes('schedules:write') ? 'schedules:write' : 'shifts:write';
     const idempotencyKey = requireIdempotencyKey(idempotencyKeyValue);
     const operationId = sha256(`${identity.tenantId}:${CREATE_RESOURCE}:${idempotencyKey}`);
     const expectedRequestHash = requestHash({ locationPublicId, body });
@@ -97,39 +110,42 @@ export class ScheduleCreateService {
       );
     }
 
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const initialReplay = await this.replay(
+    const scope = await prepareOperationsAuthority(this.database, identity, [permission], this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const initialReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         operationId,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (initialReplay) return initialReplay;
 
-      await assertSchedulingEntitled(transaction, identity.tenantId);
-      await lockSchedulingAggregate(transaction, identity.tenantId);
-      const lockedReplay = await this.replay(
+      await operationsWait(assertCurrent, () => assertSchedulingEntitled(transaction, identity.tenantId));
+      await operationsWait(assertCurrent, () => lockSchedulingAggregate(transaction, identity.tenantId));
+      const lockedReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         operationId,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (lockedReplay) return lockedReplay;
 
-      const locations = await transaction.$queryRaw<LockedLocation[]>(Prisma.sql`
+      const locations = await operationsWait(assertCurrent, () => transaction.$queryRaw<LockedLocation[]>(Prisma.sql`
         SELECT "id", "publicId"::text AS "publicId"
         FROM "Location"
         WHERE "tenantId" = ${identity.tenantId}
           AND "publicId" = CAST(${locationPublicId} AS uuid)
           AND "deletedAt" IS NULL
         FOR UPDATE
-      `);
+      `));
       const location = locations[0];
       if (!location) {
         throw new ProblemError(404, 'location_not_found', 'The selected location was not found.', 'Location not found');
       }
 
-      const overlap = await transaction.schedule.findFirst({
+      const overlap = await operationsWait(assertCurrent, () => transaction.schedule.findFirst({
         where: {
           tenantId: identity.tenantId,
           locationId: location.id,
@@ -147,7 +163,7 @@ export class ScheduleCreateService {
           publishedAt: true,
           revision: true,
         },
-      });
+      }));
       let schedule: PublicScheduleRow;
       if (
         overlap
@@ -164,7 +180,7 @@ export class ScheduleCreateService {
           'Schedule conflict',
         );
       } else {
-        schedule = await transaction.schedule.create({
+        schedule = await operationsWait(assertCurrent, () => transaction.schedule.create({
           data: {
             publicId: randomUUID(),
             tenantId: identity.tenantId,
@@ -183,13 +199,13 @@ export class ScheduleCreateService {
             publishedAt: true,
             revision: true,
           },
-        }) as PublicScheduleRow;
+        })) as PublicScheduleRow;
       }
 
       const response: ScheduleCreateResponse = {
         data: serializeSchedule(schedule, location.publicId),
       };
-      await transaction.auditLog.create({
+      await operationsWait(assertCurrent, () => transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
           userId: identity.sub,
@@ -205,8 +221,8 @@ export class ScheduleCreateService {
           ipAddress: metadata.ipAddress?.slice(0, 128),
           userAgent: metadata.userAgent?.slice(0, 512),
         },
-      });
+      }));
       return response;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 }

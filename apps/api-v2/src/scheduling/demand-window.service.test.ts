@@ -1,3 +1,4 @@
+import { schedulingAuthority } from './scheduling-authority.fixture';
 import type { SessionIdentity } from '@lunchlineup/api-contract';
 import { describe, expect, it, vi } from 'vitest';
 import { DemandWindowService } from './demand-window.service';
@@ -12,7 +13,7 @@ const identity: SessionIdentity = {
   role: 'Manager',
   legacyRole: 'MANAGER',
   roles: [{ id: 'role-manager', name: 'Manager', isSystem: true, legacyRole: 'MANAGER' }],
-  permissions: ['schedules:write'],
+  permissions: ['schedules:write', 'schedules:read'],
   mfaVerified: true,
   mfaRequired: true,
 };
@@ -35,10 +36,8 @@ describe('demand-window public identity', () => {
       },
       scheduleDemandWindow: { findMany },
     };
-    const database = {
-      withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
-    };
-    const service = new DemandWindowService(database as never);
+    const { database, observer } = schedulingAuthority(transaction, identity);
+    const service = new DemandWindowService(database as never, observer);
 
     await expect(service.list(identity, scheduleId)).resolves.toEqual({
       data: [{

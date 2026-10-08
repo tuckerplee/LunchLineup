@@ -156,11 +156,11 @@ export async function buildServer(
     );
     const retainedOperators = overrides.retainedOperators ?? new RetainedOperatorBridge(config);
     const routeServices = overrides.routes ?? {
-      board: new ScheduleBoardService(database),
-      scheduleCreate: new ScheduleCreateService(database),
-      changeSets: new ScheduleChangeSetService(database),
-      demandWindows: new DemandWindowService(database),
-      lifecycle: new ScheduleLifecycleService(database),
+      board: new ScheduleBoardService(database, identity),
+      scheduleCreate: new ScheduleCreateService(database, identity),
+      changeSets: new ScheduleChangeSetService(database, identity),
+      demandWindows: new DemandWindowService(database, identity),
+      lifecycle: new ScheduleLifecycleService(database, identity),
       retainedScheduling: new LegacySchedulingBridge(config, database),
     };
 

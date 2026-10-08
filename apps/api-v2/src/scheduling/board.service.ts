@@ -1,3 +1,6 @@
+import { requirePermissions } from '../platform/identity';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { immutableOperationsInput, operationsIdentity, operationsWait, prepareOperationsAuthority } from '../operations/operations.service';
 import type {
   SessionIdentity,
   ScheduleBoardResponse,
@@ -49,11 +52,18 @@ export type BoardQuery = {
 };
 
 export class ScheduleBoardService {
-  constructor(private readonly database: TenantDatabase) {}
+  constructor(
+    private readonly database: TenantDatabase,
+    private readonly observer?: Partial<MfaSessionObserver>,
+  ) {}
 
   async get(identity: SessionIdentity, query: BoardQuery): Promise<ScheduleBoardResponse> {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const firstLocations = await transaction.location.findMany({
+    identity = operationsIdentity(identity);
+    query = immutableOperationsInput(query);
+    requirePermissions(identity, ['locations:read', 'schedules:read', 'shifts:read']);
+    const scope = await prepareOperationsAuthority(this.database, identity, ['locations:read', 'schedules:read', 'shifts:read'], this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const firstLocations = await operationsWait(assertCurrent, () => transaction.location.findMany({
         where: { tenantId: identity.tenantId, deletedAt: null },
         orderBy: [{ name: 'asc' }, { id: 'asc' }],
         take: MAX_LOCATIONS + 1,
@@ -63,9 +73,9 @@ export class ScheduleBoardService {
           name: true,
           timezone: true,
         },
-      });
+      }));
       const requestedLocation = query.locationId
-        ? await transaction.location.findFirst({
+        ? await operationsWait(assertCurrent, () => transaction.location.findFirst({
             where: {
               tenantId: identity.tenantId,
               publicId: query.locationId,
@@ -77,7 +87,7 @@ export class ScheduleBoardService {
               name: true,
               timezone: true,
             },
-          })
+          }))
         : null;
 
       const visibleLocations = firstLocations.slice(0, MAX_LOCATIONS);
@@ -109,7 +119,7 @@ export class ScheduleBoardService {
       }
 
       const staffOnly = isStaffIdentity(identity);
-      const [staffRows, scheduleRows] = await Promise.all([
+      const [staffRows, scheduleRows] = await operationsWait(assertCurrent, () => Promise.all([
         transaction.user.findMany({
           where: {
             tenantId: identity.tenantId,
@@ -134,6 +144,12 @@ export class ScheduleBoardService {
             deletedAt: null,
             startDate: { lt: range.end },
             endDate: { gt: range.start },
+            ...(staffOnly ? {
+              status: 'PUBLISHED' as const,
+              shifts: {
+                some: { tenantId: identity.tenantId, userId: identity.sub, deletedAt: null },
+              },
+            } : {}),
           },
           orderBy: [{ startDate: 'asc' }, { id: 'asc' }],
           take: MAX_SCHEDULES + 1,
@@ -148,7 +164,7 @@ export class ScheduleBoardService {
             revision: true,
           },
         }),
-      ]);
+      ]));
       if (staffRows.length > MAX_STAFF || scheduleRows.length > MAX_SCHEDULES) {
         throw new ProblemError(
           422,
@@ -161,7 +177,7 @@ export class ScheduleBoardService {
       const scheduleIds = scheduleRows.map((schedule) => schedule.id);
       const shiftRows = scheduleIds.length === 0
         ? []
-        : await transaction.shift.findMany({
+        : await operationsWait(assertCurrent, () => transaction.shift.findMany({
           where: {
             tenantId: identity.tenantId,
             locationId: selected.id,
@@ -216,7 +232,7 @@ export class ScheduleBoardService {
               },
             },
           },
-        });
+        }));
 
       if (shiftRows.length > MAX_SHIFTS) {
         throw new ProblemError(
