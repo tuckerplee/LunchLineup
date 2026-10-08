@@ -9,6 +9,8 @@ REPO_ROOT="$(CDPATH= cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 PITR_BASE_BACKUP_ID="${PITR_BASE_BACKUP_ID:-}"
 PITR_RECOVERY_TARGET_TIME="${PITR_RECOVERY_TARGET_TIME:-}"
+PITR_RECOVERY_TARGET_TIMELINE="${PITR_RECOVERY_TARGET_TIMELINE:-}"
+PITR_EXPECTED_SYSTEM_IDENTIFIER="${PITR_EXPECTED_SYSTEM_IDENTIFIER:-}"
 PITR_ARCHIVED_WAL_SEGMENT="${PITR_ARCHIVED_WAL_SEGMENT:-}"
 PITR_BASE_BACKUP_COMPLETE_VERSION_ID="${PITR_BASE_BACKUP_COMPLETE_VERSION_ID:-}"
 PITR_BASE_BACKUP_ARCHIVE_VERSION_ID="${PITR_BASE_BACKUP_ARCHIVE_VERSION_ID:-}"
@@ -16,14 +18,18 @@ PITR_BASE_BACKUP_MANIFEST_VERSION_ID="${PITR_BASE_BACKUP_MANIFEST_VERSION_ID:-}"
 PITR_ARCHIVED_WAL_VERSION_ID="${PITR_ARCHIVED_WAL_VERSION_ID:-}"
 PITR_RESTORE_DATA_DIR="${PITR_RESTORE_DATA_DIR:-/restore}"
 PITR_RESTORE_CONFIRM="${PITR_RESTORE_CONFIRM:-}"
-PITR_DOWNLOAD_DIR="${PITR_STAGING_DIR:-/var/lib/lunchlineup-pitr}/restore-${PITR_BASE_BACKUP_ID}-$$"
+PITR_STAGING_DIR="${PITR_STAGING_DIR:-/var/lib/lunchlineup-pitr}"
+PITR_DOWNLOAD_DIR=""
 PITR_MC_CONFIG_DIR=""
 
 cleanup() {
-  rm -rf "${PITR_DOWNLOAD_DIR}"
+  [ -z "${PITR_DOWNLOAD_DIR}" ] || rm -rf -- "${PITR_DOWNLOAD_DIR}"
   pitr_close_object_store
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "${PITR_BASE_BACKUP_ID}" in
   '' | latest | latest.* | *[!A-Za-z0-9._-]*) pitr_fail "PITR_BASE_BACKUP_ID must name one explicit backup." ;;
@@ -47,6 +53,28 @@ case "${PITR_ARCHIVED_WAL_SEGMENT}" in
   ????????????????????????) case "${PITR_ARCHIVED_WAL_SEGMENT}" in *[!A-Fa-f0-9]*) pitr_fail "PITR_ARCHIVED_WAL_SEGMENT must be a 24-hex WAL segment name." ;; esac ;;
   *) pitr_fail "PITR_ARCHIVED_WAL_SEGMENT must be a 24-hex WAL segment name." ;;
 esac
+if ! node - "${PITR_RECOVERY_TARGET_TIMELINE}" "${PITR_ARCHIVED_WAL_SEGMENT}" <<'JS'
+const [timeline, wal] = process.argv.slice(2);
+const match = /^[1-9][0-9]{0,9}$/.exec(timeline);
+if (!match || match[0] !== timeline
+    || Number(timeline) > 0xffffffff
+    || Number(timeline) !== Number.parseInt(wal.slice(0, 8), 16)) {
+  process.exitCode = 1;
+}
+JS
+then
+  pitr_fail "PITR_RECOVERY_TARGET_TIMELINE must be an explicit decimal timeline matching the named archived WAL segment."
+fi
+if ! node - "${PITR_EXPECTED_SYSTEM_IDENTIFIER}" <<'JS'
+const value = process.argv[2];
+const match = /^[1-9][0-9]{0,19}$/.exec(value);
+if (!match || match[0] !== value || BigInt(value) > 18446744073709551615n) {
+  process.exitCode = 1;
+}
+JS
+then
+  pitr_fail "PITR_EXPECTED_SYSTEM_IDENTIFIER must be the independently recorded canonical PostgreSQL uint64 system identifier."
+fi
 for version_name in \
   PITR_BASE_BACKUP_COMPLETE_VERSION_ID \
   PITR_BASE_BACKUP_ARCHIVE_VERSION_ID \
@@ -60,16 +88,42 @@ do
 done
 [ "${PITR_RESTORE_CONFIRM}" = "restore-pitr-${PITR_BASE_BACKUP_ID}" ] \
   || pitr_fail "Set PITR_RESTORE_CONFIRM=restore-pitr-${PITR_BASE_BACKUP_ID}."
-case "${PITR_RESTORE_DATA_DIR}" in
-  '' | / | . | .. | /var/lib/postgresql/data) pitr_fail "Restore must target a separate empty PGDATA directory." ;;
+if ! PITR_RESTORE_DATA_DIR="$(node - "${PITR_RESTORE_DATA_DIR}" <<'JS'
+const fs = require('node:fs');
+const path = require('node:path');
+const input = process.argv[2];
+if (!path.isAbsolute(input)) process.exit(1);
+const target = path.resolve(input);
+if (target === '/' || target === '/var/lib/postgresql/data') process.exit(1);
+let component = '/';
+for (const part of target.split('/').filter(Boolean)) {
+  component = path.join(component, part);
+  try {
+    const stat = fs.lstatSync(component);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) process.exit(1);
+  } catch (error) {
+    if (error.code === 'ENOENT') break;
+    throw error;
+  }
+}
+process.stdout.write(target);
+JS
+)"; then
+  pitr_fail "Restore requires a separate absolute PGDATA directory without symbolic-link components."
+fi
+case "${PITR_STAGING_DIR}" in
+  /) pitr_fail "PITR_STAGING_DIR must be a dedicated absolute directory." ;;
+  /*) ;;
+  *) pitr_fail "PITR_STAGING_DIR must be a dedicated absolute directory." ;;
 esac
 
-for command_name in pg_verifybackup tar find mktemp sha256sum; do
+for command_name in pg_verifybackup pg_controldata timeout tar find mktemp sha256sum; do
   command -v "${command_name}" >/dev/null 2>&1 || pitr_fail "Required command is missing: ${command_name}"
 done
-mkdir -p "${PITR_RESTORE_DATA_DIR}" "${PITR_DOWNLOAD_DIR}"
+mkdir -p "${PITR_RESTORE_DATA_DIR}" "${PITR_STAGING_DIR}"
 [ -z "$(find "${PITR_RESTORE_DATA_DIR}" -mindepth 1 -maxdepth 1 -print -quit)" ] \
   || pitr_fail "PITR_RESTORE_DATA_DIR must be empty."
+PITR_DOWNLOAD_DIR="$(mktemp -d "${PITR_STAGING_DIR}/restore-${PITR_BASE_BACKUP_ID}.XXXXXXXXXX")"
 
 pitr_open_object_store
 REMOTE_BACKUP="${PITR_REMOTE_ROOT}/basebackups/${PITR_BASE_BACKUP_ID}"
@@ -110,12 +164,34 @@ tar -xzf "${PITR_DOWNLOAD_DIR}/base.tar.gz" -C "${PITR_RESTORE_DATA_DIR}"
 [ "$(sha256sum "${PITR_RESTORE_DATA_DIR}/backup_manifest" | awk '{print $1}')" = "${COMPLETE_MANIFEST_SHA256}" ] \
   || pitr_fail "Extracted base backup manifest does not match the remote commit marker."
 pg_verifybackup --no-parse-wal --exit-on-error "${PITR_RESTORE_DATA_DIR}"
+[ "$(cat "${PITR_RESTORE_DATA_DIR}/PG_VERSION")" = 16 ] \
+  || pitr_fail "Physical recovery requires a PostgreSQL 16 base backup."
+# pg_controldata may exit successfully after printing a CRC/layout warning.
+# Do not trust its identifier unless the bounded read is clean and unambiguous.
+if ! LC_ALL=C timeout --signal=TERM --kill-after=5s 30s pg_controldata "${PITR_RESTORE_DATA_DIR}" \
+  >"${PITR_DOWNLOAD_DIR}/control-data" 2>"${PITR_DOWNLOAD_DIR}/control-error"; then
+  pitr_fail "PostgreSQL control-file read failed or timed out; recovery identity is unknown."
+fi
+[ ! -s "${PITR_DOWNLOAD_DIR}/control-error" ] \
+  || pitr_fail "PostgreSQL control-file read reported diagnostics; refusing recovery."
+if ! node - "${PITR_DOWNLOAD_DIR}/control-data" "${PITR_EXPECTED_SYSTEM_IDENTIFIER}" <<'JS'
+const fs = require('node:fs');
+const [path, expected] = process.argv.slice(2);
+const output = fs.readFileSync(path, 'utf8');
+const identifiers = [...output.matchAll(/^Database system identifier:[ \t]+([0-9]+)$/gm)];
+if (output.includes('WARNING:') || identifiers.length !== 1 || identifiers[0][1] !== expected) {
+  process.exitCode = 1;
+}
+JS
+then
+  pitr_fail "Base backup control-file identity is untrusted or differs from PITR_EXPECTED_SYSTEM_IDENTIFIER."
+fi
 touch "${PITR_RESTORE_DATA_DIR}/recovery.signal"
 cat >>"${PITR_RESTORE_DATA_DIR}/postgresql.auto.conf" <<EOF
 restore_command = 'sh /opt/lunchlineup/pitr/restore-wal.sh "%f" "%p"'
 recovery_target_time = '${PITR_RECOVERY_TARGET_TIME}'
 recovery_target_inclusive = true
-recovery_target_timeline = 'latest'
+recovery_target_timeline = '${PITR_RECOVERY_TARGET_TIMELINE}'
 recovery_target_action = 'pause'
 EOF
 chmod 0700 "${PITR_RESTORE_DATA_DIR}"
@@ -129,13 +205,15 @@ base_backup_manifest_version_id=${PITR_BASE_BACKUP_MANIFEST_VERSION_ID}
 archived_wal_segment=${PITR_ARCHIVED_WAL_SEGMENT}
 archived_wal_version_id=${PITR_ARCHIVED_WAL_VERSION_ID}
 recovery_target_time=${PITR_RECOVERY_TARGET_TIME}
+recovery_target_timeline=${PITR_RECOVERY_TARGET_TIMELINE}
+system_identifier=${PITR_EXPECTED_SYSTEM_IDENTIFIER}
 materialized_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
 if id postgres >/dev/null 2>&1; then
   chown -R postgres:postgres "${PITR_RESTORE_DATA_DIR}"
 fi
 
-printf 'pitr_restore_materialized backup_id=%s target_time=%s wal_segment=%s data_dir=%s remote=%s complete_version_id=%s archive_version_id=%s manifest_version_id=%s wal_version_id=%s\n' \
+printf 'pitr_restore_materialized backup_id=%s target_time=%s wal_segment=%s data_dir=%s remote=%s complete_version_id=%s archive_version_id=%s manifest_version_id=%s wal_version_id=%s target_timeline=%s system_identifier=%s\n' \
   "${PITR_BASE_BACKUP_ID}" "${PITR_RECOVERY_TARGET_TIME}" "${PITR_ARCHIVED_WAL_SEGMENT}" "${PITR_RESTORE_DATA_DIR}" "${REMOTE_BACKUP}" \
   "${PITR_BASE_BACKUP_COMPLETE_VERSION_ID}" "${PITR_BASE_BACKUP_ARCHIVE_VERSION_ID}" \
-  "${PITR_BASE_BACKUP_MANIFEST_VERSION_ID}" "${PITR_ARCHIVED_WAL_VERSION_ID}"
+  "${PITR_BASE_BACKUP_MANIFEST_VERSION_ID}" "${PITR_ARCHIVED_WAL_VERSION_ID}" "${PITR_RECOVERY_TARGET_TIMELINE}" "${PITR_EXPECTED_SYSTEM_IDENTIFIER}"

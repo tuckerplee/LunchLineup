@@ -11,9 +11,9 @@ POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
 POSTGRES_PORT="${POSTGRES_PORT:-5432}"
 POSTGRES_USER="${POSTGRES_USER:-postgres}"
 PITR_STAGING_DIR="${PITR_STAGING_DIR:-/var/lib/lunchlineup-pitr}"
-BACKUP_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-BACKUP_DIR="${PITR_STAGING_DIR}/${BACKUP_ID}"
-BACKUP_DATA_DIR="${BACKUP_DIR}/data"
+BACKUP_ID=""
+BACKUP_DIR=""
+BACKUP_DATA_DIR=""
 PITR_MC_CONFIG_DIR=""
 
 validate_candidate_binding() {
@@ -45,13 +45,18 @@ validate_candidate_binding() {
 }
 
 cleanup() {
-  rm -rf "${BACKUP_DIR}"
+  [ -z "${BACKUP_DIR}" ] || rm -rf -- "${BACKUP_DIR}"
   pitr_close_object_store
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 case "${PITR_STAGING_DIR}" in
-  '' | / | . | ..) pitr_fail "PITR_STAGING_DIR must be a dedicated directory." ;;
+  /) pitr_fail "PITR_STAGING_DIR must be a dedicated absolute directory." ;;
+  /*) ;;
+  *) pitr_fail "PITR_STAGING_DIR must be a dedicated absolute directory." ;;
 esac
 validate_candidate_binding
 
@@ -59,7 +64,11 @@ for command_name in pg_basebackup pg_verifybackup tar sha256sum find mktemp; do
   command -v "${command_name}" >/dev/null 2>&1 || pitr_fail "Required command is missing: ${command_name}"
 done
 [ -n "${PGPASSWORD:-}" ] || pitr_fail "PGPASSWORD is required for the physical base backup connection."
-mkdir -p "${BACKUP_DATA_DIR}"
+mkdir -p "${PITR_STAGING_DIR}"
+BACKUP_DIR="$(mktemp -d "${PITR_STAGING_DIR}/$(date -u +%Y%m%dT%H%M%SZ).XXXXXXXXXX")"
+BACKUP_ID="${BACKUP_DIR##*/}"
+BACKUP_DATA_DIR="${BACKUP_DIR}/data"
+mkdir "${BACKUP_DATA_DIR}"
 
 pg_basebackup \
   --host="${POSTGRES_HOST}" \

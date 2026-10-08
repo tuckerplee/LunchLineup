@@ -13,6 +13,27 @@ groups:
           description: "Prometheus cannot scrape {{ $labels.job }} at {{ $labels.instance }}."
           runbook: "docs/runbooks/production-readiness.md"
 
+      # Explicit expected instances survive a removed or accidentally retargeted job.
+      # Keep this list bound to expectedScrapeJobs in verify-observability-configs.mjs.
+      - alert: ExpectedScrapeTargetMissing
+        expr: |
+          absent(up{job="prometheus",instance="localhost:9090"})
+          or absent(up{job="api",instance="api:3000"})
+          or absent(up{job="api-v2",instance="api-v2:3002"})
+          or absent(up{job="engine",instance="engine:8000"})
+          or absent(up{job="worker",instance="worker:3003"})
+          or absent(up{job="webhook-replay",instance="webhook-replay:3004"})
+          or absent(up{job="control",instance="control:3001"})
+          or absent(up{job="node",instance="node-exporter:9100"})
+        for: 2m
+        labels:
+          severity: critical
+          team: ops
+        annotations:
+          summary: "Expected {{ $labels.job }} metrics target is missing"
+          description: "Prometheus has no current up series for the expected {{ $labels.job }} target {{ $labels.instance }}; another instance cannot satisfy this check."
+          runbook: "docs/runbooks/monitoring-target-missing.md"
+
       - alert: NativeApiMetricsMissing
         expr: absent(up{job="api-v2"})
         for: 2m

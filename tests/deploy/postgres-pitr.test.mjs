@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -489,7 +489,14 @@ wait "$child"
   }
 });
 
-test('fake provider restore consumes all four exact immutable provider versions', { skip: cgroupOwnerSkip }, (t) => {
+for (const scenario of [
+  { mode: 'clean', timeline: '1', walPrefix: '00000001', expectedId: '1' },
+  { mode: 'clean', timeline: '4294967295', walPrefix: 'FFFFFFFF', expectedId: '18446744073709551615' },
+  ...['mismatch', 'duplicate', 'missing', 'warning', 'stderr', 'nonzero', 'timeout-exit', 'wrong-major']
+    .map((mode) => ({ mode, timeline: '1', walPrefix: '00000001', expectedId: '7612345678901234567' })),
+]) {
+const { mode, timeline, walPrefix, expectedId } = scenario;
+test(`fake provider restore exact immutable versions timeline ${timeline} control ${mode}`, { skip: cgroupOwnerSkip }, (t) => {
   const commands = spawnSync(bash, ['-lc', 'command -v timeout tar sha256sum >/dev/null'], { encoding: 'utf8' });
   if (commands.status !== 0) {
     t.skip('bash restore prerequisites are unavailable');
@@ -506,7 +513,7 @@ test('fake provider restore consumes all four exact immutable provider versions'
   const fakeMc = join(fakeBin, 'mc');
   const providerLog = join(scratch, 'provider.log');
   const backupId = '20260716T120000Z-4242';
-  const walSegment = '000000010000000000000042';
+  const walSegment = `${walPrefix}0000000000000042`;
   const versions = {
     COMPLETE: 'complete-version-exact-101',
     'base.tar.gz': 'archive-version-exact-202',
@@ -514,10 +521,10 @@ test('fake provider restore consumes all four exact immutable provider versions'
     [walSegment]: 'wal-version-exact-404',
   };
   try {
-    for (const directory of [objects, baseData, restoreData, staging, fakeBin]) mkdirSync(directory);
+    for (const directory of [objects, baseData, staging, fakeBin]) mkdirSync(directory);
     const manifest = Buffer.from('fake pg_basebackup manifest\n');
     writeFileSync(join(baseData, 'backup_manifest'), manifest);
-    writeFileSync(join(baseData, 'PG_VERSION'), '16\n');
+    writeFileSync(join(baseData, 'PG_VERSION'), mode === 'wrong-major' ? '17\n' : '16\n');
     const archivePath = join(objects, 'base.tar.gz');
     const archived = spawnSync(bash, ['-lc', 'tar -czf "$1" -C "$2" .', 'fixture', bashPath(archivePath), bashPath(baseData)], { encoding: 'utf8' });
     assert.equal(archived.status, 0, archived.stderr);
@@ -533,6 +540,23 @@ test('fake provider restore consumes all four exact immutable provider versions'
     writeFileSync(secretKey, 'restore-secret\n');
     writeFileSync(join(fakeBin, 'pg_verifybackup'), '#!/bin/sh\nexit 0\n');
     chmodSync(join(fakeBin, 'pg_verifybackup'), 0o700);
+    const identifierLine = `Database system identifier: ${expectedId}\n`;
+    const controlOutput = mode === 'mismatch' ? 'Database system identifier: 2\n'
+      : mode === 'duplicate' ? identifierLine.repeat(2)
+      : mode === 'missing' ? 'pg_control version number: 1300\n'
+      : mode === 'warning' ? `${identifierLine}WARNING: calculated CRC does not match\n`
+      : identifierLine;
+    writeFileSync(join(scratch, 'control-output'), controlOutput);
+    writeFileSync(join(fakeBin, 'pg_controldata'), `#!/bin/sh\ncat '${bashPath(join(scratch, 'control-output'))}'\n${mode === 'stderr' ? "printf 'synthetic diagnostic\\n' >&2" : ':'}\nexit ${mode === 'nonzero' ? 9 : 0}\n`);
+    chmodSync(join(fakeBin, 'pg_controldata'), 0o700);
+    if (mode === 'timeout-exit') {
+      // Simulate the timeout owner's failure status, not elapsed watchdog proof.
+      writeFileSync(join(fakeBin, 'timeout'), '#!/bin/sh\ncase "$*" in *"30s pg_controldata "*) exit 124 ;; *) exec /usr/bin/timeout "$@" ;; esac\n');
+      chmodSync(join(fakeBin, 'timeout'), 0o700);
+    }
+    const foreign = join(staging, 'foreign-retained');
+    mkdirSync(foreign);
+    writeFileSync(join(foreign, 'sentinel'), 'foreign attempt');
     writeFileSync(fakeMc, `#!/bin/sh
 set -eu
 printf '%s\\n' "$*" >>'${bashPath(providerLog)}'
@@ -581,6 +605,8 @@ esac
         PITR_MC_BIN: bashPath(fakeMc),
         PITR_BASE_BACKUP_ID: backupId,
         PITR_RECOVERY_TARGET_TIME: '2026-07-16T12:30:00Z',
+        PITR_RECOVERY_TARGET_TIMELINE: timeline,
+        PITR_EXPECTED_SYSTEM_IDENTIFIER: expectedId,
         PITR_ARCHIVED_WAL_SEGMENT: walSegment,
         PITR_BASE_BACKUP_COMPLETE_VERSION_ID: versions.COMPLETE,
         PITR_BASE_BACKUP_ARCHIVE_VERSION_ID: versions['base.tar.gz'],
@@ -591,12 +617,40 @@ esac
         PITR_STAGING_DIR: bashPath(staging),
       },
     });
+    assert.equal(result.error, undefined, 'restore fixture must settle within its outer deadline');
+    assert.deepEqual(readdirSync(staging), ['foreign-retained'], 'helper must remove only its own scratch');
+    assert.equal(readFileSync(join(foreign, 'sentinel'), 'utf8'), 'foreign attempt');
+    if (mode !== 'clean') {
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      const expectedError = mode === 'wrong-major' ? /requires a PostgreSQL 16 base backup/
+        : mode === 'stderr' ? /control-file read reported diagnostics/
+        : ['nonzero', 'timeout-exit'].includes(mode) ? /control-file read failed or timed out/
+        : /control-file identity is untrusted or differs/;
+      assert.match(result.stderr, expectedError);
+      assert.doesNotMatch(result.stdout, /pitr_restore_materialized/);
+      for (const name of ['recovery.signal', 'postgresql.auto.conf', 'lunchlineup-pitr-restore-source']) {
+        assert.equal(existsSync(join(restoreData, name)), false, `${name} must not be written after identity refusal`);
+      }
+      assert.equal(readFileSync(join(restoreData, 'PG_VERSION'), 'utf8'), mode === 'wrong-major' ? '17\n' : '16\n',
+        'partially materialized target must remain available to its owner');
+      return;
+    }
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, new RegExp(`system_identifier=${expectedId}(?:\\s|$)`));
     assert.match(result.stdout, /complete_version_id=complete-version-exact-101/);
     assert.match(result.stdout, /archive_version_id=archive-version-exact-202/);
     assert.match(result.stdout, /manifest_version_id=manifest-version-exact-303/);
     assert.match(result.stdout, /wal_version_id=wal-version-exact-404/);
+    assert.match(result.stdout, new RegExp(`target_timeline=${timeline}(?:\\s|$)`));
+    const recoveryConfig = readFileSync(join(restoreData, 'postgresql.auto.conf'), 'utf8');
+    assert.match(recoveryConfig, new RegExp(`^recovery_target_timeline = '${timeline}'$`, 'm'));
+    assert.match(recoveryConfig, /^recovery_target_action = 'pause'$/m);
+    assert.match(recoveryConfig, /^recovery_target_time = '2026-07-16T12:30:00Z'$/m);
+    assert.ok(existsSync(join(restoreData, 'recovery.signal')));
     const source = readFileSync(join(restoreData, 'lunchlineup-pitr-restore-source'), 'utf8');
+    assert.match(source, new RegExp(`^recovery_target_timeline=${timeline}$`, 'm'));
+    assert.match(source, new RegExp(`^system_identifier=${expectedId}$`, 'm'));
+    assert.match(source, new RegExp(`^archived_wal_segment=${walSegment}$`, 'm'));
     for (const exactVersion of Object.values(versions)) assert.match(source, new RegExp(exactVersion));
     const providerCalls = readFileSync(providerLog, 'utf8');
     for (const exactVersion of Object.values(versions)) assert.match(providerCalls, new RegExp(`--version-id ${exactVersion}`));
@@ -604,6 +658,241 @@ esac
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+}
+
+for (const timeline of [undefined, '', 'latest', 'current', '0', '-1', '01',
+  '4294967296', '1\n', "1'", '2']) {
+  test(`PITR recovery timeline rejects ${JSON.stringify(timeline) ?? 'missing'} before provider access or target writes`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-timeline-'));
+    try {
+      const providerLog = join(scratch, 'provider.log');
+      const fakeMc = join(scratch, 'mc');
+      const restoreData = join(scratch, 'not-created-target');
+      const staging = join(scratch, 'not-created-staging');
+      writeFileSync(fakeMc, `#!/bin/sh\nprintf 'unexpected provider call\\n' >>'${bashPath(providerLog)}'\nexit 97\n`);
+      chmodSync(fakeMc, 0o700);
+      const env = {
+        ...process.env,
+        PITR_ENABLED: 'true',
+        PITR_BASE_BACKUP_ID: '20260716T120000Z-4242',
+        PITR_RECOVERY_TARGET_TIME: '2026-07-16T12:30:00Z',
+        PITR_ARCHIVED_WAL_SEGMENT: '000000010000000000000042',
+        PITR_BASE_BACKUP_COMPLETE_VERSION_ID: 'complete-101',
+        PITR_BASE_BACKUP_ARCHIVE_VERSION_ID: 'archive-202',
+        PITR_BASE_BACKUP_MANIFEST_VERSION_ID: 'manifest-303',
+        PITR_ARCHIVED_WAL_VERSION_ID: 'wal-404',
+        PITR_RESTORE_CONFIRM: 'restore-pitr-20260716T120000Z-4242',
+        PITR_RESTORE_DATA_DIR: bashPath(restoreData),
+        PITR_STAGING_DIR: bashPath(staging),
+        PITR_MC_BIN: bashPath(fakeMc),
+      };
+      delete env.PITR_RECOVERY_TARGET_TIMELINE;
+      if (timeline !== undefined) env.PITR_RECOVERY_TARGET_TIMELINE = timeline;
+      const result = spawnSync(bash, [join(root, 'scripts/pitr-restore.sh')], {
+        cwd: root, env, encoding: 'utf8', timeout: 5_000,
+      });
+      assert.equal(result.error, undefined, 'timeline rejection must finish without external termination');
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /PITR_RECOVERY_TARGET_TIMELINE must be an explicit decimal timeline matching/);
+      assert.equal(existsSync(providerLog), false, 'invalid timeline must not contact provider');
+      assert.equal(existsSync(restoreData), false, 'invalid timeline must not create target');
+      assert.equal(existsSync(staging), false, 'invalid timeline must not create staging');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
+function pitrRestorePreflightEnvironment(scratch) {
+  return {
+    ...process.env,
+    PITR_ENABLED: 'true',
+    PITR_BASE_BACKUP_ID: '20260716T120000Z-4242',
+    PITR_RECOVERY_TARGET_TIME: '2026-07-16T12:30:00Z',
+    PITR_RECOVERY_TARGET_TIMELINE: '1',
+    PITR_EXPECTED_SYSTEM_IDENTIFIER: '7612345678901234567',
+    PITR_ARCHIVED_WAL_SEGMENT: '000000010000000000000042',
+    PITR_BASE_BACKUP_COMPLETE_VERSION_ID: 'complete-101',
+    PITR_BASE_BACKUP_ARCHIVE_VERSION_ID: 'archive-202',
+    PITR_BASE_BACKUP_MANIFEST_VERSION_ID: 'manifest-303',
+    PITR_ARCHIVED_WAL_VERSION_ID: 'wal-404',
+    PITR_RESTORE_CONFIRM: 'restore-pitr-20260716T120000Z-4242',
+    PITR_RESTORE_DATA_DIR: bashPath(join(scratch, 'target')),
+    PITR_STAGING_DIR: bashPath(join(scratch, 'staging')),
+  };
+}
+
+for (const [identifier, valid] of [
+  [undefined, false], ['', false], ['0', false], ['-1', false], ['01', false],
+  ['1 ', false], ['1\n', false], ['18446744073709551616', false], ['not-decimal', false],
+  ['1', true], ['18446744073709551615', true],
+]) {
+  test(`PITR expected cluster identity preflight ${valid ? 'accepts' : 'rejects'} ${JSON.stringify(identifier) ?? 'missing'}`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-identity-'));
+    try {
+      const env = pitrRestorePreflightEnvironment(scratch);
+      delete env.PITR_EXPECTED_SYSTEM_IDENTIFIER;
+      if (identifier !== undefined) env.PITR_EXPECTED_SYSTEM_IDENTIFIER = identifier;
+      // Positive values stop at the next gate, before commands/provider/target creation.
+      env.PITR_BASE_BACKUP_COMPLETE_VERSION_ID = '';
+      const result = spawnSync(bash, [join(root, 'scripts/pitr-restore.sh')], {
+        cwd: root, env, encoding: 'utf8', timeout: 5_000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, valid ? /PITR_BASE_BACKUP_COMPLETE_VERSION_ID/ : /PITR_EXPECTED_SYSTEM_IDENTIFIER/);
+      assert.equal(existsSync(join(scratch, 'target')), false);
+      assert.equal(existsSync(join(scratch, 'staging')), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const targetKind of ['symlink', 'symlink-trailing-slash', 'symlink-ancestor', 'normalized-protected', 'relative']) {
+  test(`PITR restore target refuses ${targetKind} without changing foreign contents`, { skip: process.platform === 'win32' }, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-path-'));
+    try {
+      const foreign = join(scratch, 'foreign');
+      mkdirSync(foreign);
+      writeFileSync(join(foreign, 'sentinel'), 'retain');
+      const link = join(scratch, 'link');
+      symlinkSync(foreign, link, 'dir');
+      const targets = {
+        symlink: link,
+        'symlink-trailing-slash': `${link}/`,
+        'symlink-ancestor': join(link, 'new-child'),
+        'normalized-protected': '/var/lib/postgresql/./data/',
+        relative: 'relative-restore-target',
+      };
+      const result = spawnSync(bash, [join(root, 'scripts/pitr-restore.sh')], {
+        cwd: root, encoding: 'utf8', timeout: 5_000,
+        env: { ...pitrRestorePreflightEnvironment(scratch), PITR_RESTORE_DATA_DIR: targets[targetKind] },
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, /separate absolute PGDATA directory without symbolic-link components/);
+      assert.deepEqual(readdirSync(foreign), ['sentinel']);
+      assert.equal(readFileSync(join(foreign, 'sentinel'), 'utf8'), 'retain');
+      assert.equal(existsSync(join(scratch, 'staging')), false);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const operation of ['restore', 'base-backup']) {
+  test(`PITR ${operation} preflight preserves an old deterministic scratch directory`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-old-scratch-'));
+    try {
+      const bin = join(scratch, 'bin');
+      const staging = join(scratch, 'staging');
+      const record = join(scratch, 'foreign-path');
+      mkdirSync(bin); mkdirSync(staging);
+      writeFileSync(join(bin, 'date'), '#!/bin/sh\nprintf "20261008T120000Z\\n"\n');
+      chmodSync(join(bin, 'date'), 0o700);
+      const env = {
+        ...pitrRestorePreflightEnvironment(scratch),
+        PATH: `${bashPath(bin)}:${process.env.PATH}`,
+        PITR_RECOVERY_TARGET_TIME: 'invalid',
+        PITR_REQUIRE_CANDIDATE_BINDING: 'true',
+        CANDIDATE_SYSTEMD_INVOCATION_ID: '',
+      };
+      const result = spawnSync(bash, ['-c', `set -eu
+if [ "$1" = restore ]; then old="$2/restore-20260716T120000Z-4242-$$"; else old="$2/20261008T120000Z-$$"; fi
+mkdir "$old"
+printf 'retain' >"$old/sentinel"
+printf '%s' "$old" >"$3"
+exec "$4" "$5"
+`, 'fixture', operation, bashPath(staging), bashPath(record), bash,
+        bashPath(join(root, `scripts/pitr-${operation}.sh`))], {
+        cwd: root, env, encoding: 'utf8', timeout: 5_000,
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 1, result.stderr);
+      assert.match(result.stderr, operation === 'restore' ? /PITR_RECOVERY_TARGET_TIME/ : /InvocationID/);
+      const old = readFileSync(record, 'utf8');
+      assert.equal(readFileSync(join(old, 'sentinel'), 'utf8'), 'retain');
+      assert.deepEqual(readdirSync(staging), [old.split('/').at(-1)]);
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+
+  test(`PITR ${operation} failed scratch allocation does not delete foreign paths`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-mktemp-'));
+    try {
+      const bin = join(scratch, 'bin');
+      const staging = join(scratch, 'staging');
+      mkdirSync(bin); mkdirSync(staging);
+      const foreign = join(staging, 'foreign');
+      mkdirSync(foreign); writeFileSync(join(foreign, 'sentinel'), 'retain');
+      for (const command of ['pg_basebackup', 'pg_verifybackup', 'pg_controldata']) {
+        writeFileSync(join(bin, command), '#!/bin/sh\nexit 96\n');
+        chmodSync(join(bin, command), 0o700);
+      }
+      writeFileSync(join(bin, 'mktemp'), '#!/bin/sh\nprintf "synthetic allocation refusal\\n" >&2\nexit 73\n');
+      chmodSync(join(bin, 'mktemp'), 0o700);
+      const result = spawnSync(bash, [join(root, `scripts/pitr-${operation}.sh`)], {
+        cwd: root, encoding: 'utf8', timeout: 5_000,
+        env: { ...pitrRestorePreflightEnvironment(scratch),
+          PATH: `${bashPath(bin)}:${process.env.PATH}`, PGPASSWORD: 'synthetic-only',
+          PITR_REQUIRE_CANDIDATE_BINDING: 'false' },
+      });
+      assert.equal(result.error, undefined);
+      assert.equal(result.status, 73, result.stderr);
+      assert.match(result.stderr, /synthetic allocation refusal/);
+      assert.deepEqual(readdirSync(staging), ['foreign']);
+      assert.equal(readFileSync(join(foreign, 'sentinel'), 'utf8'), 'retain');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
+
+for (const mode of ['same-second', 'signal']) {
+  test(`PITR base backup owns exclusive scratch and stops after ${mode}`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-exclusive-'));
+    try {
+      const bin = join(scratch, 'bin');
+      const staging = join(scratch, 'staging');
+      const log = join(scratch, 'allocated');
+      const resumed = join(scratch, 'resumed');
+      mkdirSync(bin); mkdirSync(staging);
+      writeFileSync(join(staging, 'foreign'), 'retain');
+      writeFileSync(join(bin, 'date'), '#!/bin/sh\nprintf "20261008T120000Z\\n"\n');
+      writeFileSync(join(bin, 'pg_basebackup'), `#!/bin/sh
+for arg do case "$arg" in --pgdata=*) printf '%s\\n' "\${arg#--pgdata=}" >>'${bashPath(log)}' ;; esac; done
+${mode === 'signal' ? 'kill -TERM "$PPID"\nexit 0' : 'exit 91'}
+`);
+      writeFileSync(join(bin, 'pg_verifybackup'), `#!/bin/sh\nprintf 'unexpected continuation' >'${bashPath(resumed)}'\nexit 92\n`);
+      for (const command of ['date', 'pg_basebackup', 'pg_verifybackup']) chmodSync(join(bin, command), 0o700);
+      for (let index = 0; index < (mode === 'same-second' ? 2 : 1); index += 1) {
+        const result = spawnSync(bash, [join(root, 'scripts/pitr-base-backup.sh')], {
+          cwd: root, encoding: 'utf8', timeout: 5_000,
+          env: { ...process.env, PATH: `${bashPath(bin)}:${process.env.PATH}`,
+            PITR_STAGING_DIR: bashPath(staging), PGPASSWORD: 'synthetic-only',
+            PITR_REQUIRE_CANDIDATE_BINDING: 'false' },
+        });
+        assert.equal(result.error, undefined);
+        assert.equal(result.status, mode === 'signal' ? 143 : 91, result.stderr);
+      }
+      const allocated = readFileSync(log, 'utf8').trim().split('\n');
+      assert.equal(allocated.length, mode === 'same-second' ? 2 : 1);
+      assert.equal(new Set(allocated).size, allocated.length);
+      for (const path of allocated) {
+        assert.match(path, /\/20261008T120000Z\.[A-Za-z0-9]{10}\/data$/);
+        assert.equal(existsSync(path), false, 'only own failed attempt scratch is removed');
+      }
+      assert.deepEqual(readdirSync(staging), ['foreign']);
+      assert.equal(readFileSync(join(staging, 'foreign'), 'utf8'), 'retain');
+      assert.equal(existsSync(resumed), false, 'failed or interrupted backup must not resume');
+    } finally {
+      rmSync(scratch, { recursive: true, force: true });
+    }
+  });
+}
 
 test('authorization simulation proves denied mutations for restore and lifecycle-audit identities', () => {
   const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-pitr-authorization-'));

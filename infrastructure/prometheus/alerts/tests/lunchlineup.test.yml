@@ -130,3 +130,1033 @@ tests:
               summary: Automatic application-data retention execution is older than 26 hours
               description: The last scheduled application_data execution attempt is 1d 2h 59m 0s old; dry-run telemetry is intentionally independent.
               runbook: docs/runbooks/data-retention-delete-export.md
+
+  # C12 exact expected target presence; independent from present-but-down.
+  - name: C12 all eight exact scrape targets healthy
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+  - name: C12 prometheus disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "prometheus"
+              instance: "localhost:9090"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected prometheus metrics target is missing"
+              description: "Prometheus has no current up series for the expected prometheus target localhost:9090; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "api"
+              instance: "api:3000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected api metrics target is missing"
+              description: "Prometheus has no current up series for the expected api target api:3000; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api-v2 disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "api-v2"
+              instance: "api-v2:3002"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected api-v2 metrics target is missing"
+              description: "Prometheus has no current up series for the expected api-v2 target api-v2:3002; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 engine disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "engine"
+              instance: "engine:8000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected engine metrics target is missing"
+              description: "Prometheus has no current up series for the expected engine target engine:8000; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 worker disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "worker"
+              instance: "worker:3003"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected worker metrics target is missing"
+              description: "Prometheus has no current up series for the expected worker target worker:3003; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 webhook-replay disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "webhook-replay"
+              instance: "webhook-replay:3004"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected webhook-replay metrics target is missing"
+              description: "Prometheus has no current up series for the expected webhook-replay target webhook-replay:3004; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 control disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1 stale _ _ _ 1+0x3"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x8"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "control"
+              instance: "control:3001"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected control metrics target is missing"
+              description: "Prometheus has no current up series for the expected control target control:3001; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 node disappearance waits two minutes and recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x8"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x8"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x8"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x8"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x8"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1 stale _ _ _ 1+0x3"
+    alert_rule_test:
+      - eval_time: 0m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "node"
+              instance: "node-exporter:9100"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected node metrics target is missing"
+              description: "Prometheus has no current up series for the expected node target node-exporter:9100; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 5m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 prometheus wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"prometheus\",instance=\"wrong-localhost:9090\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "prometheus"
+              instance: "localhost:9090"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected prometheus metrics target is missing"
+              description: "Prometheus has no current up series for the expected prometheus target localhost:9090; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"wrong-api:3000\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "api"
+              instance: "api:3000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected api metrics target is missing"
+              description: "Prometheus has no current up series for the expected api target api:3000; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api-v2 wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"wrong-api-v2:3002\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "api-v2"
+              instance: "api-v2:3002"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected api-v2 metrics target is missing"
+              description: "Prometheus has no current up series for the expected api-v2 target api-v2:3002; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 engine wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"wrong-engine:8000\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "engine"
+              instance: "engine:8000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected engine metrics target is missing"
+              description: "Prometheus has no current up series for the expected engine target engine:8000; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 worker wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"wrong-worker:3003\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "worker"
+              instance: "worker:3003"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected worker metrics target is missing"
+              description: "Prometheus has no current up series for the expected worker target worker:3003; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 webhook-replay wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"wrong-webhook-replay:3004\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "webhook-replay"
+              instance: "webhook-replay:3004"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected webhook-replay metrics target is missing"
+              description: "Prometheus has no current up series for the expected webhook-replay target webhook-replay:3004; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 control wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"wrong-control:3001\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "control"
+              instance: "control:3001"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected control metrics target is missing"
+              description: "Prometheus has no current up series for the expected control target control:3001; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 node wrong healthy instance cannot mask expected target
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x4"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x4"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x4"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x4"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x4"
+      - series: "up{job=\"node\",instance=\"wrong-node-exporter:9100\"}"
+        values: "1+0x4"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts:
+          - exp_labels:
+              job: "node"
+              instance: "node-exporter:9100"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "Expected node metrics target is missing"
+              description: "Prometheus has no current up series for the expected node target node-exporter:9100; another instance cannot satisfy this check."
+              runbook: docs/runbooks/monitoring-target-missing.md
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 prometheus present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "api"
+              instance: "api:3000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "api metrics scrape is down"
+              description: "Prometheus cannot scrape api at api:3000."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 api-v2 present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "api-v2"
+              instance: "api-v2:3002"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "api-v2 metrics scrape is down"
+              description: "Prometheus cannot scrape api-v2 at api-v2:3002."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 engine present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "engine"
+              instance: "engine:8000"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "engine metrics scrape is down"
+              description: "Prometheus cannot scrape engine at engine:8000."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 worker present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "worker"
+              instance: "worker:3003"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "worker metrics scrape is down"
+              description: "Prometheus cannot scrape worker at worker:3003."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 webhook-replay present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "webhook-replay"
+              instance: "webhook-replay:3004"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "webhook-replay metrics scrape is down"
+              description: "Prometheus cannot scrape webhook-replay at webhook-replay:3004."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 control present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "0+0x3 1+0x3"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "1+0x7"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "control"
+              instance: "control:3001"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "control metrics scrape is down"
+              description: "Prometheus cannot scrape control at control:3001."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []
+  - name: C12 node present up zero is down not missing then recovers
+    interval: 1m
+    input_series:
+      - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api\",instance=\"api:3000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"api-v2\",instance=\"api-v2:3002\"}"
+        values: "1+0x7"
+      - series: "up{job=\"engine\",instance=\"engine:8000\"}"
+        values: "1+0x7"
+      - series: "up{job=\"worker\",instance=\"worker:3003\"}"
+        values: "1+0x7"
+      - series: "up{job=\"webhook-replay\",instance=\"webhook-replay:3004\"}"
+        values: "1+0x7"
+      - series: "up{job=\"control\",instance=\"control:3001\"}"
+        values: "1+0x7"
+      - series: "up{job=\"node\",instance=\"node-exporter:9100\"}"
+        values: "0+0x3 1+0x3"
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ServiceDown
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: ServiceDown
+        exp_alerts:
+          - exp_labels:
+              job: "node"
+              instance: "node-exporter:9100"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "node metrics scrape is down"
+              description: "Prometheus cannot scrape node at node-exporter:9100."
+              runbook: docs/runbooks/production-readiness.md
+      - eval_time: 4m
+        alertname: ExpectedScrapeTargetMissing
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: ServiceDown
+        exp_alerts: []

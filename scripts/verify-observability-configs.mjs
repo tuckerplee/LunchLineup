@@ -104,6 +104,7 @@ const expectedScrapeJobs = Object.freeze({
 });
 const expectedAlerts = Object.freeze([
   'ServiceDown',
+  'ExpectedScrapeTargetMissing',
   'NativeApiMetricsMissing',
   'NativeApiHttpInstrumentationUnavailable',
   'HighNativeApiErrorRate',
@@ -1261,6 +1262,19 @@ function validateAlertRules(root, alertRules, prometheus, errors) {
     for (const expectedJob of ['api', 'api-v2', 'engine', 'worker', 'webhook-replay', 'control', 'node']) {
       expect(errors, coveredJobs.includes(expectedJob), `lunchlineup.yml: ServiceDown must cover ${expectedJob}`);
     }
+  }
+
+  const missingTarget = ruleEntries.find(({ rule }) => rule.alert === 'ExpectedScrapeTargetMissing')?.rule;
+  if (missingTarget) {
+    const expectedExpression = Object.entries(expectedScrapeJobs).flatMap(([job, contract]) =>
+      contract.targets.map(instance => `absent(up{job="${job}",instance="${instance}"})`),
+    ).join(' or ');
+    const normalize = value => String(value ?? '').replace(/\s+/g, ' ').trim();
+    expect(errors, normalize(missingTarget.expr) === expectedExpression, 'lunchlineup.yml: ExpectedScrapeTargetMissing must cover every exact expected job/instance without fallback');
+    expect(errors, missingTarget.for === '2m', 'lunchlineup.yml: ExpectedScrapeTargetMissing must retain the 2m pending period');
+    expect(errors, missingTarget.labels?.severity === 'critical' && missingTarget.labels?.team === 'ops', 'lunchlineup.yml: ExpectedScrapeTargetMissing must page critical ops');
+    expect(errors, Object.keys(asMap(missingTarget.labels)).sort().join(',') === 'severity,team', 'lunchlineup.yml: ExpectedScrapeTargetMissing must preserve query-derived job and instance labels');
+    expect(errors, missingTarget.annotations?.runbook === 'docs/runbooks/monitoring-target-missing.md', 'lunchlineup.yml: ExpectedScrapeTargetMissing must reference its recovery runbook');
   }
 
   const publicWebUnavailable = ruleEntries.find(({ rule }) => rule.alert === 'PublicWebUnavailable')?.rule;
