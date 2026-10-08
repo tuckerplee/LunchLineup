@@ -238,6 +238,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
 
   return (
     <div className="workspace-shell">
+      <a className="workspace-skip-link" href="#workspace-main-content">Skip to main content</a>
       <aside className="workspace-sidebar" aria-label="Sidebar navigation">
         <div className="workspace-sidebar-inner">
           <div style={{ padding: '1.1rem 1rem', borderBottom: '1px solid var(--border)' }}>
@@ -371,6 +372,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
             {canOpenAccountSettings ? (
               <Link
                 href="/dashboard/settings"
+                className="workspace-account-control"
                 aria-label="Account settings"
                 title="Account settings"
                 style={{
@@ -398,11 +400,12 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 >
                   {getDashboardUserInitials(user)}
                 </span>
-                <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
+                <span className="workspace-account-name" style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
                 <Settings size={14} style={{ color: 'var(--text-muted)' }} />
               </Link>
             ) : (
               <div
+                className="workspace-account-control"
                 aria-label="Account"
                 style={{
                   border: '1px solid var(--border)',
@@ -429,13 +432,13 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
                 >
                   {getDashboardUserInitials(user)}
                 </span>
-                <span style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
+                <span className="workspace-account-name" style={{ fontSize: '0.76rem', fontWeight: 700, color: 'var(--text-primary)' }}>{user?.name || user?.username || 'Account'}</span>
               </div>
             )}
           </div>
         </header>
 
-        <main className="workspace-content">{children}</main>
+        <main id="workspace-main-content" tabIndex={-1} className="workspace-content">{children}</main>
       </section>
     </div>
   );

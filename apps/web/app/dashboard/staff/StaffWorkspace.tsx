@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { useDialogFocus } from '@/components/ui/use-dialog-focus';
 import { fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
 import { acknowledgeCorruptInvitationRecovery, clearInvitationRecovery, invitationRecoveryStorageKey, prepareInvitationRecovery, readInvitationRecovery, type InvitationRecovery } from './invitation-recovery';
 import {
@@ -188,10 +189,19 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     const [isSaving, setIsSaving] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [pendingAction, setPendingAction] = useState<PendingStaffAction | null>(null);
+    const { dialogRef: actionDialogRef, captureTrigger: captureActionTrigger } = useDialogFocus(pendingAction !== null);
+    const openPendingAction = (action: StaffAction, user: StaffUser, trigger: HTMLElement) => {
+        const drawer = trigger.closest<HTMLElement>('[role="dialog"]');
+        const fallback = drawer?.querySelector<HTMLElement>('[aria-label="Close staff management"]')
+            ?? trigger.closest<HTMLElement>('main');
+        captureActionTrigger(trigger, fallback);
+        setPendingAction({ action, user });
+    };
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const [roleDeletionName, setRoleDeletionName] = useState('');
     const [schedulingProfileUser, setSchedulingProfileUser] = useState<StaffUser | null>(null);
     const staffDrawerOpener = useRef<HTMLElement | null>(null);
+    const staffDrawerWasOpen = useRef(false);
     const isStaffDrawerOpen = schedulingProfileUser !== null;
     const openStaffDrawer = (user: StaffUser, opener: HTMLElement) => {
         staffDrawerOpener.current = opener;
@@ -230,12 +240,18 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     }, [schedulingProfileUser]);
 
     useEffect(() => {
-        if (isStaffDrawerOpen) return;
+        if (isStaffDrawerOpen) {
+            staffDrawerWasOpen.current = true;
+            return;
+        }
+        if (!staffDrawerWasOpen.current) return;
+        staffDrawerWasOpen.current = false;
         const opener = staffDrawerOpener.current;
         staffDrawerOpener.current = null;
         // The drawer has unmounted, so its focus trap and autofocus cannot
         // steal focus back from the exact row or button that opened it.
-        if (opener?.isConnected) opener.focus();
+        if (opener?.isConnected && !opener.matches(':disabled')) opener.focus();
+        else document.getElementById('workspace-main-content')?.focus();
     }, [isStaffDrawerOpen]);
 
     const loadWorkspace = useCallback(async () => {
@@ -857,13 +873,13 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId && !user.email ? (
-                                                <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'reset-pin', user })} disabled={isSaving === user.id}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('reset-pin', user, event.currentTarget)} disabled={isSaving === user.id}>
                                                     <RotateCcw aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Resetting...' : 'Reset PIN'}
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId ? (
-                                                <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'remove', user })} disabled={isSaving === user.id}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('remove', user, event.currentTarget)} disabled={isSaving === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Removing...' : 'Remove permanently'}
                                                 </Button>
@@ -1048,7 +1064,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                         <Button
                                             size="sm"
                                             variant="outline"
-                                            onClick={() => setPendingAction({ action: 'reset-pin', user: schedulingProfileUser })}
+                                            onClick={(event) => openPendingAction('reset-pin', schedulingProfileUser, event.currentTarget)}
                                             disabled={isSaving === schedulingProfileUser.id}
                                         >
                                             <RotateCcw aria-hidden="true" size={14} />
@@ -1058,7 +1074,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                     <Button
                                         size="sm"
                                         variant="outline"
-                                        onClick={() => setPendingAction({ action: 'remove', user: schedulingProfileUser })}
+                                        onClick={(event) => openPendingAction('remove', schedulingProfileUser, event.currentTarget)}
                                         disabled={isSaving === schedulingProfileUser.id}
                                     >
                                         <UserMinus aria-hidden="true" size={14} />
@@ -1221,6 +1237,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                 return (
                     <div className="staff-confirmation-backdrop" role="presentation">
                         <div
+                            ref={actionDialogRef}
+                            tabIndex={-1}
                             className="staff-confirmation-dialog"
                             role="alertdialog"
                             aria-modal="true"

@@ -539,7 +539,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             </section>
 
             {message ? (
-                <div
+                <div role={message.tone === 'error' ? 'alert' : 'status'}
                     style={{
                         padding: '0.8rem 0.95rem',
                         borderRadius: 12,
@@ -566,7 +566,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             </section>
 
             <section className="admin-users-grid">
-                <article className="surface-card admin-users-list" style={{ overflowX: 'auto' }}>
+                <article className="surface-card admin-users-list" aria-label="User directory table" tabIndex={0} style={{ overflowX: 'auto' }}>
                     <div style={{ padding: '1rem 1rem 0.6rem', display: 'grid', gap: '0.75rem' }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.75rem', alignItems: 'flex-start', flexWrap: 'wrap' }}>
                             <div>

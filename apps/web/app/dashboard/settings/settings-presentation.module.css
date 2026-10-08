@@ -1,0 +1,10 @@
+.featureRow {
+  grid-template-columns: minmax(0, 1fr) auto;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .featureRow {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -3099,6 +3099,7 @@ export default function LunchBreaksPage() {
                             key={`planner-calendar-${row.id}`}
                             type="button"
                             className={`schedule-row ${isSelected ? 'is-selected' : ''}`}
+                            aria-pressed={isSelected}
                             onClick={() => setSelectedShiftId(row.id)}
                           >
                             <div className="row-meta">

@@ -151,6 +151,8 @@
 .mobileMenu summary {
   list-style: none;
   display: inline-flex;
+  min-height: 44px;
+  padding: 0 8px;
   align-items: center;
   gap: 7px;
   cursor: pointer;
@@ -177,6 +179,7 @@
 }
 
 .mobileMenu nav a {
+  min-height: 44px;
   padding: 12px 13px;
   border-radius: 8px;
   color: var(--ink-soft);
@@ -1557,6 +1560,13 @@
   color: var(--blue);
 }
 
+.footer nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  overflow-wrap: anywhere;
+}
+
 .footer > small {
   justify-self: end;
 }
@@ -1741,6 +1751,15 @@
 }
 
 @media (max-width: 560px) {
+  .heroCopy,
+  .sectionHeader,
+  .depthCopy,
+  .trustCopy,
+  .finalCta > div {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
   .hero {
     padding-top: 54px;
   }

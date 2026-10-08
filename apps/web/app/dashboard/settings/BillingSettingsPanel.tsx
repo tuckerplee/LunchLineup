@@ -1,6 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
+import styles from './settings-presentation.module.css';
 import { Coins, Loader2, RefreshCw } from 'lucide-react';
 import {
     canAttemptPausedSubscriptionRecovery,
@@ -172,9 +173,9 @@ export function BillingSettingsPanel({
                         {billingFeatures.map(([feature, resolution]) => (
                             <div
                                 key={feature}
+                                className={styles.featureRow}
                                 style={{
                                     display: 'grid',
-                                    gridTemplateColumns: 'minmax(130px, 1fr) auto',
                                     gap: '0.75rem',
                                     alignItems: 'center',
                                     padding: '0.65rem 0',
@@ -191,14 +192,15 @@ export function BillingSettingsPanel({
                                 </div>
                                 <div
                                     style={{
-                                        justifySelf: 'end',
+                                        justifySelf: 'start',
                                         padding: '0.28rem 0.55rem',
                                         borderRadius: 999,
                                         fontSize: '0.74rem',
                                         fontWeight: 800,
                                         background: resolution.enabled ? '#e9fbf1' : '#fff1f4',
                                         color: resolution.enabled ? '#0f8c52' : '#cb3653',
-                                        whiteSpace: 'nowrap',
+                                        whiteSpace: 'normal',
+                                        overflowWrap: 'anywhere',
                                     }}
                                 >
                                     {resolution.enabled ? 'Enabled - ' + formatFeatureSource(resolution.source) : 'Disabled'}

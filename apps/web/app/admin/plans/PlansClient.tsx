@@ -1,6 +1,7 @@
 'use client';
 
 import type { FormEvent } from 'react';
+import styles from './plans.module.css';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 
@@ -461,7 +462,7 @@ export function AdminPlansWorkspace() {
     }, [selectedPlan]);
 
     return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
+        <div className={styles.workspace} style={{ display: 'flex', flexDirection: 'column', gap: '1rem', maxWidth: 1440 }}>
             <section
                 className="surface-card"
                 style={{
@@ -483,7 +484,7 @@ export function AdminPlansWorkspace() {
                         </p>
                     </div>
 
-                    <label className="form-group" style={{ minWidth: 280, flex: '1 1 320px' }}>
+                    <label className="form-group" style={{ minWidth: 0, maxWidth: '100%', flex: '1 1 320px' }}>
                         <span className="form-label">Search</span>
                         <input
                             className="form-input"
@@ -522,7 +523,7 @@ export function AdminPlansWorkspace() {
             </section>
 
             {error ? (
-                <div
+                <div role="alert"
                     style={{
                         padding: '0.8rem 0.95rem',
                         borderRadius: 12,
@@ -538,7 +539,7 @@ export function AdminPlansWorkspace() {
             ) : null}
 
             {notice ? (
-                <div
+                <div role={notice.tone === 'error' ? 'alert' : 'status'}
                     style={{
                         padding: '0.8rem 0.95rem',
                         borderRadius: 12,
@@ -553,7 +554,7 @@ export function AdminPlansWorkspace() {
                 </div>
             ) : null}
 
-            <section style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1.35fr) minmax(320px, 0.65fr)', gap: '0.85rem', alignItems: 'start' }}>
+            <section className={styles.catalogGrid}>
                 <article
                     className="surface-card"
                     aria-label="Plan catalog table"
@@ -716,7 +717,7 @@ export function AdminPlansWorkspace() {
                                 />
                             </label>
 
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
+                            <div className={styles.formGrid}>
                                 <label className="form-group">
                                     <span className="form-label">Status</span>
                                     <select
@@ -743,7 +744,7 @@ export function AdminPlansWorkspace() {
                                 </label>
                             </div>
 
-                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
+                            <div className={styles.formGrid}>
                                 <label className="form-group">
                                     <span className="form-label">Store/location limit</span>
                                     <input
@@ -811,7 +812,7 @@ export function AdminPlansWorkspace() {
                                     />
                                 </label>
 
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
+                                <div className={styles.formGrid}>
                                     <label className="form-group">
                                         <span className="form-label">Status</span>
                                         <select
@@ -838,7 +839,7 @@ export function AdminPlansWorkspace() {
                                     </label>
                                 </div>
 
-                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '0.75rem' }}>
+                                <div className={styles.formGrid}>
                                     <label className="form-group">
                                         <span className="form-label">Store/location limit</span>
                                         <input

@@ -1693,6 +1693,7 @@ function SchedulingContent() {
                   key={mode}
                   type="button"
                   className={viewMode === mode ? 'active' : ''}
+                  aria-pressed={viewMode === mode}
                   onClick={() => selectScheduleViewMode(mode)}
                 >
                   {mode === 'threeDay' ? '3-Day' : mode === 'day' ? 'Day' : 'Week'}
@@ -1711,13 +1712,13 @@ function SchedulingContent() {
               </Button>
             ) : null}
 
-            <Button variant="ghost" size="icon" aria-label="Advanced settings" onClick={() => setShowAdvanced((value) => !value)}>
+            <Button variant="ghost" size="icon" aria-label="Advanced settings" aria-expanded={showAdvanced} aria-controls="scheduler-advanced-panel" onClick={() => setShowAdvanced((value) => !value)}>
               <Settings2 size={16} />
             </Button>
           </div>
         </section>
 
-        {error ? <div className="scheduler-error">{error}</div> : null}
+        {error ? <div className="scheduler-error" role="alert">{error}</div> : null}
 
         {openFocus ? (
           <section className="scheduler-focus-banner" aria-label="Open shift focus">
@@ -1730,7 +1731,7 @@ function SchedulingContent() {
         ) : null}
 
         {showAdvanced ? (
-          <section className="scheduler-advanced" aria-label="Advanced settings panel">
+          <section id="scheduler-advanced-panel" className="scheduler-advanced" aria-label="Advanced settings panel">
             <p><strong>Advanced</strong> actions use tenant-scoped schedule data and do not cross company boundaries.</p>
             <div className="scheduler-advanced__actions">
               <Button variant="outline" size="sm" onClick={() => void handleRefresh()} disabled={isLoading || isRefreshing}><RefreshCw size={14} /> Reload</Button>
@@ -2805,7 +2806,7 @@ function SchedulingContent() {
 
 export default function SchedulingPage() {
   return (
-    <Suspense fallback={<div className="surface-card" style={{ minHeight: 520, padding: '1rem' }} />}>
+    <Suspense fallback={<div className="surface-card" role="status" style={{ minHeight: 520, padding: '1rem' }}>Loading calendar…</div>}>
       <SchedulingContent />
     </Suspense>
   );
