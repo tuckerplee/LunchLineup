@@ -48,7 +48,7 @@ export class AccountDeletionReceiptController {
         createdAt: { gte: new Date(Date.now() - RECEIPT_TTL_MS) },
       }, select: { tenantId: true } });
       if (!issued) throw new NotFoundException('Receipt unavailable or expired.');
-      const tenant = await tx.tenant.findUnique({ where: { id: issued.tenantId }, select: { status: true, deletedAt: true } });
+      const tenant = await tx.tenant.findUnique({ where: { id: issued.tenantId }, select: { status: true, deletedAt: true, deletionBillingReconciliation: { select: { operationId: true } } } });
       if (!tenant) throw new NotFoundException('Receipt unavailable or expired.');
       const finalized = tenant.status === 'PURGED' && Boolean(tenant.deletedAt);
       const barrier = finalized ? null : await tx.auditLog.findFirst({ where: {
@@ -57,6 +57,7 @@ export class AccountDeletionReceiptController {
       const requestedAt = finalized ? tenant.deletedAt : tenant.status === 'SUSPENDED' ? barrier?.createdAt : null;
       if (!requestedAt) return { state: 'NOT_RECORDED' as const, receipt: null };
       return { state: 'CONFIRMED' as const, receipt: {
+        ...(tenant.deletionBillingReconciliation ? { requestId: tenant.deletionBillingReconciliation.operationId } : {}),
         deletionState: finalized ? 'FINALIZED' : 'PENDING_BILLING_CLEANUP',
         billingCleanupPending: !finalized,
         deletionRequestedAt: requestedAt.toISOString(),

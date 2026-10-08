@@ -2,6 +2,7 @@ import { Logger } from "@nestjs/common";
 import { PrismaClient } from "@prisma/client";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
+import { PassThrough } from "node:stream";
 import { mkdtemp, open, readFile, readdir, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -23,6 +24,7 @@ const postgresIntegrationCapability = process.env.TENANT_DATA_GOVERNANCE_TEST_CA
 
 function createSharedDatabase(users: Array<Record<string, unknown>> = []) {
   const jobs = new Map<string, any>();
+  const shutdownDrains = new Set<() => Promise<void>>();
   let platformQueue = Promise.resolve();
   const tenant = {
     id: "tenant-1",
@@ -133,6 +135,17 @@ function createSharedDatabase(users: Array<Record<string, unknown>> = []) {
   });
   tx.$queryRaw = vi.fn(async (query: any) => {
     const sql = query.sql as string;
+    if (sql.includes('SET "state" = \'READY\'')) {
+      const [watermark, artifactKey, bytes, rowCounts, completedAt, id, claimToken] = query.values;
+      const job = jobs.get(id);
+      if (!job || job.state !== "RUNNING" || job.claimToken !== claimToken
+        || job.claimExpiresAt <= new Date() || job.expiresAt <= new Date()
+        || job.artifactCleanupState !== "NONE") return [];
+      Object.assign(job, { state: "READY", watermark, artifactKey, bytes,
+        rowCounts: JSON.parse(rowCounts), completedAt, progressCollection: null,
+        claimToken: null, claimExpiresAt: null, error: null, updatedAt: new Date() });
+      return [{ id }];
+    }
     if (sql.includes('CURRENT_TIMESTAMP AS "watermark"')) {
       return [{ watermark: new Date() }];
     }
@@ -281,7 +294,9 @@ function createSharedDatabase(users: Array<Record<string, unknown>> = []) {
   return {
     jobs,
     tx,
+    shutdownDrains,
     db: {
+      registerShutdownDrain: (drain: () => Promise<void>) => { shutdownDrains.add(drain); },
       withTenant: vi.fn(
         async (
           _tenantId: string,
@@ -312,6 +327,43 @@ describe("TenantExportService durable jobs", () => {
 
   afterEach(async () => {
     await rm(directory, { recursive: true, force: true });
+  });
+
+  it.each(["drain", "error", "close", "abort"] as const)("settles writer backpressure on %s and removes listeners", async (event) => {
+    const shared = createSharedDatabase([]);
+    const service = new TenantExportService(shared.db, undefined, {
+      artifactDirectory: directory, startWorker: false,
+    });
+    const writer = new PassThrough({ highWaterMark: 1 });
+    (service as any).artifactBytes.set(writer, 0);
+    const writing = (service as any).writeEncoded(writer, "payload");
+    const failure = new Error("controlled writer failure");
+    const outcome = event === "drain" ? expect(writing).resolves.toBeUndefined()
+      : expect(writing).rejects.toThrow(event === "error" ? failure.message
+        : event === "close" ? "closed before drain" : "stopped for shutdown");
+    expect(writer.listenerCount("drain")).toBe(1);
+    if (event === "drain") writer.resume();
+    else if (event === "error") writer.emit("error", failure);
+    else if (event === "close") writer.destroy();
+    else (service as any).shutdownAbort.abort();
+    await outcome;
+    for (const name of ["drain", "error", "close"]) expect(writer.listenerCount(name)).toBe(0);
+    writer.destroy();
+    await service.onModuleDestroy();
+  });
+
+  it("registers one drain and synchronously fences new worker and cleanup admission", async () => {
+    const shared = createSharedDatabase([]);
+    const service = new TenantExportService(shared.db, undefined, {
+      artifactDirectory: directory, startWorker: false,
+    });
+    expect(shared.shutdownDrains.size).toBe(1);
+    const closing = service.onModuleDestroy();
+    expect(service.onModuleDestroy()).toBe(closing);
+    expect(() => service.start({ tenantId: "tenant-1", userId: "user-1" })).toThrow("shutting down");
+    await expect(service.runWorkerOnce()).resolves.toBe(false);
+    await closing;
+    expect(shared.jobs.size).toBe(0);
   });
 
   it("includes dated availability exceptions in tenant-owned exports", () => {
@@ -443,10 +495,10 @@ describe("TenantExportService durable jobs", () => {
   it("publishes READY only after close, file fsync, atomic rename, and directory fsync", async () => {
     const shared = createSharedDatabase();
     const events: string[] = [];
-    const updateMany = shared.tx.tenantExportJob.updateMany.getMockImplementation()!;
-    shared.tx.tenantExportJob.updateMany.mockImplementation(async (input: any) => {
-      if (input.data.state === "READY") events.push("ready");
-      return updateMany(input);
+    const queryRaw = shared.tx.$queryRaw.getMockImplementation()!;
+    shared.tx.$queryRaw.mockImplementation(async (query: any) => {
+      if (query.sql.includes('SET "state" = \'READY\'')) events.push("ready");
+      return queryRaw(query);
     });
     const service = new TenantExportService(shared.db, undefined, {
       artifactDirectory: directory,
@@ -899,12 +951,12 @@ describe("TenantExportService durable jobs", () => {
 
     try {
       await vi.waitFor(() => expect(maintenance).toHaveBeenCalled());
-      service.onModuleDestroy();
+      await service.onModuleDestroy();
       const callsAtShutdown = maintenance.mock.calls.length;
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 40));
       expect(maintenance).toHaveBeenCalledTimes(callsAtShutdown);
     } finally {
-      service.onModuleDestroy();
+      await service.onModuleDestroy();
     }
   });
 
@@ -1168,7 +1220,9 @@ if (postgresIntegrationUrl && postgresOwnerUrl && postgresIntegrationCapability)
             (${secondJobId}, ${secondTenantId}, 'quota-user-b', ${`quota-b-${suffix}`}, 'QUEUED', CURRENT_TIMESTAMP,
              CURRENT_TIMESTAMP + INTERVAL '1 hour', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         `;
+        const nativeShutdownDrains = new Set<() => Promise<void>>();
         const tenantDb = {
+          registerShutdownDrain: (drain: () => Promise<void>) => { nativeShutdownDrains.add(drain); },
           withPlatformAdmin: (operation: (tx: any) => Promise<unknown>, transactionOptions?: any) =>
             prisma.$transaction(async (tx) => {
               await tx.$executeRaw`
@@ -1258,7 +1312,9 @@ if (postgresIntegrationUrl && postgresOwnerUrl && postgresIntegrationCapability)
       const writerRelease = new Promise<void>((resolve) => { releaseWriter = resolve; });
       let signalWriter!: () => void;
       const writerLocked = new Promise<void>((resolve) => { signalWriter = resolve; });
+      const nativeShutdownDrains = new Set<() => Promise<void>>();
       const tenantDb = {
+        registerShutdownDrain: (drain: () => Promise<void>) => { nativeShutdownDrains.add(drain); },
         withPlatformAdmin: (operation: (tx: any) => Promise<unknown>, transactionOptions?: any) =>
           restricted.$transaction(async (tx) => {
             await tx.$executeRaw`

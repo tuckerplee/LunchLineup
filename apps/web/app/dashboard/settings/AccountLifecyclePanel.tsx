@@ -31,7 +31,16 @@ type AccountRetention = {
     retainedRecords?: string[];
 } | null;
 
+type AccountLifecycleRequest = {
+    requestId: string;
+    kind: 'CANCELLATION' | 'DELETION';
+    state: 'PENDING' | 'COMPLETED' | 'BLOCKED' | 'SUPERSEDED';
+    requestedAt: string;
+    updatedAt: string;
+};
+
 type AccountStatus = {
+    requests?: AccountLifecycleRequest[];
     id?: string;
     slug?: string | null;
     status?: string;
@@ -456,6 +465,7 @@ export function AccountLifecyclePanel({
                         {describeExportJob(exportJob) ? (
                             <div style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontWeight: 700 }} aria-live="polite">
                                 {describeExportJob(exportJob)}
+                                <div style={{ overflowWrap: 'anywhere' }}>Request reference: {exportJob?.id}</div>
                             </div>
                         ) : null}
                         {exportError ? (
@@ -496,6 +506,27 @@ export function AccountLifecyclePanel({
                     </div>
                 </div>
             </div>
+
+            {status?.requests && status.requests.length > 0 ? (
+                <section className="surface-muted" aria-labelledby="account-requests-heading" style={{ padding: '0.9rem', display: 'grid', gap: '0.65rem' }}>
+                    <h3 id="account-requests-heading">Recent account requests</h3>
+                    <p style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                        Keep the request reference when contacting support. Completed means the account operation was recorded; retained data follows the retention schedule.
+                    </p>
+                    <ul style={{ display: 'grid', gap: '0.75rem', paddingLeft: '1.2rem' }}>
+                        {status.requests.map(request => (
+                            <li key={request.requestId} style={{ overflowWrap: 'anywhere' }}>
+                                <strong>{formatStatus(request.kind)} — {formatStatus(request.state)}</strong>
+                                <div>Request reference: {request.requestId}</div>
+                                <div>Requested {formatDate(request.requestedAt)} · Updated {formatDate(request.updatedAt)}</div>
+                            </li>
+                        ))}
+                    </ul>
+                    <button type="button" className="btn btn-secondary" onClick={() => void loadStatus()} disabled={loading || action !== null || deletionRecorded}>
+                        Refresh request status
+                    </button>
+                </section>
+            ) : null}
 
             {retentionRows.length > 0 ? (
                 <div className="surface-muted" style={{ padding: '0.9rem', display: 'grid', gap: '0.65rem' }}>

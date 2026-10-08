@@ -1,3 +1,5 @@
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { immutableOperationsInput, operationsIdentity, operationsWait, prepareOperationsAuthority } from '../operations/operations.service';
 import { randomUUID } from 'node:crypto';
 import {
   DemandWindowReplaceResponseSchema,
@@ -52,15 +54,19 @@ function serializeWindows(rows: Array<{
 }
 
 export class DemandWindowService {
-  constructor(private readonly database: TenantDatabase) {}
+  constructor(
+    private readonly database: TenantDatabase,
+    private readonly observer?: Partial<MfaSessionObserver>,
+  ) {}
 
   private async replay(
     transaction: TenantTransaction,
     tenantId: string,
     idempotencyKeyHash: string,
     expectedRequestHash: string,
+    assertCurrent: () => void,
   ): Promise<DemandWindowReplaceResponse | null> {
-    const stored = await transaction.scheduleChangeSet.findUnique({
+    const stored = await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.findUnique({
       where: {
         tenantId_idempotencyKeyHash: {
           tenantId,
@@ -68,7 +74,7 @@ export class DemandWindowService {
         },
       },
       select: { requestHash: true, response: true },
-    });
+    }));
     if (!stored) return null;
     if (stored.requestHash !== expectedRequestHash) {
       throw new ProblemError(
@@ -93,20 +99,22 @@ export class DemandWindowService {
     identity: SessionIdentity,
     schedulePublicId: string,
   ): Promise<DemandWindowListResponse> {
+    identity = operationsIdentity(identity);
     authorizeScheduleDemand(identity);
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const schedule = await transaction.schedule.findFirst({
+    const scope = await prepareOperationsAuthority(this.database, identity, ['schedules:write'], this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const schedule = await operationsWait(assertCurrent, () => transaction.schedule.findFirst({
         where: {
           tenantId: identity.tenantId,
           publicId: schedulePublicId,
           deletedAt: null,
         },
         select: { id: true, locationId: true },
-      });
+      }));
       if (!schedule) {
         throw new ProblemError(404, 'schedule_not_found', 'The selected schedule was not found.', 'Schedule not found');
       }
-      const rows = await transaction.scheduleDemandWindow.findMany({
+      const rows = await operationsWait(assertCurrent, () => transaction.scheduleDemandWindow.findMany({
         where: {
           tenantId: identity.tenantId,
           scheduleId: schedule.id,
@@ -121,7 +129,7 @@ export class DemandWindowService {
           requiredStaff: true,
           skill: true,
         },
-      });
+      }));
       if (rows.length > 500) {
         throw new ProblemError(
           422,
@@ -141,7 +149,11 @@ export class DemandWindowService {
     headers: { ifMatch?: string; idempotencyKey?: string },
     metadata: { ipAddress?: string; userAgent?: string } = {},
   ): Promise<DemandWindowReplaceResponse> {
+    identity = operationsIdentity(identity);
     authorizeScheduleDemand(identity);
+    body = immutableOperationsInput(body);
+    headers = immutableOperationsInput(headers);
+    metadata = immutableOperationsInput(metadata);
     const baseRevision = requireScheduleRevision(headers.ifMatch, schedulePublicId);
     const idempotencyKey = requireIdempotencyKey(headers.idempotencyKey);
     const idempotencyKeyHash = sha256(idempotencyKey);
@@ -151,26 +163,29 @@ export class DemandWindowService {
       body,
     });
 
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
-      const initialReplay = await this.replay(
+    const scope = await prepareOperationsAuthority(this.database, identity, ['schedules:write'], this.observer);
+    return scope.run(async (transaction, identity, assertCurrent) => {
+      const initialReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (initialReplay) return initialReplay;
 
-      await assertSchedulingEntitled(transaction, identity.tenantId);
-      await lockSchedulingAggregate(transaction, identity.tenantId);
-      const lockedReplay = await this.replay(
+      await operationsWait(assertCurrent, () => assertSchedulingEntitled(transaction, identity.tenantId));
+      await operationsWait(assertCurrent, () => lockSchedulingAggregate(transaction, identity.tenantId));
+      const lockedReplay = await operationsWait(assertCurrent, () => this.replay(
         transaction,
         identity.tenantId,
         idempotencyKeyHash,
         expectedRequestHash,
-      );
+        assertCurrent,
+      ));
       if (lockedReplay) return lockedReplay;
 
-      const schedules = await transaction.$queryRaw<LockedDemandSchedule[]>(Prisma.sql`
+      const schedules = await operationsWait(assertCurrent, () => transaction.$queryRaw<LockedDemandSchedule[]>(Prisma.sql`
         SELECT
           schedule_row."id",
           schedule_row."publicId"::text AS "publicId",
@@ -188,7 +203,7 @@ export class DemandWindowService {
           AND schedule_row."publicId" = CAST(${schedulePublicId} AS uuid)
           AND schedule_row."deletedAt" IS NULL
         FOR UPDATE OF schedule_row
-      `);
+      `));
       const schedule = schedules[0];
       if (!schedule) {
         throw new ProblemError(404, 'schedule_not_found', 'The selected schedule was not found.', 'Schedule not found');
@@ -253,17 +268,17 @@ export class DemandWindowService {
         };
       });
 
-      await transaction.scheduleDemandWindow.deleteMany({
+      await operationsWait(assertCurrent, () => transaction.scheduleDemandWindow.deleteMany({
         where: {
           tenantId: identity.tenantId,
           scheduleId: schedule.id,
           locationId: schedule.locationId,
         },
-      });
+      }));
       if (windows.length > 0) {
-        await transaction.scheduleDemandWindow.createMany({ data: windows });
+        await operationsWait(assertCurrent, () => transaction.scheduleDemandWindow.createMany({ data: windows }));
       }
-      const revised = await transaction.schedule.updateMany({
+      const revised = await operationsWait(assertCurrent, () => transaction.schedule.updateMany({
         where: {
           id: schedule.id,
           tenantId: identity.tenantId,
@@ -272,7 +287,7 @@ export class DemandWindowService {
           revision: baseRevision,
         },
         data: { revision: { increment: 1 } },
-      });
+      }));
       if (revised.count !== 1) {
         throw new ProblemError(
           412,
@@ -282,7 +297,7 @@ export class DemandWindowService {
         );
       }
 
-      const savedRows = await transaction.scheduleDemandWindow.findMany({
+      const savedRows = await operationsWait(assertCurrent, () => transaction.scheduleDemandWindow.findMany({
         where: {
           tenantId: identity.tenantId,
           scheduleId: schedule.id,
@@ -296,7 +311,7 @@ export class DemandWindowService {
           requiredStaff: true,
           skill: true,
         },
-      });
+      }));
       const changeSetId = randomUUID();
       const revision = baseRevision + 1;
       const response: DemandWindowReplaceResponse = {
@@ -307,7 +322,7 @@ export class DemandWindowService {
         revision,
         etag: scheduleEtag(schedule.publicId, revision),
       };
-      await transaction.scheduleChangeSet.create({
+      await operationsWait(assertCurrent, () => transaction.scheduleChangeSet.create({
         data: {
           id: changeSetId,
           tenantId: identity.tenantId,
@@ -320,8 +335,8 @@ export class DemandWindowService {
           request: inputJson(body),
           response: inputJson(response),
         },
-      });
-      await transaction.auditLog.create({
+      }));
+      await operationsWait(assertCurrent, () => transaction.auditLog.create({
         data: {
           tenantId: identity.tenantId,
           userId: identity.sub,
@@ -339,8 +354,8 @@ export class DemandWindowService {
           ipAddress: metadata.ipAddress?.slice(0, 128),
           userAgent: metadata.userAgent?.slice(0, 512),
         },
-      });
+      }));
       return response;
-    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable });
+    });
   }
 }

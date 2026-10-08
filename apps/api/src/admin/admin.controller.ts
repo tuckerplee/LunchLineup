@@ -106,8 +106,8 @@ export class AdminController implements OnModuleDestroy {
         this.tenantExport = new TenantExportService(this.tenantDb, this.metricsService);
     }
 
-    onModuleDestroy(): void {
-        this.tenantExport.onModuleDestroy();
+    onModuleDestroy(): Promise<void> {
+        return this.tenantExport.onModuleDestroy();
     }
 
     private assertSuperAdmin(req: any) {
@@ -172,6 +172,7 @@ export class AdminController implements OnModuleDestroy {
         return {
             tenantId,
             userId: req?.user?.sub,
+            sessionId: req?.user?.sessionId,
             ipAddress: req?.ip ?? req?.headers?.['x-forwarded-for'] ?? null,
             userAgent: req?.headers?.['user-agent'] ?? null,
         };
@@ -918,6 +919,16 @@ export class AdminController implements OnModuleDestroy {
         return tenant;
     }
 
+    @Post('tenants/:id/deletion-request')
+    @Header('Cache-Control', 'private, no-store')
+    @RequirePermission('admin_portal:access')
+    @HttpCode(HttpStatus.OK)
+    async requestArchivedTenantDeletion(@Req() req: any, @Param('id') id: string,
+        @Body() body: { confirmation?: unknown; privacyRequestReference?: unknown; exportDisposition?: unknown }) {
+        this.assertSuperAdmin(req);
+        return this.tenantAccountLifecycle.requestArchivedDeletion(id, this.adminUserLifecycleActor(req), body);
+    }
+
     @Delete('tenants/:id')
     async deleteTenant(@Req() req: any, @Param('id') id: string) {
         this.assertSuperAdmin(req);
@@ -1580,7 +1591,7 @@ export class AdminController implements OnModuleDestroy {
     async audit(@Req() req: any, @Query('limit') limitRaw?: string) {
         this.assertSuperAdmin(req);
 
-        const limit = Math.min(Math.max(Number(limitRaw) || 25, 1), 100);
+        const limit = Math.min(Math.max(this.parseOptionalInteger(limitRaw, 'limit') ?? 25, 1), 100);
         const rows = await this.withPlatformAdmin((tx) => tx.auditLog.findMany({
             orderBy: { createdAt: 'desc' },
             take: limit,

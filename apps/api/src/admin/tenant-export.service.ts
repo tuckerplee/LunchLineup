@@ -15,6 +15,7 @@ import { isAbsolute, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { MetricsService } from "../common/metrics.service";
+import { resolveProcessShutdownDeadlineMs } from "../common/shutdown-deadline";
 import {
   TenantPrismaService,
   type TenantPrismaTransaction,
@@ -956,6 +957,11 @@ export class TenantExportService implements OnModuleDestroy {
   private readonly timer?: NodeJS.Timeout;
   private workerActive = false;
   private stopping = false;
+  private aborted = false;
+  private shutdownPromise?: Promise<void>;
+  private readonly activeTasks = new Set<Promise<unknown>>();
+  private readonly abortGenerations = new Set<() => void>();
+  private readonly shutdownAbort = new AbortController();
   private lastExpirySweep = 0;
   private readonly artifactBytes = new WeakMap<WriteStream, number>();
 
@@ -1037,6 +1043,7 @@ export class TenantExportService implements OnModuleDestroy {
       }
     }
     this.assertStorageContract(Boolean(configuredDirectory));
+    this.tenantDb.registerShutdownDrain(() => this.onModuleDestroy());
     if (this.options.startWorker) {
       this.timer = setInterval(
         () => void this.maintenance(),
@@ -1046,12 +1053,52 @@ export class TenantExportService implements OnModuleDestroy {
     }
   }
 
-  onModuleDestroy(): void {
+  onModuleDestroy(): Promise<void> {
     this.stopping = true;
     if (this.timer) clearInterval(this.timer);
+    this.shutdownPromise ??= this.drainOwnedTasks();
+    return this.shutdownPromise;
   }
 
-  async start(actor: TenantLifecycleActor) {
+  private async drainOwnedTasks(): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        Promise.allSettled([...this.activeTasks]),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => {
+            this.aborted = true;
+            this.shutdownAbort.abort();
+            for (const abort of this.abortGenerations) abort();
+            reject(new Error("Tenant export shutdown deadline exceeded; durable jobs remain recoverable."));
+          }, Math.max(1, Math.floor(resolveProcessShutdownDeadlineMs() / 2)));
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  private trackTask<T>(operation: () => Promise<T>): Promise<T> {
+    const task = Promise.resolve().then(operation);
+    this.activeTasks.add(task);
+    void task.then(
+      () => this.activeTasks.delete(task),
+      () => this.activeTasks.delete(task),
+    );
+    return task;
+  }
+
+  private assertGenerationActive(): void {
+    if (this.aborted) throw new Error("Tenant export generation stopped for shutdown.");
+  }
+
+  start(actor: TenantLifecycleActor) {
+    if (this.stopping) throw new ServiceUnavailableException("Tenant exports are shutting down.");
+    return this.trackTask(() => this.startAdmitted(actor));
+  }
+
+  private async startAdmitted(actor: TenantLifecycleActor) {
     const requestedByUserId = this.requireUserId(actor.userId);
     const id = randomUUID();
     const createdAt = new Date();
@@ -1081,6 +1128,7 @@ export class TenantExportService implements OnModuleDestroy {
             where: { id: actor.tenantId },
             select: { id: true, slug: true },
           });
+          this.assertGenerationActive();
           await tx.auditLog.create({
             data: {
               tenantId: actor.tenantId,
@@ -1092,7 +1140,8 @@ export class TenantExportService implements OnModuleDestroy {
               userAgent: actor.userAgent,
             },
           });
-          return delegate.create({
+          this.assertGenerationActive();
+          const job = await delegate.create({
             data: {
               id,
               tenantId: actor.tenantId,
@@ -1104,6 +1153,8 @@ export class TenantExportService implements OnModuleDestroy {
               artifactKey: null,
             },
           });
+          this.assertGenerationActive();
+          return job;
         },
         { maxWait: 2_000, timeout: 5_000 },
       );
@@ -1179,9 +1230,16 @@ export class TenantExportService implements OnModuleDestroy {
     };
   }
 
-  async runWorkerOnce(): Promise<boolean> {
+  runWorkerOnce(): Promise<boolean> {
+    if (this.stopping) return Promise.resolve(false);
+    return this.trackTask(() => this.runAdmittedWorkerOnce());
+  }
+
+  private async runAdmittedWorkerOnce(): Promise<boolean> {
+    if (this.stopping) return false;
     const job = await this.claimJob();
     if (!job) return false;
+    if (this.aborted) return false;
     if (job.state === "FAILED") {
       this.metrics?.tenantExportsTotal?.inc({ outcome: "failed" });
       return true;
@@ -1190,11 +1248,17 @@ export class TenantExportService implements OnModuleDestroy {
     return true;
   }
 
-  async cleanupExpired(): Promise<number> {
+  cleanupExpired(): Promise<number> {
+    if (this.stopping) return Promise.resolve(0);
+    return this.trackTask(() => this.cleanupAdmittedExpired());
+  }
+
+  private async cleanupAdmittedExpired(): Promise<number> {
     const expired = await this.claimArtifactCleanupJobs();
     let completed = 0;
     let failed = false;
     for (const job of expired) {
+      this.assertGenerationActive();
       try {
         if (await this.completeArtifactCleanup(job)) completed += 1;
       } catch {
@@ -1205,6 +1269,7 @@ export class TenantExportService implements OnModuleDestroy {
     if (failed) {
       throw new Error("Tenant export artifact cleanup remains pending.");
     }
+    this.assertGenerationActive();
     await this.cleanupOrphanPartials();
     return completed;
   }
@@ -1353,12 +1418,20 @@ export class TenantExportService implements OnModuleDestroy {
       clearInterval(heartbeat);
       await heartbeatRenewal;
     };
+    const abortGeneration = () => {
+      heartbeatStopped = true;
+      clearInterval(heartbeat);
+      writer?.destroy();
+    };
+    this.abortGenerations.add(abortGeneration);
     try {
+      this.assertGenerationActive();
       await mkdir(this.options.artifactDirectory, {
         recursive: true,
         mode: 0o700,
       });
       await chmod(this.options.artifactDirectory, 0o700);
+      this.assertGenerationActive();
       const rowCounts: Record<string, number> = {};
       const fileSize = await this.tenantDb.withTenant(
         job.tenantId,
@@ -1373,6 +1446,7 @@ export class TenantExportService implements OnModuleDestroy {
           snapshotWatermark = transactionWatermark;
           await this.lockArtifactJob(tx, job.id);
           await this.assertArtifactWriterOwnsJob(tx, job.id, claimToken);
+          this.assertGenerationActive();
           writer = createWriteStream(partialPath, {
             flags: "wx",
             encoding: "utf8",
@@ -1424,7 +1498,9 @@ export class TenantExportService implements OnModuleDestroy {
           }
           await this.writeLine(writer!, { type: "complete", rowCounts });
           await this.durability.closeWriter(writer!);
+          this.assertGenerationActive();
           await this.durability.syncFile(partialPath);
+          this.assertGenerationActive();
           const file = await stat(partialPath);
           if (
             file.size !== this.artifactBytes.get(writer!) ||
@@ -1441,14 +1517,18 @@ export class TenantExportService implements OnModuleDestroy {
         },
       );
       await stopHeartbeat();
+      this.assertGenerationActive();
       if (leaseLost) throw new Error("Tenant export lease was lost.");
       if (!(await this.renewLease(job.id, claimToken)))
         throw new Error("Tenant export lease was lost.");
+      this.assertGenerationActive();
       if (!snapshotWatermark) {
         throw new Error("Tenant export snapshot watermark is unavailable.");
       }
       await this.durability.atomicRename(partialPath, finalPath);
+      this.assertGenerationActive();
       await this.syncArtifactDirectory();
+      this.assertGenerationActive();
       const finalized = await this.finalizeClaimedArtifact(job.id, claimToken, {
         state: "READY",
         watermark: snapshotWatermark,
@@ -1468,6 +1548,7 @@ export class TenantExportService implements OnModuleDestroy {
       this.metrics?.tenantExportsTotal?.inc({ outcome: "ready" });
     } catch {
       await this.destroyWriter(writer);
+      if (this.aborted) return;
       if (artifactFinalized) return;
       const message = "Tenant export generation failed.";
       const pendingCleanup = await this.markClaimedJobForCleanup(
@@ -1480,6 +1561,7 @@ export class TenantExportService implements OnModuleDestroy {
       }
       this.metrics?.tenantExportsTotal?.inc({ outcome: "failed" });
     } finally {
+      this.abortGenerations.delete(abortGeneration);
       await stopHeartbeat();
       if (writer) this.artifactBytes.delete(writer);
     }
@@ -1495,6 +1577,7 @@ export class TenantExportService implements OnModuleDestroy {
     let cursor: Record<string, unknown> | undefined;
     let count = 0;
     while (true) {
+      this.assertGenerationActive();
       const cursorRows = await delegate.findMany({
         where: collection.where(tenantId),
         orderBy: collection.orderBy ?? { id: "asc" },
@@ -1503,6 +1586,7 @@ export class TenantExportService implements OnModuleDestroy {
         select: this.cursorProjection(collection),
       });
       for (const cursorRow of cursorRows) {
+        this.assertGenerationActive();
         const rowCursor = collection.cursor
           ? collection.cursor(cursorRow)
           : { id: cursorRow.id };
@@ -1600,11 +1684,31 @@ export class TenantExportService implements OnModuleDestroy {
   ): Promise<boolean> {
     return this.tenantDb.withPlatformAdmin(async (tx) => {
       await this.lockArtifactQuota(tx);
-      const result = await (tx as any).tenantExportJob.updateMany({
-        where: { id, state: "RUNNING", claimToken },
-        data,
-      });
-      return result.count === 1;
+      this.assertGenerationActive();
+      // Evaluate expiry in the final write, after filesystem and quota-lock waits.
+      const finalized = await tx.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+        UPDATE "TenantExportJob"
+        SET "state" = 'READY',
+            "watermark" = ${data.watermark},
+            "artifactKey" = ${data.artifactKey},
+            "bytes" = ${data.bytes},
+            "rowCounts" = ${JSON.stringify(data.rowCounts)}::jsonb,
+            "progressCollection" = NULL,
+            "claimToken" = NULL,
+            "claimExpiresAt" = NULL,
+            "completedAt" = ${data.completedAt},
+            "error" = NULL,
+            "updatedAt" = CURRENT_TIMESTAMP
+        WHERE "id" = ${id}
+          AND "state" = 'RUNNING'
+          AND "claimToken" = ${claimToken}
+          AND "claimExpiresAt" > clock_timestamp()
+          AND "expiresAt" > clock_timestamp()
+          AND "artifactCleanupState" = 'NONE'
+        RETURNING "id"
+      `);
+      this.assertGenerationActive();
+      return finalized.length === 1;
     });
   }
 
@@ -1990,6 +2094,7 @@ export class TenantExportService implements OnModuleDestroy {
     writer: WriteStream,
     value: string,
   ): Promise<void> {
+    this.assertGenerationActive();
     const written = this.artifactBytes.get(writer);
     if (written === undefined) {
       throw new Error("Tenant export artifact byte accounting is unavailable.");
@@ -1999,7 +2104,29 @@ export class TenantExportService implements OnModuleDestroy {
       throw new Error("Tenant export artifact byte quota exceeded.");
     }
     this.artifactBytes.set(writer, nextBytes);
-    if (!writer.write(value)) await once(writer, "drain");
+    if (!writer.write(value)) await this.waitForWriterDrain(writer);
+  }
+
+  private waitForWriterDrain(writer: WriteStream): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const signal = this.shutdownAbort.signal;
+      const cleanup = () => {
+        writer.off("drain", drained);
+        writer.off("error", failed);
+        writer.off("close", closed);
+        signal.removeEventListener("abort", aborted);
+      };
+      const drained = () => { cleanup(); resolve(); };
+      const failed = (error: Error) => { cleanup(); reject(error); };
+      const closed = () => failed(new Error("Tenant export writer closed before drain."));
+      const aborted = () => failed(new Error("Tenant export writer stopped for shutdown."));
+      writer.once("drain", drained);
+      writer.once("error", failed);
+      writer.once("close", closed);
+      signal.addEventListener("abort", aborted, { once: true });
+      if (signal.aborted) aborted();
+      else if (writer.destroyed || writer.closed) closed();
+    });
   }
 
   private async destroyWriter(writer: WriteStream | undefined): Promise<void> {

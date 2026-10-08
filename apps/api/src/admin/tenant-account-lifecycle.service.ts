@@ -6,8 +6,9 @@ import { TenantPrismaService } from '../database/tenant-prisma.service';
 import type { MfaSessionObserver } from '@lunchlineup/rbac';
 import type { RbacService } from '../auth/rbac.service';
 import type { AdminUserLifecycleActor } from './admin-user-lifecycle.service';
+import { ACCOUNT_LIFECYCLE_REQUEST_PREFIX, projectAccountLifecycleRequest } from './account-lifecycle-request';
 import { TenantCancellationLifecycleService } from './tenant-cancellation-lifecycle.service';
-import { TenantDeletionBillingService } from './tenant-deletion-billing.service';
+import { TenantDeletionBillingService, type ArchivedTenantDeletionBody } from './tenant-deletion-billing.service';
 import {
     TENANT_CUSTOMER_CANCELLATION_INTENT_SETTING_KEY,
     serializeTenantLifecycleStatus,
@@ -38,6 +39,7 @@ export type TenantRetentionPurgeAttempt =
 export type TenantLifecycleActor = {
     tenantId: string;
     userId?: string;
+    sessionId?: string;
     ipAddress: any;
     userAgent: any;
 };
@@ -81,6 +83,7 @@ export class TenantAccountLifecycleService {
         this.tenantDeletionBilling = new TenantDeletionBillingService(
             this.tenantDb,
             () => this.getStripeBilling(),
+            undefined, rbac, mfaObserver,
         );
         this.tenantCancellationLifecycle = tenantCancellationLifecycle
             ?? new TenantCancellationLifecycleService(
@@ -125,13 +128,19 @@ export class TenantAccountLifecycleService {
                 },
                 select: { value: true },
             });
-            return { tenant, customerCancellationIntent };
+            const requests = await tx.tenantSetting.findMany({
+                where: { tenantId: actor.tenantId, key: { startsWith: ACCOUNT_LIFECYCLE_REQUEST_PREFIX } },
+                orderBy: [{ updatedAt: 'desc' }, { key: 'asc' }], take: 20,
+                select: { value: true },
+            });
+            return { tenant, customerCancellationIntent, requests };
         });
 
-        return serializeTenantLifecycleStatus(
-            statusSource.tenant,
-            statusSource.customerCancellationIntent?.value,
-        );
+        return {
+            ...serializeTenantLifecycleStatus(statusSource.tenant, statusSource.customerCancellationIntent?.value),
+            requests: statusSource.requests.map(row => projectAccountLifecycleRequest(row.value))
+                .filter((row): row is NonNullable<typeof row> => row !== null),
+        };
     }
 
     async placeRetentionLegalHold(
@@ -314,6 +323,10 @@ export class TenantAccountLifecycleService {
 
     async reconcilePendingDeletionBillingCandidate(tenantId: string) {
         return this.tenantDeletionBilling.reconcilePendingDeletionBillingCandidate(tenantId);
+    }
+
+    async requestArchivedDeletion(tenantId: string, actor: TenantPlatformArchiveActor, body: ArchivedTenantDeletionBody) {
+        return this.tenantDeletionBilling.requestArchivedDeletion(tenantId, actor, body);
     }
 
     async requestDeletion(actor: TenantLifecycleActor, body: RequestTenantDeletionBody) {

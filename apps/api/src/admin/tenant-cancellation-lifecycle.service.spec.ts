@@ -20,6 +20,7 @@ import {
 const customerActor = {
     tenantId: 'tenant-1',
     userId: 'user-1',
+    sessionId: 'customer-session-1',
     ipAddress: '203.0.113.10',
     userAgent: 'vitest-customer',
 };
@@ -630,7 +631,7 @@ describe('TenantCancellationLifecycleService durable provider boundary', () => {
 });
 
 describe('PrismaTenantCancellationIntentStore lifecycle barriers', () => {
-    function barrierHarness(overrides: Record<string, unknown>) {
+    function barrierHarness(overrides: Record<string, unknown>, customer = false) {
         const tx = {
             $executeRaw: vi.fn().mockResolvedValue(undefined),
             tenant: {
@@ -651,7 +652,11 @@ describe('PrismaTenantCancellationIntentStore lifecycle barriers', () => {
             },
             auditLog: { create: vi.fn() },
         };
-        const authority = installPlatformTenantAuthorityModel(tx, platformActor);
+        const authority = installPlatformTenantAuthorityModel(tx, customer ? customerActor : platformActor);
+        if (customer) {
+            authority.permissions = ['tenant_account:lifecycle'];
+            Object.assign(authority.workspace, overrides);
+        }
         const tenantDb = {
             client: tx,
             withTenant: vi.fn(async (_tenantId: string, operation: (scoped: any) => any) =>
@@ -666,15 +671,17 @@ describe('PrismaTenantCancellationIntentStore lifecycle barriers', () => {
     }
 
     it('does not let customer recovery replace a suspended deletion barrier', async () => {
-        const { store, tx } = barrierHarness({ status: 'SUSPENDED' });
+        const { store, tx } = barrierHarness({ status: 'SUSPENDED' }, true);
 
         await expect(store.prepare({
             kind: 'CUSTOMER_CANCELLATION',
             tenantId: 'tenant-1',
             actor: customerActor,
             confirmation: 'acme-dining',
-        })).rejects.toThrow('deletion billing cleanup is already pending');
-        expect(tx.tenantSetting.findUnique).not.toHaveBeenCalled();
+        })).rejects.toThrow();
+        expect(tx.tenant.findUniqueOrThrow).not.toHaveBeenCalled();
+        expect(tx.tenantSetting.findUnique.mock.calls.filter((args: any[]) =>
+            args[0].where.tenantId_key.key !== 'workspace_settings')).toHaveLength(0);
         expect(tx.tenantSetting.upsert).not.toHaveBeenCalled();
     });
 

@@ -1,3 +1,4 @@
+import { APPLICATION_API_OPERATIONS } from '@lunchlineup/api-contract';
 import type { ApplicationApiOperation, SessionIdentity } from '@lunchlineup/api-contract';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -296,5 +297,30 @@ describe('retained application compatibility bridge', () => {
     expect(res.send).toHaveBeenCalledWith(Buffer.alloc(0));
     expect(res.header).toHaveBeenCalledWith('content-disposition', 'attachment; filename="synthetic.bin"');
     expect(fetchMock).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe('archived deletion retained bridge contract', () => {
+  it('catalogs the bounded exact POST and forwards opaque intake unchanged to the fixed retained target', async () => {
+    const matches = APPLICATION_API_OPERATIONS.filter(row => row.operationId === 'requestArchivedTenantDeletion');
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ method: 'POST', path: '/admin/tenants/:tenantId/deletion-request', bodyLimitBytes: 2048 });
+    const body = { confirmation: 'archived-workspace', privacyRequestReference: 'privacy_42', exportDisposition: 'declined' };
+    const result = { deletionState: 'PENDING_BILLING_CLEANUP', requestId: 'tenant-deletion-barrier',
+      deletionRequestedAt: '2026-10-08T00:00:00.000Z' };
+    const fetchMock = vi.fn(async (_target: string, _init: RequestInit) => new Response(JSON.stringify(result), {
+      status: 200, headers: { 'content-type': 'application/json' },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const req = request('/v2/admin/tenants/opaque-target/deletion-request', body);
+    req.method = 'POST';
+    await expect(new RetainedApplicationBridge(config).execute({ operation: matches[0]!, request: req, reply: reply() }))
+      .resolves.toEqual(result);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [target, init] = fetchMock.mock.calls[0]!;
+    expect(target).toBe('http://api:3000/v1/admin/tenants/opaque-target/deletion-request');
+    expect(init.method).toBe('POST'); expect(init.body).toBe(JSON.stringify(body));
+    expect(new Headers(init.headers).get('x-csrf-token')).toBe('abcdefghijklmnop');
   });
 });

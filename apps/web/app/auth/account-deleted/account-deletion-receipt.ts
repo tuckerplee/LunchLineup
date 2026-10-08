@@ -13,6 +13,7 @@ type AccountDeletionRetention = {
 };
 
 export type AccountDeletionResponse = {
+  requestId?: unknown;
   deletionState?: unknown;
   billingCleanupPending?: unknown;
   deletionRequestedAt?: unknown;
@@ -20,6 +21,7 @@ export type AccountDeletionResponse = {
 };
 
 export type AccountDeletionReceipt = {
+  requestId?: string;
   deletionState: 'FINALIZED' | 'PENDING_BILLING_CLEANUP';
   deletionRequestedAt: string | null;
   applicationDataEligibleAt: string | null;
@@ -32,6 +34,10 @@ type StoredAccountDeletionReceipt = {
   version: 1;
   receipt: AccountDeletionReceipt;
 };
+
+function normalizeRequestId(value: unknown): string | null {
+  return typeof value === 'string' && /^[a-zA-Z0-9-]{1,255}$/.test(value) ? value : null;
+}
 
 function normalizeDate(value: unknown): string | null {
   if (typeof value !== 'string' || !value.trim()) return null;
@@ -63,6 +69,7 @@ function normalizeReceipt(value: unknown): AccountDeletionReceipt | null {
   return (candidate.deletionState === 'FINALIZED' || candidate.deletionState === 'PENDING_BILLING_CLEANUP')
     && Boolean(dates.deletionRequestedAt)
     ? {
+      ...(normalizeRequestId(candidate.requestId) ? { requestId: normalizeRequestId(candidate.requestId)! } : {}),
       deletionState: normalizeDeletionState(candidate.deletionState),
       ...dates,
     }
@@ -74,6 +81,7 @@ export function accountDeletionReceiptFromResponse(response: AccountDeletionResp
     throw new Error('Deletion completion has not been confirmed by the service.');
   }
   return {
+    ...(normalizeRequestId(response.requestId) ? { requestId: normalizeRequestId(response.requestId)! } : {}),
     deletionState: normalizeDeletionState(response.deletionState, response.billingCleanupPending),
     deletionRequestedAt: normalizeDate(response.deletionRequestedAt ?? retention.deletionRequestedAt),
     applicationDataEligibleAt: normalizeDate(retention.applicationDataEligibleAt),

@@ -3,6 +3,8 @@ import { Prisma, TenantStatus } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
 import type { MfaSessionObserver } from '@lunchlineup/rbac';
 import { RbacService } from '../auth/rbac.service';
+import { recordAccountLifecycleRequest } from './account-lifecycle-request';
+import { withCustomerLifecycleAdmission } from './customer-lifecycle-authority';
 import { capturePlatformTenantActor, withPlatformTenantLifecycleAdmission } from './platform-tenant-lifecycle-authority';
 import type {
     StripeService,
@@ -136,6 +138,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     ) {}
 
     async prepare(input: PrepareIntentInput): Promise<PreparedTenantCancellationIntent> {
+        input = Object.freeze({ ...input, actor: Object.freeze({ ...input.actor }) }) as PrepareIntentInput;
         // Capture request authority before any lock wait; recovery methods never
         // enter this admission wrapper or depend on the originating session.
         if (input.kind === 'PLATFORM_ARCHIVE') {
@@ -205,6 +208,11 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                 )
                 && intent.subscriptionFingerprint === fingerprint;
             if (!reusePending) {
+                if (intent?.kind === 'CUSTOMER_CANCELLATION' && isRecoverableIntentState(intent.state)) {
+                    assertCurrent();
+                    await recordAccountLifecycleRequest(tx, { tenantId: intent.tenantId,
+                        requestId: intent.operationId, kind: 'CANCELLATION', state: 'SUPERSEDED' });
+                }
                 const operationId = randomUUID();
                 intent = await this.resetIntent(tx, {
                     ...input,
@@ -270,7 +278,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         return input.kind === 'PLATFORM_ARCHIVE'
             ? withPlatformTenantLifecycleAdmission(this.rbac ?? new RbacService(this.tenantDb), input.tenantId, input.actor,
                 this.mfaObserver, (tx, _actor, assertCurrent) => prepare(tx, assertCurrent))
-            : this.withIntentScope(input.kind, input.tenantId, (tx) => prepare(tx, () => undefined));
+            : withCustomerLifecycleAdmission(this.tenantDb, this.rbac, this.mfaObserver, input.actor, prepare);
     }
 
     async markProviderApplied(
@@ -1021,7 +1029,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                           )
                       )
                   )
-            )
+            ), updated AS (
             UPDATE "TenantSetting" setting
             SET "value" = (
                     setting."value"
@@ -1045,6 +1053,18 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                 "updatedAt" = CURRENT_TIMESTAMP
             FROM stale
             WHERE setting."id" = stale."id"
+            RETURNING setting."tenantId", setting."value"
+            )
+            UPDATE "TenantSetting" receipt
+            SET "value" = receipt."value" || jsonb_build_object(
+                    'state', CASE WHEN updated."value"->>'state' = 'SUPERSEDED'
+                        THEN 'SUPERSEDED' ELSE 'BLOCKED' END,
+                    'updatedAt', ${now.toISOString()}
+                ), "updatedAt" = CURRENT_TIMESTAMP
+            FROM updated
+            WHERE updated."value"->>'kind' = 'CUSTOMER_CANCELLATION'
+              AND receipt."tenantId" = updated."tenantId"
+              AND receipt."key" = 'internal:account-lifecycle-request:' || (updated."value"->>'operationId')
         `);
     }
 
@@ -1140,6 +1160,14 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             },
             update: { value },
         });
+        if (intent.kind === 'CUSTOMER_CANCELLATION') {
+            await recordAccountLifecycleRequest(tx, {
+                tenantId: intent.tenantId, requestId: intent.operationId, kind: 'CANCELLATION',
+                state: intent.state === 'FINALIZED' ? 'COMPLETED'
+                    : intent.state === 'BLOCKED' ? 'BLOCKED'
+                        : intent.state === 'SUPERSEDED' ? 'SUPERSEDED' : 'PENDING',
+            });
+        }
     }
 
     private async recordLegalHoldBlockedAudit(
@@ -1494,6 +1522,7 @@ export class TenantCancellationLifecycleService {
             slug: finalized.tenant.slug,
             status: finalized.tenant.status,
             cancellationEffectiveAt: outcome.currentPeriodEnd,
+            requestId: finalized.intent.operationId,
             billingCancellation: outcome,
         };
     }

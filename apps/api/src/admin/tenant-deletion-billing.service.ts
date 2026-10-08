@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
+import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { RbacService } from '../auth/rbac.service';
+import { capturePlatformTenantActor } from './platform-tenant-lifecycle-authority';
+import type { AdminUserLifecycleActor } from './admin-user-lifecycle.service';
+import { recordAccountLifecycleRequest } from './account-lifecycle-request';
+import { withCustomerLifecycleAdmission } from './customer-lifecycle-authority';
 import { FEATURE_CREDIT_COST } from '../billing/plan-definitions';
 import type { StripeService } from '../billing/stripe.service';
 import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
@@ -16,10 +22,22 @@ type RequestTenantDeletionBody = {
     confirmation?: unknown;
 };
 
+export type ArchivedTenantDeletionBody = {
+    confirmation?: unknown;
+    privacyRequestReference?: unknown;
+    exportDisposition?: unknown;
+};
+
+type OperatorDeletionIntake = {
+    privacyRequestReference: string;
+    exportDisposition: 'completed' | 'declined';
+};
+
 type TenantDeletionResult = {
     id: string;
     slug: string;
     status: TenantStatus | string;
+    requestId?: string;
     deletionState: 'FINALIZED' | 'PENDING_BILLING_CLEANUP';
     billingCleanupPending: boolean;
     deletionRequestedAt: Date;
@@ -128,6 +146,8 @@ export class TenantDeletionBillingService {
         private readonly tenantDb: TenantPrismaService,
         private readonly stripeBilling: () => TenantBillingFinalizer,
         options: TenantDeletionBillingServiceOptions = {},
+        private readonly rbac?: RbacService,
+        private readonly mfaObserver?: MfaSessionObserver,
     ) {
         this.leaseMs = this.boundedInteger(
             options.leaseMs,
@@ -326,30 +346,47 @@ export class TenantDeletionBillingService {
     }
 
     async requestDeletion(actor: TenantLifecycleActor, body: RequestTenantDeletionBody) {
+        return this.requestDeletionForTarget(actor, body, actor.tenantId);
+    }
+
+    async requestArchivedDeletion(targetTenantId: string, actor: AdminUserLifecycleActor, body: ArchivedTenantDeletionBody) {
+        actor = capturePlatformTenantActor(actor);
+        if (!targetTenantId?.trim() || targetTenantId !== targetTenantId.trim()) throw new BadRequestException('Tenant not found.');
+        if (targetTenantId === actor.tenantId) throw new BadRequestException('Use your own workspace account deletion flow.');
+        const reference = body?.privacyRequestReference;
+        if (typeof reference !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(reference)) {
+            throw new BadRequestException('An opaque privacy request reference of at most 80 characters is required.');
+        }
+        if (body.exportDisposition !== 'completed' && body.exportDisposition !== 'declined') {
+            throw new BadRequestException('Record whether the verified requester completed or declined export.');
+        }
+        const intake: OperatorDeletionIntake = Object.freeze({
+            privacyRequestReference: reference, exportDisposition: body.exportDisposition,
+        });
+        const result = await this.requestDeletionForTarget(actor, body, targetTenantId, intake);
+        return { ...result, ...intake };
+    }
+
+    private async requestDeletionForTarget(actor: TenantLifecycleActor, body: RequestTenantDeletionBody,
+        targetTenantId: string, intake?: OperatorDeletionIntake) {
+        actor = Object.freeze({ ...actor });
         const confirmation = normalizeTenantConfirmation(body?.confirmation);
-        const barrierCommittedAt = new Date();
         const barrierAuditId = randomUUID();
-        const phaseOne = await this.tenantDb.withTenant(actor.tenantId, async (tx) => {
-            await this.lockTenantDeletion(tx, actor.tenantId);
+        const prepare = async (tx: TenantPrismaTransaction, assertCurrent: () => void) => {
+            await this.lockTenantDeletion(tx, targetTenantId);
+            const barrierCommittedAt = new Date();
             const tenant = await tx.tenant.findUniqueOrThrow({
-                where: { id: actor.tenantId },
+                where: { id: targetTenantId },
                 select: { id: true, slug: true, status: true, deletedAt: true },
             });
             assertTenantSlugConfirmation(confirmation, tenant.slug);
 
-            if (tenant.status === TenantStatus.PURGED) {
-                if (!tenant.deletedAt) {
-                    throw new ConflictException('Finalized tenant deletion is missing its request timestamp.');
-                }
-                return { state: 'finalized' as const, tenant, requestedAt: tenant.deletedAt };
-            }
-
             const existingBarrierAudit = await tx.auditLog.findFirst({
                 where: {
-                    tenantId: actor.tenantId,
+                    tenantId: targetTenantId,
                     action: 'TENANT_DELETION_BARRIER_COMMITTED',
                     resource: 'Tenant',
-                    resourceId: actor.tenantId,
+                    resourceId: targetTenantId,
                 },
                 orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
                 select: {
@@ -360,11 +397,32 @@ export class TenantDeletionBillingService {
                     ipAddress: true,
                     userAgent: true,
                     createdAt: true,
+                    newValue: true,
                 },
             });
+            if (intake) {
+                if (existingBarrierAudit) {
+                    const recorded = existingBarrierAudit.newValue;
+                    if (!recorded || typeof recorded !== 'object' || Array.isArray(recorded)
+                        || recorded.privacyRequestReference !== intake.privacyRequestReference
+                        || recorded.exportDisposition !== intake.exportDisposition) {
+                        throw new ConflictException('Deletion request intake differs from the recorded request.');
+                    }
+                } else if (tenant.status !== TenantStatus.CANCELLED || !tenant.deletedAt) {
+                    throw new BadRequestException('Only an archived workspace can enter operator deletion.');
+                }
+            }
+            if (tenant.status === TenantStatus.PURGED) {
+                if (!tenant.deletedAt) throw new ConflictException('Finalized tenant deletion is missing its request timestamp.');
+                return { state: 'finalized' as const, tenant, requestedAt: tenant.deletedAt,
+                    requestId: existingBarrierAudit ? `tenant-deletion-${existingBarrierAudit.id}` : undefined };
+            }
+            if (intake && existingBarrierAudit && (tenant.status !== TenantStatus.SUSPENDED || tenant.deletedAt)) {
+                throw new ConflictException('Recorded deletion barrier is no longer active.');
+            }
             if (tenant.status === TenantStatus.SUSPENDED && !tenant.deletedAt && existingBarrierAudit) {
                 const barrier: TenantDeletionBarrier = {
-                    tenantId: actor.tenantId,
+                    tenantId: targetTenantId,
                     auditId: existingBarrierAudit.id,
                     slug: tenant.slug,
                     userId: existingBarrierAudit.userId,
@@ -380,7 +438,7 @@ export class TenantDeletionBillingService {
                     barrier,
                     claim: await this.claimPendingDeletionBillingCandidateInTransaction(
                         tx,
-                        actor.tenantId,
+                        targetTenantId,
                         barrierCommittedAt,
                     ),
                 };
@@ -388,35 +446,37 @@ export class TenantDeletionBillingService {
 
             if (tenant.status !== TenantStatus.SUSPENDED || tenant.deletedAt) {
                 await tx.tenant.update({
-                    where: { id: actor.tenantId },
+                    where: { id: targetTenantId },
                     data: { status: TenantStatus.SUSPENDED, deletedAt: null },
                     select: { id: true, slug: true, status: true, deletedAt: true },
                 });
             }
 
             await tx.session.updateMany({
-                where: { user: { tenantId: actor.tenantId }, revokedAt: null },
+                where: { user: { tenantId: targetTenantId }, revokedAt: null },
                 data: { revokedAt: barrierCommittedAt },
             });
             await tx.webhookEndpoint.updateMany({
-                where: { tenantId: actor.tenantId, active: true },
+                where: { tenantId: targetTenantId, active: true },
                 data: { active: false },
             });
-            await this.terminalizePaidWorkForDeletion(tx, actor.tenantId, barrierCommittedAt);
+            await this.terminalizePaidWorkForDeletion(tx, targetTenantId, barrierCommittedAt);
 
             await tx.auditLog.create({
                 data: {
                     id: barrierAuditId,
-                    tenantId: actor.tenantId,
-                    userId: actor.userId,
+                    tenantId: targetTenantId,
+                    userId: actor.tenantId === targetTenantId ? actor.userId : null,
                     actorUserId: actor.userId,
                     actorTenantId: actor.tenantId,
                     action: 'TENANT_DELETION_BARRIER_COMMITTED',
                     resource: 'Tenant',
-                    resourceId: actor.tenantId,
+                    resourceId: targetTenantId,
                     newValue: {
                         status: TenantStatus.SUSPENDED,
                         barrierCommittedAt,
+                        ...(intake ? { ...intake, initiation: 'PLATFORM_ARCHIVED_WORKSPACE',
+                            archivedAt: tenant.deletedAt?.toISOString() ?? null } : {}),
                         access: 'Sessions revoked and new billable work disabled.',
                         paidWorkSettlement: 'Queued and in-flight schedule generation was terminalized with exactly-once wallet refunds.',
                     },
@@ -426,10 +486,10 @@ export class TenantDeletionBillingService {
                 },
             });
             const barrier: TenantDeletionBarrier = {
-                tenantId: actor.tenantId,
+                tenantId: targetTenantId,
                 auditId: barrierAuditId,
                 slug: tenant.slug,
-                userId: actor.userId ?? null,
+                userId: actor.tenantId === targetTenantId ? actor.userId ?? null : null,
                 actorUserId: actor.userId ?? null,
                 actorTenantId: actor.tenantId,
                 ipAddress: actor.ipAddress ?? null,
@@ -437,19 +497,35 @@ export class TenantDeletionBillingService {
                 createdAt: barrierCommittedAt,
             };
             await this.ensureReconciliationState(tx, barrier);
+            assertCurrent();
             return {
                 state: 'pending' as const,
                 barrier,
                 claim: await this.claimPendingDeletionBillingCandidateInTransaction(
                     tx,
-                    actor.tenantId,
+                    targetTenantId,
                     barrierCommittedAt,
                 ),
             };
-        }, TenantDeletionBillingService.TRANSACTION_OPTIONS);
+        };
+        const rbac = this.rbac ?? new RbacService(this.tenantDb);
+        const phaseOne = intake
+            ? await rbac.runCurrentMutation({
+                actor: { tenantId: actor.tenantId, userId: actor.userId ?? '', sessionId: actor.sessionId ?? '' },
+                requiredPermission: 'admin_portal:access', scope: 'platform', mfaObserver: this.mfaObserver,
+                transactionOptions: TenantDeletionBillingService.TRANSACTION_OPTIONS,
+            }, async (tx, current) => {
+                // Domain advisory locks precede the authorizer's sorted actor/target row locks.
+                await tx.$executeRaw`SELECT public.lock_tenant_lifecycle(${targetTenantId})`;
+                await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing-checkout:${targetTenantId}`}, 0))`;
+                await rbac.authorizePlatformAdminTenantMutationInTransaction(tx, targetTenantId, current);
+            }, (tx, _authority, assertCurrent) => prepare(tx, assertCurrent))
+            : await withCustomerLifecycleAdmission(this.tenantDb, this.rbac, this.mfaObserver, actor, prepare,
+                (tx) => this.lockTenantDeletion(tx, targetTenantId));
 
         if (phaseOne.state === 'finalized') {
-            return this.serializeDeletionResult(phaseOne.tenant, phaseOne.requestedAt);
+            return { ...this.serializeDeletionResult(phaseOne.tenant, phaseOne.requestedAt),
+                ...(phaseOne.requestId ? { requestId: phaseOne.requestId } : {}) };
         }
         if (!phaseOne.claim) {
             return this.serializePendingDeletionResult(phaseOne.barrier);
@@ -459,13 +535,13 @@ export class TenantDeletionBillingService {
             const reconciled = await this.runClaimedDeletionBillingReconciliation(
                 phaseOne.claim,
                 phaseOne.barrier,
-                false,
+                Boolean(intake),
             );
             return reconciled.result;
         } catch (error) {
             await this.recordReconciliationFailure(
                 phaseOne.claim,
-                false,
+                Boolean(intake),
                 this.reconciliationFailureCode(error),
             ).catch(() => undefined);
             return this.serializePendingDeletionResult(phaseOne.barrier);
@@ -477,6 +553,8 @@ export class TenantDeletionBillingService {
         barrier: TenantDeletionBarrier,
     ): Promise<void> {
         const operationId = this.reconciliationOperationId(barrier);
+        await recordAccountLifecycleRequest(tx, { tenantId: barrier.tenantId,
+            requestId: operationId, kind: 'DELETION', state: 'PENDING', requestedAt: barrier.createdAt });
         await tx.$executeRaw`
             INSERT INTO "TenantDeletionBillingReconciliation" (
                 "tenantId", "operationId", "barrierCreatedAt", "state",
@@ -576,7 +654,7 @@ export class TenantDeletionBillingService {
         return {
             outcome: 'processed',
             tenantId: claim.tenantId,
-            result: this.serializeDeletionResult(tenant, barrier.createdAt),
+            result: { ...this.serializeDeletionResult(tenant, barrier.createdAt), requestId: claim.operationId },
         };
     }
 
@@ -838,7 +916,8 @@ export class TenantDeletionBillingService {
                     userId: barrier.userId,
                     actorUserId: barrier.actorUserId ?? barrier.userId,
                     actorTenantId: barrier.actorTenantId ?? barrier.tenantId,
-                    action: 'TENANT_DELETION_REQUESTED_BY_CUSTOMER',
+                    action: barrier.actorTenantId && barrier.actorTenantId !== barrier.tenantId
+                        ? 'TENANT_DELETION_REQUESTED_BY_PLATFORM' : 'TENANT_DELETION_REQUESTED_BY_CUSTOMER',
                     resource: 'Tenant',
                     resourceId: barrier.tenantId,
                     newValue: {
@@ -905,6 +984,8 @@ export class TenantDeletionBillingService {
         if (finalized !== 1) {
             throw new ConflictException('Tenant deletion billing reconciliation claim was lost before finalization.');
         }
+        await recordAccountLifecycleRequest(tx, { tenantId: claim.tenantId,
+            requestId: claim.operationId, kind: 'DELETION', state: 'COMPLETED' });
     }
 
     private serializeDeletionResult(
@@ -929,6 +1010,7 @@ export class TenantDeletionBillingService {
             id: barrier.tenantId,
             slug: barrier.slug,
             status: TenantStatus.SUSPENDED,
+            requestId: this.reconciliationOperationId(barrier),
             deletionState: 'PENDING_BILLING_CLEANUP',
             billingCleanupPending: true,
             deletionRequestedAt: barrier.createdAt,

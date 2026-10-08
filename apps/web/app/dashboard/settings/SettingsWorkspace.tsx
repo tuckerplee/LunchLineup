@@ -53,7 +53,7 @@ const TIMEZONE_OPTIONS = [
     { value: 'America/New_York', label: 'Eastern Time (US & Canada)' },
 ];
 
-const SESSION_TIMEOUT_OPTIONS = [15, 30, 60, 120, 240];
+const SESSION_TIMEOUT_OPTIONS = [5, 15, 30, 60, 120, 240, 480, 1440];
 
 function getCsrfHeaders(): Record<string, string> {
     if (typeof document === 'undefined') return {};
@@ -616,6 +616,9 @@ export function SettingsWorkspace({
                                     onChange={(event) => setGeneralForm((current) => ({ ...current, timezone: event.target.value }))}
                                     disabled={!canMutateSettings}
                                 >
+                                    {!TIMEZONE_OPTIONS.some((option) => option.value === generalForm.timezone) ? (
+                                        <option value={generalForm.timezone}>{generalForm.timezone}</option>
+                                    ) : null}
                                     {TIMEZONE_OPTIONS.map((option) => (
                                         <option key={option.value} value={option.value}>
                                             {option.label}
@@ -818,6 +821,11 @@ export function SettingsWorkspace({
                                     }
                                     disabled={!canMutateSettings}
                                 >
+                                    {!SESSION_TIMEOUT_OPTIONS.includes(Number(securityForm.sessionTimeoutMinutes)) ? (
+                                        <option value={securityForm.sessionTimeoutMinutes}>
+                                            {securityForm.sessionTimeoutMinutes} minutes
+                                        </option>
+                                    ) : null}
                                     {SESSION_TIMEOUT_OPTIONS.map((minutes) => (
                                         <option key={minutes} value={minutes}>
                                             {minutes} minute{minutes === 1 ? '' : 's'}
