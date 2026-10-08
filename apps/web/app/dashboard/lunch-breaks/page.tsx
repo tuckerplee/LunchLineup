@@ -130,6 +130,7 @@ type EditableBreak = {
   time: string;
   durationMinutes: number;
   skipped: boolean;
+  originalStartIso?: string | null;
 };
 
 type DayShiftRow = {
@@ -318,12 +319,14 @@ function buildEditableBreak(
       time: '',
       durationMinutes: fallbackDuration,
       skipped: true,
+      originalStartIso: null,
     };
   }
   return {
     time: lunchBreakTimeValue(found.startTime, timeZone),
     durationMinutes: found.durationMinutes > 0 ? found.durationMinutes : fallbackDuration,
     skipped: false,
+    originalStartIso: found.startTime,
   };
 }
 
@@ -1009,7 +1012,7 @@ export default function LunchBreaksPage() {
             return { type: key, skip: true };
           }
 
-          const resolvedStart = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone);
+          const resolvedStart = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone, current.originalStartIso);
           if (!resolvedStart) {
             throw new Error(`${row.employeeName}: ${key} time is outside of the shift window.`);
           }
@@ -1390,7 +1393,7 @@ export default function LunchBreaksPage() {
       const segments: AutoCalendarSegment[] = BREAK_KEYS.flatMap((key) => {
         const current = row[key];
         if (current.skipped || !current.time) return [];
-        const startIso = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone);
+        const startIso = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone, current.originalStartIso);
         if (!startIso) return [];
         const startMinutes = toMinutesFromDayStart(startIso);
         const endMinutes = startMinutes + Math.max(1, current.durationMinutes || 0);
@@ -1498,7 +1501,7 @@ export default function LunchBreaksPage() {
         const segments: PlanPreviewSegment[] = BREAK_KEYS.flatMap((key) => {
           const current = row[key];
           if (current.skipped || !current.time) return [];
-          const startIso = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone);
+          const startIso = resolveLunchBreakInstant(row.startTime, row.endTime, current.time, activeTimeZone, current.originalStartIso);
           if (!startIso) return [];
           const startMs = new Date(startIso).getTime();
           const endMs = startMs + Math.max(1, current.durationMinutes) * 60 * 1000;

@@ -1,6 +1,6 @@
 import { resolveLunchBreakInstant } from './lunch-break-time';
 
-type BreakTiming = { time: string; durationMinutes: number; skipped: boolean };
+type BreakTiming = { time: string; durationMinutes: number; skipped: boolean; originalStartIso?: string | null };
 type BreakTimingRow = {
   startTime: string;
   endTime: string;
@@ -14,7 +14,7 @@ export function breakTimingIssue(row: BreakTimingRow, timeZone: string): string 
   for (const key of ['break1', 'lunch', 'break2'] as const) {
     const entry = row[key];
     if (entry.skipped) continue;
-    const start = resolveLunchBreakInstant(row.startTime, row.endTime, entry.time, timeZone);
+    const start = resolveLunchBreakInstant(row.startTime, row.endTime, entry.time, timeZone, entry.originalStartIso);
     if (!start || !Number.isInteger(entry.durationMinutes) || entry.durationMinutes <= 0) {
       return 'Each planned break needs a valid time and positive whole-minute duration.';
     }

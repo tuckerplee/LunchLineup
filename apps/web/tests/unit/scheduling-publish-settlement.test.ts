@@ -71,7 +71,7 @@ describe('schedule publish settlement UI contract', () => {
     expect(source).toContain('apiV2.getSchedulePublishPlan(scheduleId)');
     expect(source).toContain('apiV2.publishSchedule(');
     expect(source).toContain('publishAttempt.payload.body');
-    expect(source).toContain('parseSchedulePublishResponse(scheduleId, publishedPayload)');
+    expect(source).toMatch(/parseSchedulePublishResponse\(\s*scheduleId,\s*publishedPayload,\s*publishAttempt\.payload\.body\.acceptedContract,?\s*\)/);
     expect(source).toContain('publishSettlementByScheduleId[schedule.id]');
   });
 
@@ -141,7 +141,7 @@ describe('schedule publish settlement UI contract', () => {
   });
 
   it('accepts and reports only an authoritative exact-once settlement', () => {
-    const published = parseSchedulePublishResponse('schedule-1', publishPayload());
+    const published = parseSchedulePublishResponse('schedule-1', publishPayload(), preflightPayload().acceptedContract);
 
     expect(published.settlement).toMatchObject({ creditsConsumed: 8, newBalance: 2 });
     expect(publishSettlementSummary(published.settlement))
@@ -155,7 +155,19 @@ describe('schedule publish settlement UI contract', () => {
     publishPayload({ acceptedContract: { ...preflightPayload().acceptedContract, version: -1 } }),
     { ...publishPayload(), publishedAt: 'not-an-instant' },
   ])('rejects an unverified or contradictory publish settlement %#', (payload) => {
-    expect(() => parseSchedulePublishResponse('schedule-1', payload)).toThrow('unconfirmed schedule publication');
+    expect(() => parseSchedulePublishResponse('schedule-1', payload, preflightPayload().acceptedContract)).toThrow('unconfirmed schedule publication');
+  });
+
+  it.each([
+    'version', 'totalConfiguredCost', 'scheduleCost', 'matchingWebhookDeliveryCount',
+    'matchingWebhookDeliveryUnitCost', 'matchingWebhookDeliveryCost',
+  ] as const)('binds the issued %s even when the returned receipt is internally valid', (field) => {
+    const receipt = publishPayload();
+    const issued = { ...preflightPayload().acceptedContract };
+    issued[field] += 1;
+    // The response is unchanged and valid; only the captured issued field differs.
+    expect(() => parseSchedulePublishResponse('schedule-1', receipt, preflightPayload().acceptedContract)).not.toThrow();
+    expect(() => parseSchedulePublishResponse('schedule-1', receipt, issued)).toThrow('unconfirmed schedule publication');
   });
 
   it('maps payment, conflict, replay, and retry outcomes without rotating a valid attempt', () => {

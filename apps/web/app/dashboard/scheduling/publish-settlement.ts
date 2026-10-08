@@ -80,6 +80,7 @@ export function parseSchedulePublishPreflight(
 export function parseSchedulePublishResponse(
   scheduleId: string,
   payload: unknown,
+  expectedContract: SchedulePublishAcceptedContract,
 ): SchedulePublishResponse {
   const invalid = 'The service returned an unconfirmed schedule publication.';
   if (!isRecord(payload)
@@ -91,6 +92,9 @@ export function parseSchedulePublishResponse(
     throw new Error(invalid);
   }
   const settlement = parseSettlement(payload.settlement, invalid);
+  if (!expectedContract || !schedulePublishContractMatches(settlement.acceptedContract, expectedContract)) {
+    throw new Error(invalid);
+  }
   const notificationStatus = payload.notifications.status;
   if (typeof notificationStatus !== 'string'
     || !NOTIFICATION_STATUSES.has(notificationStatus as PublishNotificationResult['status'])

@@ -54,6 +54,33 @@ beforeEach(async () => {
 afterEach(() => { h?.unmount(); vi.unstubAllGlobals(); });
 
 describe('actual scheduling page publication replay', () => {
+  it.each([
+    ['wrong version', { ...contractA, version: contractA.version + 1 }],
+    ['changed configured cost', { ...contractA, totalConfiguredCost: 7, scheduleCost: 7 }],
+  ])('retains original custody after an internally valid %s success response', async (_label, wrongContract) => {
+    await review('schedule-a');
+    mocks.publish.mockResolvedValueOnce(published('schedule-a', wrongContract));
+    await click('schedule-a', 'Confirm - 2 credits');
+    const original = structuredClone(mocks.publish.mock.calls[0]);
+    expect(text(row('schedule-a'))).toContain('DRAFT');
+    expect(text(row('schedule-a'))).toContain('Retry publish');
+    expect(text(row('schedule-a'))).not.toContain('credits were debited exactly once');
+    const custody = mocks.refs.find(ref => ref.current?.['schedule-a']?.key === original[2]);
+    expect(custody).toBeDefined();
+    expect(custody.current['schedule-a'].payload.body).toEqual({ acceptedContract: contractA });
+    await review('schedule-b');
+    mocks.publish.mockResolvedValueOnce(published('schedule-b'));
+    await click('schedule-b', 'Confirm - 5 credits');
+    expect(text(row('schedule-b'))).toContain('PUBLISHED');
+    mocks.publish.mockResolvedValueOnce(published('schedule-a'));
+    await click('schedule-a', 'Retry publish');
+    expect(mocks.publish.mock.calls[2]).toEqual(original);
+    expect(mocks.publish).toHaveBeenCalledTimes(3);
+    expect(text(row('schedule-a'))).toContain('PUBLISHED');
+    expect(text(row('schedule-a'))).not.toContain('Retry publish');
+    expect(custody.current['schedule-a']).toBeUndefined();
+  });
+
   it('replays A exact original body and key after reviewing a different B contract', async () => {
     const original = await uncertainA(); await review('schedule-b');
     mocks.publish.mockResolvedValueOnce(published('schedule-a'));

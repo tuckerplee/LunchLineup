@@ -160,9 +160,12 @@ function PrintScheduleView() {
   useEffect(() => {
     if (autoPrintDone || isLoading || !isCurrentScope || error || rows.length === 0) return;
     if (searchParams.get('autoprint') !== '1') return;
-    setAutoPrintDone(true);
-    window.setTimeout(() => window.print(), 250);
-  }, [autoPrintDone, error, isCurrentScope, isLoading, rows.length, searchParams]);
+    const timer = window.setTimeout(() => {
+      setAutoPrintDone(true);
+      window.print();
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [autoPrintDone, error, isCurrentScope, isLoading, rows.length, searchParams, selectedScope]);
 
   const selectDate = useCallback((dateValue: string) => {
     scheduleRequestGate.current.invalidate();

@@ -1282,7 +1282,11 @@ function SchedulingContent() {
         publishAttempt.payload.body,
         publishAttempt.key,
       );
-      const published = parseSchedulePublishResponse(scheduleId, publishedPayload);
+      const published = parseSchedulePublishResponse(
+        scheduleId,
+        publishedPayload,
+        publishAttempt.payload.body.acceptedContract,
+      );
       setSchedules((current) => current.map((item) => item.id === scheduleId
         ? { ...item, status: published.status, publishedAt: published.publishedAt }
         : item));

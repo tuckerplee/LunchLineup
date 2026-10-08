@@ -57,6 +57,7 @@ export function LocationLifecycleActions({
     const [timezone, setTimezone] = useState(initialDrafts.timezone);
     const [confirmation, setConfirmation] = useState('');
     const [isSaving, setIsSaving] = useState(false);
+    const mutationInFlightRef = useRef(false);
     const deactivateTriggerRef = useRef<HTMLButtonElement>(null);
     const deactivateDialogRef = useRef<HTMLDivElement>(null);
     const restoreDeactivateFocusRef = useRef(false);
@@ -70,6 +71,7 @@ export function LocationLifecycleActions({
     };
 
     const closeDeactivateDialog = () => {
+        if (mutationInFlightRef.current) return;
         restoreDeactivateFocusRef.current = true;
         setMode('idle');
     };
@@ -104,6 +106,7 @@ export function LocationLifecycleActions({
             if (event.key === 'Escape') {
                 event.preventDefault();
                 event.stopPropagation();
+                if (mutationInFlightRef.current) return;
                 restoreDeactivateFocusRef.current = true;
                 setMode('idle');
                 return;
@@ -132,6 +135,7 @@ export function LocationLifecycleActions({
 
     const save = async (event: React.FormEvent<HTMLFormElement>) => {
         event.preventDefault();
+        if (mutationInFlightRef.current || !canWrite) return;
         let payload;
         try {
             payload = buildLocationUpdatePayload({ name, address, timezone });
@@ -140,6 +144,7 @@ export function LocationLifecycleActions({
             return;
         }
 
+        mutationInFlightRef.current = true;
         const finishMutation = onMutationStart();
         setIsSaving(true);
         onError('');
@@ -171,16 +176,19 @@ export function LocationLifecycleActions({
             onError(error instanceof Error ? error.message : 'Unable to update location.');
         } finally {
             finishMutation();
+            mutationInFlightRef.current = false;
             setIsSaving(false);
         }
     };
 
     const deactivate = async () => {
+        if (mutationInFlightRef.current || !canDelete) return;
         if (confirmation.trim() !== location.name) {
             onError('Confirmation must exactly match the location name.');
             return;
         }
 
+        mutationInFlightRef.current = true;
         const finishMutation = onMutationStart();
         setIsSaving(true);
         onError('');
@@ -199,6 +207,7 @@ export function LocationLifecycleActions({
             onError(error instanceof Error ? error.message : 'Unable to deactivate location.');
         } finally {
             finishMutation();
+            mutationInFlightRef.current = false;
             setIsSaving(false);
         }
     };
