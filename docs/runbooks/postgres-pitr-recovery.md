@@ -8,6 +8,8 @@ Accepted availability PDF work is covered by PostgreSQL backup/PITR because the 
 
 - Stop application writes before final cutover. Never run recovery against the live `postgres_data` volume.
 - Record the incident timestamp in UTC and choose a completed base backup whose completion precedes that timestamp.
+- Independently select the recovery timeline and a WAL segment from that timeline. Set `PITR_RECOVERY_TARGET_TIMELINE` to its canonical decimal ID (1 through 4294967295). The helper refuses missing, `latest`, noncanonical, or mismatched timeline inputs before provider access; a subsequently archived branch cannot silently change the recovery target.
+- Set `PITR_EXPECTED_SYSTEM_IDENTIFIER` from the independently retained source-cluster inventory (`pg_control_system().system_identifier`), not from the restore archive being checked. It must be a canonical positive decimal uint64. PostgreSQL 16 manifests do not contain `System-Identifier`; the helper checks the verified backup's control file using PostgreSQL 16 `pg_controldata`, rejecting warnings, failed/timed-out reads and mismatches before writing recovery configuration or a success receipt. The qualified backup image must include that tool.
 - Confirm `PITR_ENABLED=true`, `PITR_ARCHIVE_MODE=on`, the exact HTTPS endpoint/bucket/cluster prefix, and `PITR_OBJECT_LOCK_RETENTION_DAYS` of at least 14. Non-PITR renders must remain `archive_mode=off`; an invoked archive command with disabled PITR is a failure, never a successful no-op.
 - Confirm `PITR_LIFECYCLE_MAX_RETENTION_DAYS` is greater than immutable retention and no more than 90.
 - Confirm the runtime names four distinct absolute managed directories: `PITR_WAL_OBJECT_STORE_SECRETS_DIR`, `PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR`, `PITR_RESTORE_OBJECT_STORE_SECRETS_DIR`, and `PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR`.
@@ -102,6 +104,8 @@ docker volume create lunchlineup_postgres_pitr_restore_data
 
 PITR_BASE_BACKUP_ID=20260709T201700Z-1234 \
 PITR_RECOVERY_TARGET_TIME=2026-07-09T21:14:00Z \
+PITR_RECOVERY_TARGET_TIMELINE=1 \
+PITR_EXPECTED_SYSTEM_IDENTIFIER=<independently-recorded-source-system-identifier> \
 PITR_ARCHIVED_WAL_SEGMENT=00000001000000000000002A \
 PITR_BASE_BACKUP_COMPLETE_VERSION_ID=<exact-complete-version> \
 PITR_BASE_BACKUP_ARCHIVE_VERSION_ID=<exact-base-archive-version> \
@@ -113,7 +117,11 @@ docker compose --profile recovery \
   run --rm --no-deps --pull never pitr-restore
 ```
 
-The recovery Compose service forwards all four variables unchanged. The command must print `pitr_restore_materialized` with those exact versions. Each download uses provider `--version-id`; the helper also requires each supplied version to be the sole current immutable version, preventing stale/old-version substitution. It then validates the commit marker/manifest, verifies PGDATA, and writes paused recovery configuration plus version-bound source metadata.
+The recovery Compose service forwards all four version variables, the explicit timeline and independently expected system identifier unchanged. The command must print `pitr_restore_materialized` with those exact versions, `target_timeline` and `system_identifier`. Each download uses provider `--version-id`; the helper also requires each supplied version to be the sole current immutable version, preventing stale/old-version substitution. It then validates the commit marker/manifest, verifies PGDATA and its control-file identity, and writes paused recovery configuration plus version-bound source metadata. The configured recovery timeline is the selected numeric ID, never `latest`. Retain those identities with the recovery evidence; successful materialization alone does not prove the target was reached.
+
+Both restore-download and base-backup staging use exclusively allocated random directories under the dedicated absolute `PITR_STAGING_DIR`. Base-backup IDs now include that random suffix. A preflight failure never owns or deletes a guessed staging path; only a successfully allocated scratch directory is eligible for helper cleanup. An interrupted helper exits after cleanup. Restore targets cannot be symbolic links, and failed partially materialized targets are retained for the admitted runtime owner to inspect; the helper does not erase the restore target or authorize an automatic retry.
+
+The backup image pins PostgreSQL client and control-file tooling together at Alpine `postgresql16-client=16.15-r0` and `postgresql16=16.15-r0`. Updating these pins requires a reviewed image build and actual PostgreSQL 16 backup/control-file qualification through the Test Agent. Package unavailability must fail the build, not silently select another major/revision. See the [PostgreSQL 16 manifest format](https://www.postgresql.org/docs/16/backup-manifest-toplevel.html) and [Alpine package inventory](https://pkgs.alpinelinux.org/package/v3.22/main/x86_64/postgresql16).
 
 ## Start And Validate Recovery
 

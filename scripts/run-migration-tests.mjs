@@ -157,7 +157,10 @@ async function main() {
   console.log(`migration-test-runner passed=all files=${plan.length} elapsed=${elapsed(runStartedAt)}`);
 }
 
-await main().catch((error) => {
+if (process.argv[2] === '--fixed-container-selection') {
+  const { runFixedC08 } = await import('./fixed-c08-container-cases.mjs');
+  await runFixedC08(process.argv.slice(2));
+} else await main().catch((error) => {
   console.error(`migration-test-runner configuration_error=${error instanceof Error ? error.message : 'unknown failure'}`);
   process.exitCode = 1;
 });

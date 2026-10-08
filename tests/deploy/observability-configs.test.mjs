@@ -563,3 +563,48 @@ test('observability verifier rejects broken structured config fixtures', () => {
     rmSync(fixtureRoot, { recursive: true, force: true });
   }
 });
+
+const missingTargetPairs = [
+  ['prometheus', 'localhost:9090'], ['api', 'api:3000'], ['api-v2', 'api-v2:3002'],
+  ['engine', 'engine:8000'], ['worker', 'worker:3003'], ['webhook-replay', 'webhook-replay:3004'],
+  ['control', 'control:3001'], ['node', 'node-exporter:9100'],
+];
+const missingTargetClause = (job, instance) => `absent(up{job="${job}",instance="${instance}"})`;
+const missingTargetExpression = missingTargetPairs.map(([job, instance]) => missingTargetClause(job, instance)).join('\n          or ');
+const missingTargetMutations = [
+  ...missingTargetPairs.flatMap(([job, instance]) => [
+    [`deleted ${job} clause`, (block) => block.replace(missingTargetExpression,
+      missingTargetPairs.filter(([candidate]) => candidate !== job).map(([j, i]) => missingTargetClause(j, i)).join('\n          or ')),
+    /must cover every exact expected job\/instance without fallback/],
+    [`retargeted ${job} instance`, (block) => block.replace(missingTargetClause(job, instance), missingTargetClause(job, 'wrong-' + instance)),
+    /must cover every exact expected job\/instance without fallback/],
+  ]),
+  ['zero-vector fallback', (block) => block.replace('        for: 2m', '          or vector(0)\n        for: 2m'), /without fallback/],
+  ['job label override', (block) => block.replace('          team: ops', '          team: ops\n          job: api'), /preserve query-derived job and instance labels/],
+  ['instance label override', (block) => block.replace('          team: ops', '          team: ops\n          instance: api:3000'), /preserve query-derived job and instance labels/],
+  ['weaker severity', (block) => block.replace('severity: critical', 'severity: warning'), /must page critical ops/],
+  ['wrong team', (block) => block.replace('team: ops', 'team: engineering'), /must page critical ops/],
+  ['shorter pending period', (block) => block.replace('for: 2m', 'for: 1m'), /retain the 2m pending period/],
+  ['longer pending period', (block) => block.replace('for: 2m', 'for: 5m'), /retain the 2m pending period/],
+  ['wrong existing runbook', (block) => block.replace('docs/runbooks/monitoring-target-missing.md', 'docs/runbooks/production-readiness.md'), /reference its recovery runbook/],
+  ['removed rule', () => '', /missing ExpectedScrapeTargetMissing alert/],
+];
+for (const [name, mutate, diagnostic] of missingTargetMutations) {
+  test(`observability verifier refuses missing-target ${name}`, () => {
+    const fixtureRoot = createObservabilityFixture();
+    try {
+      const path = join(fixtureRoot, OBSERVABILITY_FILES.prometheusAlerts);
+      const source = readFileSync(path, 'utf8');
+      const block = source.match(/^      - alert: ExpectedScrapeTargetMissing\n[\s\S]*?(?=^      - alert:)/m)?.[0];
+      assert.ok(block, 'exact missing-target rule must exist in fixture');
+      const changed = mutate(block);
+      assert.notEqual(changed, block, `${name} must actually alter the guarded rule`);
+      writeFileSync(path, source.replace(block, changed));
+      const result = validateObservabilityConfigs({ root: fixtureRoot });
+      assert.equal(result.ok, false, name);
+      assert.match(result.errors.join('\n'), diagnostic);
+    } finally {
+      rmSync(fixtureRoot, { recursive: true, force: true });
+    }
+  });
+}

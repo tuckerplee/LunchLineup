@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 adapter="$(cd -- "$(dirname -- "$0")" && pwd)/podman"
+if python3 "$(dirname -- "$adapter")/c08-adapter.py" "$@"; then
+  exit 0
+else
+  c08_status=$?
+  [[ "$c08_status" == 77 ]] || exit "$c08_status"
+fi
 if [[ "${1:-}" == compose ]]; then
   shift
   args=()

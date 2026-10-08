@@ -21,12 +21,14 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o /mc .
 
 # Stage 2: Runtime
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runner
+# pg_controldata belongs to the server package; no server is started by this image.
+# Keep client/control tooling at one reviewed package revision for physical recovery.
 RUN mkdir -p /usr/share/man \
-  && apk add --no-cache bash postgresql16-client rsync zstd gpg aws-cli rclone nodejs coreutils \
+  && apk add --no-cache bash postgresql16-client=16.15-r0 postgresql16=16.15-r0 rsync zstd gpg aws-cli rclone nodejs coreutils \
   && if ! grep -q '^postgres:' /etc/group; then addgroup -S -g 70 postgres; fi \
   && if ! grep -q '^postgres:' /etc/passwd; then adduser -S -D -H -u 70 -G postgres postgres; fi
 # Recovery must use the same client major as the PostgreSQL server image.
-RUN for tool in psql pg_dump pg_basebackup pg_verifybackup; do \
+RUN for tool in psql pg_dump pg_basebackup pg_verifybackup pg_controldata; do \
       "$tool" --version | grep -Eq '\(PostgreSQL\) 16\.' || exit 1; \
     done
 WORKDIR /app
