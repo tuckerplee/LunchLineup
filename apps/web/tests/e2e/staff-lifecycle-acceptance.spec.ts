@@ -275,13 +275,13 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
     await profile.getByLabel('Skills', { exact: true }).fill('Native lifecycle skill'); await profile.getByRole('button', { name: 'Add skill', exact: true }).click();
     await profile.getByRole('button', { name: 'Add window', exact: true }).click();
     const window = profile.locator('.staff-scheduling-window'); await expect(window).toHaveCount(1);
-    await window.getByLabel('Day', { exact: true }).selectOption('1'); await window.getByLabel('Location', { exact: true }).selectOption(location.id);
+    await window.getByRole('combobox', { name: 'Day', exact: true }).selectOption('1'); await window.getByRole('combobox', { name: 'Location', exact: true }).selectOption(location.id);
     await window.getByLabel('Start', { exact: true }).fill('09:00'); await window.getByLabel('End', { exact: true }).fill('17:00');
     await profile.getByRole('button', { name: 'Add exception', exact: true }).click();
     const exception = profile.getByRole('group', { name: 'Dated availability exception 1', exact: true });
     const date = new Date(Date.now() + 5 * 86400000).toISOString().slice(0, 10);
-    await exception.getByLabel('Local date', { exact: true }).fill(date); await exception.getByLabel('Location', { exact: true }).selectOption(location.id);
-    await exception.getByLabel('Exception', { exact: true }).selectOption('UNAVAILABLE'); await exception.getByLabel('All day', { exact: true }).check();
+    await exception.getByLabel('Local date', { exact: true }).fill(date); await exception.getByRole('combobox', { name: 'Location', exact: true }).selectOption(location.id);
+    await exception.getByRole('combobox', { name: 'Exception', exact: true }).selectOption('UNAVAILABLE'); await exception.getByLabel('All day', { exact: true }).check();
     const saved = await mutation(page, 'PUT', `/api/v2/users/${user.id}/scheduling-profile`, () => profile.getByRole('button', { name: 'Save profile', exact: true }).click()); expect(saved.status()).toBe(200);
     const original = await native<StaffSchedulingProfile>(page.request, `/api/v2/users/${user.id}/scheduling-profile`);
     expect(original.user.id).toBe(user.id); expect(original.skills).toEqual(['native lifecycle skill']);
