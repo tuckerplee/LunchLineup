@@ -448,6 +448,33 @@ describe('AuthService – handleOidcCallback', () => {
         (service as any).prisma = mockPrisma;
     });
 
+    it.each([
+        ['https://accounts.google.com', 'https://oauth2.googleapis.com/token', 'https://openidconnect.googleapis.com/v1/userinfo'],
+        ['https://accounts.google.com/', 'https://oauth2.googleapis.com/token', 'https://openidconnect.googleapis.com/v1/userinfo'],
+        ['http://accounts.google.com', 'http://accounts.google.com/o/oauth2/token', 'http://accounts.google.com/o/oauth2/userinfo'],
+        ['https://accounts.google.com.evil.example', 'https://accounts.google.com.evil.example/o/oauth2/token', 'https://accounts.google.com.evil.example/o/oauth2/userinfo'],
+        ['https://auth.example.com/realm', 'https://auth.example.com/realm/o/oauth2/token', 'https://auth.example.com/realm/o/oauth2/userinfo'],
+        ['https://auth.example.com/realm/', 'https://auth.example.com/realm/o/oauth2/token', 'https://auth.example.com/realm/o/oauth2/userinfo'],
+        ['https://auth.example.com/realm//', 'https://auth.example.com/realm//o/oauth2/token', 'https://auth.example.com/realm//o/oauth2/userinfo'],
+        ['https://accounts.google.com//', 'https://accounts.google.com//o/oauth2/token', 'https://accounts.google.com//o/oauth2/userinfo'],
+    ])('OIDC endpoint wiring preserves configured issuer %s without session effects on refusal', async (issuer, tokenEndpoint, userInfoEndpoint) => {
+        const config = { ...mockConfigService, getOrThrow: (key: string) => key === 'OIDC_ISSUER_URL' ? issuer : mockConfigService.getOrThrow(key) };
+        service = new AuthService(config as any, mockJwtService as any, mockRbacService as any);
+        (service as any).prisma = mockPrisma;
+        secureHttpRequestMock.mockReset();
+        secureHttpRequestMock.mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'fixture-provider-token' }), { status: 200 }))
+            .mockResolvedValueOnce(new Response(JSON.stringify({ sub: 'fixture-subject', email: 'fixture@example.com', email_verified: false }), { status: 200 }));
+        await expect(service.handleOidcCallback('exact-code', 'exact-state', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
+        expect(secureHttpRequestMock).toHaveBeenCalledTimes(2);
+        expect(secureHttpRequestMock).toHaveBeenNthCalledWith(1, tokenEndpoint, expect.objectContaining({ method: 'POST', redirect: 'error', timeoutMs: 8_000 }));
+        const form = new URLSearchParams(String(secureHttpRequestMock.mock.calls[0][1].body));
+        expect(Object.fromEntries(form)).toEqual({ grant_type: 'authorization_code', code: 'exact-code', client_id: 'test-client-id', client_secret: 'test-client-secret', redirect_uri: 'http://localhost:3000/auth/callback' });
+        expect(secureHttpRequestMock).toHaveBeenNthCalledWith(2, userInfoEndpoint, expect.objectContaining({ headers: { Authorization: 'Bearer fixture-provider-token' }, timeoutMs: 8_000, maxResponseBytes: 64 * 1024, redirect: 'error' }));
+        expect(mockPrisma.session.create).not.toHaveBeenCalled();
+        expect(mockPrisma.user.findFirst).not.toHaveBeenCalled();
+        expect(mockPrisma.user.create).not.toHaveBeenCalled();
+    });
+
     it('should throw UnauthorizedException when no email is returned by the OIDC provider', async () => {
         // Mock the private exchange + userInfo methods
         vi.spyOn(service as any, 'exchangeCode').mockResolvedValue({ access_token: 'tok' });
@@ -703,7 +730,7 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
         }), { status: 200 }));
 
         await expect((service as any).fetchUserInfo(
-            'https://auth.example.com',
+            'https://auth.example.com/o/oauth2/userinfo',
             'provider-access-token',
         )).resolves.toEqual({
             sub: 'subject-1',
@@ -729,7 +756,7 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
         secureHttpRequestMock.mockRejectedValue(providerError);
 
         await expect((service as any).fetchUserInfo(
-            'https://auth.example.com',
+            'https://auth.example.com/o/oauth2/userinfo',
             'provider-access-token',
         )).rejects.toMatchObject({
             status: 401,
@@ -742,7 +769,7 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
         secureHttpRequestMock.mockImplementation(() => new Promise<Response>(() => undefined));
 
         const rejection = expect((service as any).fetchUserInfo(
-            'https://auth.example.com',
+            'https://auth.example.com/o/oauth2/userinfo',
             'provider-access-token',
         )).rejects.toMatchObject({
             status: 401,
@@ -758,7 +785,7 @@ describe('AuthService - OIDC provider HTTP boundaries', () => {
             .mockResolvedValueOnce(new Response('[]', { status: 200 }));
 
         const request = () => (service as any).fetchUserInfo(
-            'https://auth.example.com',
+            'https://auth.example.com/o/oauth2/userinfo',
             'provider-access-token',
         );
         await expect(request()).rejects.toBeInstanceOf(UnauthorizedException);

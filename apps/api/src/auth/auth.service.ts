@@ -18,6 +18,7 @@ import {
     isSerializableTransactionConflict,
 } from '../database/transaction-error';
 import { runSerializableMutationWithRetry } from './serializable-mutation';
+import { resolveOidcProviderEndpoints } from './oidc-provider-endpoints';
 
 const WORKSPACE_SETTINGS_KEY = 'workspace_settings';
 const DEFAULT_SESSION_TIMEOUT_MINUTES = 480;
@@ -1550,13 +1551,14 @@ export class AuthService implements OnModuleDestroy {
         tenantSlugRaw?: string | null,
         audit: SessionRequestAudit = {},
     ) {
-        const issuerUrl = this.normalizeOidcIssuer(this.configService.getOrThrow('OIDC_ISSUER_URL'));
+        const configuredIssuer = this.configService.getOrThrow('OIDC_ISSUER_URL');
+        const issuerUrl = this.normalizeOidcIssuer(configuredIssuer);
         const clientId = this.configService.getOrThrow('OIDC_CLIENT_ID');
         const clientSecret = this.configService.getOrThrow('OIDC_CLIENT_SECRET');
         const redirectUri = this.configService.getOrThrow('OIDC_REDIRECT_URI');
 
-        const tokenEndpoint = `${issuerUrl}/o/oauth2/token`;
-        const tokenResponse = await this.exchangeCode(tokenEndpoint, {
+        const endpoints = resolveOidcProviderEndpoints(configuredIssuer);
+        const tokenResponse = await this.exchangeCode(endpoints.tokenEndpoint, {
             grant_type: 'authorization_code',
             code,
             client_id: clientId,
@@ -1564,7 +1566,7 @@ export class AuthService implements OnModuleDestroy {
             redirect_uri: redirectUri,
         });
 
-        const userInfo = await this.fetchUserInfo(issuerUrl, tokenResponse.access_token) as OidcUserInfo;
+        const userInfo = await this.fetchUserInfo(endpoints.userInfoEndpoint, tokenResponse.access_token) as OidcUserInfo;
 
         if (userInfo.email_verified !== true) {
             throw new UnauthorizedException('OIDC provider email is not verified');
@@ -3163,9 +3165,9 @@ export class AuthService implements OnModuleDestroy {
         }
     }
 
-    private async fetchUserInfo(issuerUrl: string, accessToken: string): Promise<OidcUserInfo> {
+    private async fetchUserInfo(endpoint: string, accessToken: string): Promise<OidcUserInfo> {
         try {
-            const response = await this.requestAuthProvider(`${issuerUrl}/o/oauth2/userinfo`, {
+            const response = await this.requestAuthProvider(endpoint, {
                 headers: { Authorization: `Bearer ${accessToken}` },
                 timeoutMs: AUTH_PROVIDER_REQUEST_TIMEOUT_MS,
                 maxResponseBytes: MAX_OIDC_USERINFO_RESPONSE_BYTES,
