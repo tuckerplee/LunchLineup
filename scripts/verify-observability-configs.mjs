@@ -1457,6 +1457,7 @@ function validateNativeCompose(compose, errors) {
   const services = asMap(compose?.services), api = services['api-v2'];
   expect(errors, api, 'docker-compose.yml: missing api-v2 service');
   if (!api) return;
+  expect(errors, api.stop_grace_period === '30s', 'docker-compose.yml: api-v2 must retain the reviewed 30s stop grace for its 15s application drain deadline');
   const environment = environmentMap(api.environment);
   expect(errors, environment.METRICS_TOKEN_FILE === '/run/secrets/metrics_token', 'docker-compose.yml: api-v2 must read the mounted metrics token file');
   expect(errors, !Object.hasOwn(environment, 'METRICS_TOKEN'), 'docker-compose.yml: api-v2 must not configure an inline or conflicting METRICS_TOKEN');

@@ -39,6 +39,13 @@ const env = doc => {
 const alert = (doc, name) => doc.groups.flatMap(group => group.rules).find(value => value.alert === name);
 const panel = (doc, id) => doc.panels.find(value => value.id === id);
 const mutations = [
+  ['missing native stop grace', 'compose', doc => { delete api(doc).stop_grace_period; }, /reviewed 30s stop grace/],
+  ['native stop grace "10s"', 'compose', doc => { api(doc).stop_grace_period = "10s"; }, /reviewed 30s stop grace/],
+  ['native stop grace "15s"', 'compose', doc => { api(doc).stop_grace_period = "15s"; }, /reviewed 30s stop grace/],
+  ['native stop grace "29s"', 'compose', doc => { api(doc).stop_grace_period = "29s"; }, /reviewed 30s stop grace/],
+  ['native stop grace "31s"', 'compose', doc => { api(doc).stop_grace_period = "31s"; }, /reviewed 30s stop grace/],
+  ['native stop grace 30', 'compose', doc => { api(doc).stop_grace_period = 30; }, /reviewed 30s stop grace/],
+  ['native stop grace null', 'compose', doc => { api(doc).stop_grace_period = null; }, /reviewed 30s stop grace/],
   ['missing native job', 'prometheus', doc => { doc.scrape_configs = doc.scrape_configs.filter(job => job.job_name !== 'api-v2'); }, /missing api-v2 scrape job/],
   ['wrong native target', 'prometheus', doc => { job(doc).static_configs[0].targets = ['api:3000']; }, /api-v2 scrape targets/],
   ['wrong native metrics path', 'prometheus', doc => { job(doc).metrics_path = '/v2/ready'; }, /api-v2 metrics_path/],
@@ -98,6 +105,7 @@ test('reviewed native observability candidate passes structure with all owned fi
   try {
     const result = validateObservabilityConfigs({ root: path });
     assert.equal(result.ok, true, result.errors.join('\n'));
+    assert.equal(api(yaml.load(readFileSync(join(path, OBSERVABILITY_FILES.compose), 'utf8'))).stop_grace_period, '30s');
     assert.deepEqual(result.checked, Object.values(OBSERVABILITY_FILES).sort());
   } finally { rmSync(path, { recursive: true, force: true }); }
 });

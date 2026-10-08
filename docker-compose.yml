@@ -591,6 +591,7 @@ services:
   # implementation dependency; public v1 ingress is terminal at Caddy.
   api-v2:
     <<: *locked-runtime
+    stop_grace_period: 30s
     cpus: "1.50"
     mem_limit: 768m
     pids_limit: 384
