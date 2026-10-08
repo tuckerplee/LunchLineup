@@ -11009,7 +11009,7 @@
       "sourceAnchors": [
         {
           "path": "apps/worker/src/password_reset_email.py",
-          "line": 490,
+          "line": 503,
           "sourceLine": "async def dispatch_password_reset_email(outbox_id: str | None = None, store: ResetEmailStore | None = None) -> dict[str, object]:"
         },
         {
