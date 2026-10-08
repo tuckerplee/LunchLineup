@@ -127,10 +127,42 @@ const bindingCases = {
 for (const [label, mutate] of Object.entries(bindingCases)) test(`refuses ${label} without secret-bearing errors`, () => { const value = fixture(); mutate(value); refused(value); });
 
 function privateFile(run) {
+  const callerUid = process.getuid(), callerGid = process.getgid();
+  const rootUid = fs.lstatSync('/').uid;
+  // A mapped-root runner sees unmapped host-root ancestors as 65534. The API
+  // accepts an explicit file owner independently of its caller; use the real
+  // mapped nobody identity for only this newly created receipt in that case.
+  const expectedUid = callerUid === 0 && rootUid === 65534 ? rootUid : callerUid;
+  if (expectedUid !== callerUid) {
+    const ranges = fs.readFileSync('/proc/self/uid_map', 'utf8').trim().split('\n')
+      .map(line => line.trim().split(/\s+/).map(Number));
+    assert.ok(ranges.every(row => row.length === 3 && row.every(Number.isSafeInteger)));
+    assert.ok(ranges.some(([inside, , length]) => expectedUid >= inside && expectedUid < inside + length),
+      'fixture receipt owner must be a real mapped UID, not only the overflow display ID');
+  }
   const root = fs.mkdtempSync(join(homedir(), '.billing-snapshot-'));
-  const path = join(root, 'receipt.json'); fs.writeFileSync(path, 'original\n', { mode: 0o600 });
-  const options = { expectedUid: process.getuid(), maxBytes: 64 };
-  try { run({ root, path, options }); } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  const path = join(root, 'receipt.json');
+  const options = { expectedUid, maxBytes: 64 };
+  const writeReceipt = contents => {
+    fs.writeFileSync(path, contents, { flag: 'wx', mode: 0o600 });
+    const created = fs.lstatSync(path);
+    assert.ok(created.isFile()); assert.equal(created.nlink, 1);
+    assert.equal(created.uid, callerUid); assert.equal(created.gid, callerGid);
+    assert.equal(created.mode & 0o7777, 0o600);
+    if (expectedUid !== callerUid) fs.chownSync(path, expectedUid, callerGid);
+    const owned = fs.lstatSync(path);
+    assert.ok(owned.isFile()); assert.equal(owned.nlink, 1);
+    assert.equal(owned.dev, created.dev); assert.equal(owned.ino, created.ino);
+    assert.equal(owned.uid, expectedUid); assert.equal(owned.gid, callerGid);
+    assert.equal(owned.mode & 0o7777, 0o600);
+  };
+  try {
+    const directory = fs.lstatSync(root);
+    assert.ok(directory.isDirectory()); assert.equal(directory.uid, callerUid);
+    assert.equal(directory.mode & 0o7777, 0o700);
+    writeReceipt('original\n');
+    run({ root, path, options, writeReceipt });
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 }
 test('private snapshot reads complete bytes with exact digest', () => privateFile(({ path, options }) => {
   const result = readPrivateStableSnapshot(path, options);
@@ -156,7 +188,7 @@ for (const [label, mutate] of Object.entries(snapshotCases)) test(`private snaps
 for (const [label, mutate] of Object.entries({
   growth: s => fs.appendFileSync(s.path, 'growth'),
   shrink: s => fs.truncateSync(s.path, 1),
-  replacement: s => { fs.renameSync(s.path, join(s.root, 'old')); fs.writeFileSync(s.path, 'replacement', { mode: 0o600 }); },
+  replacement: s => { fs.renameSync(s.path, join(s.root, 'old')); s.writeReceipt('replacement'); },
   'ancestor mode drift': s => fs.chmodSync(s.root, 0o777),
 })) test(`private snapshot refuses observed ${label} during read`, t => privateFile(state => {
   const original = fs.readSync; let changed = false;
