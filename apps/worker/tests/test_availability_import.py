@@ -1819,6 +1819,35 @@ class AvailabilityImportOrchestrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(terminal_args[2:], ("FAILED", "INVALID_DOCUMENT"))
         cleanup.assert_called_once_with(claimed.payload, claimed.path)
 
+    def test_parser_child_receives_socket_and_normalized_timeout_without_parent_secrets(self):
+        for raw_timeout, expected in [("2.5", 2.5), ("999", 30.0), ("0", 1.0), ("invalid", 15.0)]:
+            with self.subTest(timeout=raw_timeout):
+                process = MagicMock()
+                process.wait.return_value = 0
+
+                def launch(*args, **kwargs):
+                    kwargs["stdout"].write(b'{"parsedAvailability": []}')
+                    kwargs["stdout"].flush()
+                    return process
+
+                with patch.dict(os.environ, {
+                    "PARSER_SOCKET_PATH": "/run/custom-parser/private.sock",
+                    "WORKER_PDF_PARSE_TIMEOUT_SECONDS": raw_timeout,
+                    "DATABASE_URL": "postgresql://synthetic-secret",
+                    "STRIPE_SECRET_KEY": "synthetic-provider-secret",
+                    "UNRELATED_PARENT_SECRET": "do-not-forward",
+                }), patch.object(availability_import.subprocess, "Popen", side_effect=launch) as popen:
+                    self.assertEqual(availability_import._run_parser_subprocess(Path("availability.pdf")),
+                                     {"parsedAvailability": []})
+                child_env = popen.call_args.kwargs["env"]
+                self.assertEqual(child_env["PARSER_SOCKET_PATH"], "/run/custom-parser/private.sock")
+                self.assertEqual(child_env["WORKER_PDF_PARSE_TIMEOUT_SECONDS"], str(expected))
+                process.wait.assert_called_once_with(timeout=expected)
+                for secret in ("DATABASE_URL", "STRIPE_SECRET_KEY", "UNRELATED_PARENT_SECRET"):
+                    self.assertNotIn(secret, child_env)
+                self.assertTrue(popen.call_args.kwargs["close_fds"])
+                process.kill.assert_not_called()
+
     def test_parser_timeout_kills_and_reaps_the_subprocess(self):
         process = MagicMock()
         process.wait.side_effect = [
