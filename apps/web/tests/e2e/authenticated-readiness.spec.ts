@@ -1074,6 +1074,168 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
     expect(remainingCookieNames).not.toContain('csrf_token');
   });
 
+  test('retries browser sign-out after acknowledged account deletion without repeating deletion', async ({ page }) => {
+    await loginAsSeedAdmin(page, '/dashboard/settings');
+    await page.getByRole('tab', { name: 'Account' }).click();
+    await expect(page.getByRole('heading', { name: 'Account', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download export', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Generate new export', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Cancel renewal', exact: true })).toBeEnabled();
+    await expect(page.getByRole('button', { name: 'Refresh account status', exact: true })).toBeEnabled();
+    const authCookieNames = ['access_token', 'refresh_token', 'csrf_token'];
+    const initialCookieNames = (await page.context().cookies()).map((cookie) => cookie.name);
+    for (const name of authCookieNames) expect(initialCookieNames).toContain(name);
+
+    const preparationBodies: unknown[] = [];
+    const deletionBodies: unknown[] = [];
+    const postAcknowledgementRequests: string[] = [];
+    const logoutHeaders: string[] = [];
+    let acknowledged = false;
+    page.on('request', (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === '/api/v2/account-deletion/prepare' && request.method() === 'POST') {
+        preparationBodies.push(request.postDataJSON());
+      }
+      if (pathname === '/api/v2/admin/account' && request.method() === 'DELETE') {
+        deletionBodies.push(request.postDataJSON());
+      }
+      if (acknowledged && (
+        pathname.startsWith('/api/v2/account-deletion/')
+        || pathname === '/api/v2/admin/account'
+        || pathname.startsWith('/api/v2/admin/account/')
+      )) {
+        postAcknowledgementRequests.push(`${request.method()} ${pathname}`);
+      }
+    });
+    page.on('response', (response) => {
+      if (response.request().method() === 'DELETE'
+        && new URL(response.url()).pathname === '/api/v2/admin/account'
+        && response.status() === 200) acknowledged = true;
+    });
+    // Only the first local sign-out is faulted; use the existing mock DELETE and real local sign-out retry.
+    await page.route('**/auth/logout', async (route) => {
+      if (route.request().method() !== 'POST') {
+        await route.continue();
+        return;
+      }
+      logoutHeaders.push(route.request().headers()['x-account-deletion-complete'] ?? '');
+      if (logoutHeaders.length === 1) {
+        await route.fulfill({
+          status: 503,
+          headers: { 'content-type': 'text/plain', 'cache-control': 'no-store' },
+          body: 'Injected browser session cleanup failure.',
+        });
+        return;
+      }
+      await route.continue();
+    });
+    const deletionResponsePromise = page.waitForResponse((response) => (
+      response.request().method() === 'DELETE'
+      && new URL(response.url()).pathname === '/api/v2/admin/account'
+    ));
+    const failedLogoutPromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/auth/logout'
+    ));
+    await page.getByLabel('Confirm workspace slug').nth(1).fill('e2e-operations');
+    await page.getByRole('button', { name: 'Request deletion', exact: true }).click();
+    const deletionResponse = await deletionResponsePromise;
+    expect(deletionResponse.status()).toBe(200);
+    const deletionPayload = await deletionResponse.json() as {
+      id: string;
+      slug: string;
+      deletionState: string;
+      billingCleanupPending: boolean;
+      deletionRequestedAt: string;
+      retention: {
+        applicationDataEligibleAt: string;
+        databaseBackupEligibleAt: string;
+        securityLogEligibleAt: string;
+        fullDatabasePurgeEligibleAt: string;
+      };
+    };
+    const failedLogout = await failedLogoutPromise;
+    expect(failedLogout.status()).toBe(503);
+    expect(failedLogout.headers()['set-cookie']).toBeUndefined();
+    expect(acknowledged).toBe(true);
+    expect(deletionPayload.deletionState).toBe('FINALIZED');
+    expect(deletionPayload.billingCleanupPending).toBe(false);
+    expect(deletionPayload.id).toEqual(expect.any(String));
+    expect(deletionPayload.id.length).toBeGreaterThan(0);
+    expect(deletionPayload.slug).toBe('e2e-operations');
+
+    await expect(page).toHaveURL(/\/dashboard\/settings$/);
+    await expect(page.getByText(
+      'Account deletion was recorded, but browser sign-out did not complete. Continue to retry.',
+      { exact: true },
+    )).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Account deletion requested', exact: true })).toHaveCount(0);
+    const continueButton = page.getByRole('button', { name: 'Continue to confirmation', exact: true });
+    await expect(continueButton).toBeEnabled();
+    for (const input of [
+      page.getByLabel('Confirm workspace slug').first(),
+      page.getByLabel('Confirm workspace slug').nth(1),
+      page.getByLabel('Reason', { exact: true }),
+    ]) await expect(input).toBeDisabled();
+    await expect(page.getByRole('button', { name: 'Download export', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Generate new export', exact: true })).toHaveCount(0);
+    for (const name of ['Generate export', 'Cancel renewal', 'Refresh account status']) {
+      await expect(page.getByRole('button', { name, exact: true })).toBeDisabled();
+    }
+    const readStoredReceipt = () => page.evaluate(() => (
+      window.sessionStorage.getItem('lunchlineup.account-deletion-receipt.v1')
+    ));
+    const pendingReceipt = await readStoredReceipt();
+    expect(pendingReceipt).not.toBeNull();
+    expect(JSON.parse(pendingReceipt ?? '{}')).toEqual({
+      version: 1,
+      receipt: {
+        deletionState: 'FINALIZED',
+        deletionRequestedAt: new Date(deletionPayload.deletionRequestedAt).toISOString(),
+        applicationDataEligibleAt: new Date(deletionPayload.retention.applicationDataEligibleAt).toISOString(),
+        databaseBackupEligibleAt: new Date(deletionPayload.retention.databaseBackupEligibleAt).toISOString(),
+        securityLogEligibleAt: new Date(deletionPayload.retention.securityLogEligibleAt).toISOString(),
+        fullDatabasePurgeEligibleAt: new Date(deletionPayload.retention.fullDatabasePurgeEligibleAt).toISOString(),
+      },
+    });
+    expect(pendingReceipt).not.toContain(deletionPayload.id);
+    expect(pendingReceipt).not.toContain(deletionPayload.slug);
+    const pendingCookieNames = (await page.context().cookies()).map((cookie) => cookie.name);
+    for (const name of authCookieNames) expect(pendingCookieNames).toContain(name);
+    expect(preparationBodies).toEqual([{ confirmation: 'e2e-operations' }]);
+    expect(deletionBodies).toEqual([{ confirmation: 'e2e-operations' }]);
+    expect(logoutHeaders).toEqual(['1']);
+    expect(postAcknowledgementRequests).toEqual([]);
+
+    // Observe focus only; reach the recovery action with native Tab/Enter input.
+    for (let tabs = 0; tabs < 40 && !await continueButton.evaluate((button) => button === document.activeElement); tabs += 1) {
+      await page.keyboard.press('Tab');
+    }
+    await expect(continueButton).toBeFocused();
+    const successfulLogoutPromise = page.waitForResponse((response) => (
+      response.request().method() === 'POST'
+      && new URL(response.url()).pathname === '/auth/logout'
+    ));
+    await page.keyboard.press('Enter');
+    const successfulLogout = await successfulLogoutPromise;
+    expect(successfulLogout.status()).toBe(204);
+    expect(successfulLogout.headers()['cache-control']).toBe('no-store');
+    await expect(page).toHaveURL(/\/auth\/account-deleted$/);
+    await expect(page.getByRole('heading', { name: 'Account deletion requested', exact: true })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Retention and purge schedule', exact: true })).toBeVisible();
+    expect(await readStoredReceipt()).toBe(pendingReceipt);
+    expect(new URL(page.url()).search).toBe('');
+    expect(new URL(page.url()).hash).toBe('');
+    expect(page.url()).not.toContain(deletionPayload.id);
+    expect(page.url()).not.toContain(deletionPayload.slug);
+    const remainingCookieNames = (await page.context().cookies()).map((cookie) => cookie.name);
+    for (const name of authCookieNames) expect(remainingCookieNames).not.toContain(name);
+    expect(preparationBodies).toEqual([{ confirmation: 'e2e-operations' }]);
+    expect(deletionBodies).toEqual([{ confirmation: 'e2e-operations' }]);
+    expect(logoutHeaders).toEqual(['1', '1']);
+    expect(postAcknowledgementRequests).toEqual([]);
+  });
+
   test('redirects unverified enrolled MFA sessions to the MFA gate and continues after verification', async ({ page }) => {
     await loginWithPin(page, {
       username: 'e2e.mfa',
