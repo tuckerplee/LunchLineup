@@ -4,6 +4,7 @@ import type { MfaSessionIdentity } from '@lunchlineup/rbac';
 import type { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { PeopleService } from './people.service';
+import { ScheduleBoardService } from '../scheduling/board.service';
 import { authorizeMutation } from './access';
 
 vi.mock('./access', async importOriginal => ({
@@ -85,6 +86,45 @@ describe('reversible account state', () => {
     expect(response.futureAssignments[0]).toMatchObject({ id: 'shift-public', scheduleStatus: 'PUBLISHED' });
     expect(tx.session.updateMany).toHaveBeenCalledWith({ where: { userId: 'employee-internal', revokedAt: null }, data: { revokedAt: expect.any(Date) } });
     expect(tx.auditLog.create).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ action: 'USER_SUSPENDED' }) }));
+  });
+  it('keeps published assignments visible on the board after deactivation without listing inactive staff', async () => {
+    const { service, user, identity } = fixture();
+    const location = { id: 'location-internal', publicId: 'location-public', name: 'Kitchen', timezone: 'UTC' };
+    const schedule = { id: 'schedule-internal', publicId: 'schedule-public', locationId: location.id,
+      startDate: new Date('2030-01-01T00:00:00Z'), endDate: new Date('2030-01-03T00:00:00Z'),
+      status: 'PUBLISHED', publishedAt: new Date('2029-12-01T00:00:00Z'), revision: 1 };
+    const shift = { id: 'shift-internal', publicId: 'shift-public', userId: user.id, user,
+      locationId: location.id, scheduleId: schedule.id, role: 'STAFF', breaks: [],
+      startTime: new Date('2030-01-01T22:00:00Z'), endTime: new Date('2030-01-02T06:00:00Z') };
+    const board = new ScheduleBoardService({ withTenant: async (tenant: string, work: (tx: unknown) => Promise<unknown>) => {
+      expect(tenant).toBe(identity.tenantId);
+      return work({
+        location: { findMany: async () => [location] },
+        schedule: { findMany: async () => [schedule] },
+        user: { findMany: async ({ where }: { where: unknown }) => {
+          expect(where).toEqual({ tenantId: identity.tenantId, deletedAt: null, suspendedAt: null,
+            role: { in: ['MANAGER', 'STAFF'] } });
+          return user.suspendedAt ? [] : [user];
+        } },
+        shift: { findMany: async ({ where }: { where: { OR: Array<{ user?: { is?: { suspendedAt?: null } } }> } }) => {
+          expect(where).toMatchObject({ tenantId: identity.tenantId, locationId: location.id,
+            scheduleId: { in: [schedule.id] }, deletedAt: null, schedule: { is: { deletedAt: null } },
+            OR: [{ userId: null }, { user: { is: { role: { in: ['MANAGER', 'STAFF'] }, deletedAt: null } } }] });
+          const assignee = where.OR.find(part => part.user)?.user?.is;
+          return user.suspendedAt && assignee && Object.hasOwn(assignee, 'suspendedAt') ? [] : [shift];
+        } },
+      });
+    } } as never);
+    const query = { date: '2030-01-01', view: 'day' as const };
+    const before = await board.get(identity, query);
+    expect(before.data.staff.map(person => person.id)).toEqual([user.publicId]);
+    expect(before.data.shifts).toHaveLength(1);
+    await service.setSuspended(identity, user.publicId, { suspended: true, expectedSuspendedAt: null });
+    const after = await board.get(identity, query);
+    expect(after.data.staff).toEqual([]);
+    expect(after.data.shifts).toEqual(before.data.shifts);
+    expect(after.data.schedules).toEqual(before.data.schedules);
+    expect(after.data.schedules[0].status).toBe('PUBLISHED');
   });
   it('reactivates while revoking, never restoring, sessions', async () => {
     const timestamp = new Date('2026-09-09T12:00:00Z');
