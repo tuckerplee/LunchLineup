@@ -22,7 +22,7 @@ export async function applyOnboardingSignupAttemptRetention(
                 "otpExpiresAt",
                 COALESCE("recoveryExpiresAt", '-infinity'::TIMESTAMP)
             ) <= (${asOf}::TIMESTAMPTZ AT TIME ZONE 'UTC')
-                - make_interval(hours => ${ONBOARDING_SIGNUP_ATTEMPT_RETENTION_HOURS})
+                - make_interval(hours => ${ONBOARDING_SIGNUP_ATTEMPT_RETENTION_HOURS}::integer)
         `;
         return {
             retentionHours: ONBOARDING_SIGNUP_ATTEMPT_RETENTION_HOURS,

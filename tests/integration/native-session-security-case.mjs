@@ -981,3 +981,723 @@ export async function runNativeMfaRemoval(context){
   }
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native MFA removal or owned cleanup failed; preserve first attempt.');
 }
+
+// C03 scoped native publication support. Appended after existing source only.
+// Preparation draft: main entry/fixture teardown remain unsealed; not runnable admission.
+async function publicationNoProviderInvariant(owner) {
+  // Global sweep owners require an entirely exclusive disposable database.
+  assert.equal(await owner.scheduleSolveJob.count(), 0, 'No global solve work is admitted');
+  assert.equal(await owner.webhookEndpoint.count(), 0, 'No webhook endpoint is admitted');
+  assert.equal(await owner.webhookDelivery.count(), 0, 'No webhook delivery is admitted');
+}
+
+function publicationRealProviders(require, tenantDb, configService) {
+  const {ModuleRef}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {SchedulesController}=require('../../apps/api/src/schedules/schedules.controller.ts');
+  const {MeteringService}=require('../../apps/api/src/billing/metering.service.ts');
+  const {FeatureAccessService}=require('../../apps/api/src/billing/feature-access.service.ts');
+  const {EmailDeliveryFeedbackService}=require('../../apps/api/src/email-delivery/email-delivery-feedback.service.ts');
+  const {SchedulePublishedEmailService}=require('../../apps/api/src/email-delivery/schedule-published-email.service.ts');
+  const {NotificationsService}=require('../../apps/api/src/notifications/notifications.service.ts');
+  const {MetricsService}=require('../../apps/api/src/common/metrics.service.ts');
+  const {WebhookDeliveryStore}=require('../../apps/api/src/webhooks/webhook-delivery.store.ts');
+  const {WebhooksService}=require('../../apps/api/src/webhooks/webhooks.service.ts');
+  assert.equal(configService.get('SCHEDULE_PUBLISHED_EMAIL_ENABLED'),'false');
+  for(const key of ['RESEND_API_KEY','RESEND_WEBHOOK_SECRET']) {
+    assert.equal(configService.get(key),undefined);assert.equal(process.env[key],undefined);
+  }
+  return {controller:SchedulesController, providers:[
+    {provide:ConfigService,useValue:configService},
+    {provide:TenantPrismaService,useValue:tenantDb},MetricsService,
+    {provide:MeteringService,useFactory:db=>new MeteringService(db),inject:[TenantPrismaService]},
+    {provide:FeatureAccessService,useFactory:(meter,db)=>new FeatureAccessService(meter,db),inject:[MeteringService,TenantPrismaService]},
+    {provide:EmailDeliveryFeedbackService,useFactory:(config,db)=>new EmailDeliveryFeedbackService(config,db),inject:[ConfigService,TenantPrismaService]},
+    {provide:SchedulePublishedEmailService,useFactory:(config,feedback)=>new SchedulePublishedEmailService(config,feedback),inject:[ConfigService,EmailDeliveryFeedbackService]},
+    {provide:NotificationsService,useFactory:(config,modules,email,db)=>new NotificationsService(config,modules,email,db),inject:[ConfigService,ModuleRef,SchedulePublishedEmailService,TenantPrismaService]},
+    {provide:WebhookDeliveryStore,useFactory:(config,db)=>new WebhookDeliveryStore(config,db),inject:[ConfigService,TenantPrismaService]},
+    {provide:WebhooksService,useFactory:(config,store,features)=>new WebhooksService(config,store,features),inject:[ConfigService,WebhookDeliveryStore,FeatureAccessService]},
+  ]};
+}
+
+async function publicationDurableSnapshot(owner, tenantId, scheduleIds) {
+  return owner.$transaction(async tx=>{
+    await tx.$executeRawUnsafe('SET TRANSACTION READ ONLY');
+    return {
+      tenant:await tx.tenant.findUniqueOrThrow({where:{id:tenantId},select:{usageCredits:true,creditDebt:true}}),
+      schedules:await tx.schedule.findMany({where:{tenantId,id:{in:scheduleIds}},select:{id:true,publicId:true,status:true,revision:true,publishedAt:true},orderBy:{id:'asc'}}),
+      credits:await tx.creditTransaction.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+      audits:await tx.auditLog.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+      changes:await tx.scheduleChangeSet.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+      intents:await tx.notificationOutbox.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+      notifications:await tx.notification.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+      deliveries:await tx.webhookDelivery.findMany({where:{tenantId},orderBy:{id:'asc'}}),
+    };
+  },{isolationLevel:'RepeatableRead',maxWait:5000,timeout:10000});
+}
+
+async function publicationAwaitLocalIntents(owner,tenantId,expected) {
+  // Real synchronous delivery/background sweep may race. Never require PENDING.
+  const deadline=Date.now()+15000;
+  while(true) {
+    const intents=await owner.notificationOutbox.findMany({where:{tenantId},orderBy:{dedupeKey:'asc'}});
+    assert.equal(intents.length,expected.length,'No additional logical intent');
+    assert.deepEqual(intents.map(row=>row.dedupeKey).sort(),expected.map(row=>row.dedupeKey).sort());
+    for(const row of intents) {
+      assert.equal(row.userId,expected.find(item=>item.dedupeKey===row.dedupeKey).userId);
+      assert.equal(row.notificationType,'SCHEDULE_PUBLISHED');
+      assert.ok(['PENDING','PROCESSING','DELIVERED'].includes(row.status),'Failure state is not a successful notification');
+    }
+    if(intents.every(row=>row.status==='DELIVERED')) {
+      const notifications=await owner.notification.findMany({where:{tenantId},orderBy:{id:'asc'}});
+      assert.equal(notifications.length,expected.length);
+      for(const row of intents) {
+        assert.equal(row.title,'');assert.equal(row.body,'');assert.equal(row.leaseUntil,null);assert.ok(row.deliveredAt);
+        const notification=notifications.find(item=>item.id===row.id);assert.ok(notification,'Real processor persists Notification using intent ID');
+        assert.equal(notification.userId,row.userId);assert.equal(notification.type,'SCHEDULE_PUBLISHED');
+        assert.equal(notification.title,'Schedule published');assert.ok(notification.body.length>0);
+      }
+      return {intents,notifications,emailDeliveryQualified:false};
+    }
+    assert.ok(Date.now()<deadline,'Real local notification settlement exceeded finite deadline');
+    await new Promise(done=>setTimeout(done,50));
+  }
+}
+
+export async function runNativeSchedulePublication(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const {createHmac}=require('node:crypto'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-publication-${nonce}`,`native-publication-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex');
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',SCHEDULE_PUBLISHED_EMAIL_ENABLED:'false',WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT:process.env.WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT,STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map([...Object.keys(configuration),'RESEND_API_KEY','RESEND_WEBHOOK_SECRET'].map(key=>[key,process.env[key]]));
+  delete process.env.RESEND_API_KEY;delete process.env.RESEND_WEBHOOK_SECRET;
+  const fixtureRows=new Map(),schedules=[],domainReadbacks=[];let location;
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=40);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['POST /v2/auth/password/verify','POST /v2/auth/pin/verify','GET /v2/auth/me','GET /v2/settings',
+    'PUT /v2/users/me/pin','GET /v2/auth/mfa/enrollment','POST /v2/auth/mfa/enrollment','PUT /v2/auth/mfa/enrollment',
+    'POST /v2/auth/mfa/verify','POST /v2/auth/refresh','POST /v2/auth/logout']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload,extraHeaders={})=>{
+    assert.ok(allowed.has(`${method} ${path}`)||(/^\/v2\/schedules\/[a-f0-9-]{36}\/(publish-plan|publications|reopenings|demand-windows)$/.test(path)&&['GET','POST','PUT'].includes(method))||(method==='GET'&&/^\/v2\/schedule-board\?date=2026-10-12&view=week$/.test(path)));
+    for(const key of Object.keys(extraHeaders))assert.ok(['Idempotency-Key','If-Match'].includes(key));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    Object.assign(headers,extraHeaders);
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const totp=base32=>{
+    let value=0,bits=0;const bytes=[];for(const letter of base32){const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(letter);assert.ok(n>=0);value=(value<<5)|n;bits+=5;if(bits>=8){bits-=8;bytes.push((value>>>bits)&255);}}
+    const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+    const digest=createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=digest[digest.length-1]&15;
+    return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
+  };
+  try{
+    Object.assign(process.env,configuration);
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    await publicationNoProviderInvariant(owner);assert.equal(await owner.notificationOutbox.count(),0);
+    const graph=publicationRealProviders(require,tenantDb,configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController,graph.controller],providers:[...graph.providers,
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+    // Synthetic rows are setup only; every publication/reopening is real HTTP.
+    const tenantId=tenantIds[0],scope={tenantId};
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'Private publication fixture',status:'ACTIVE',planTier:'GROWTH',stripeSubscriptionId:`sub-${nonce}-${id}`,stripeSubscriptionCurrentPeriodEnd:new Date(Date.now()+86400000),usageCredits:100}});
+    for(const id of tenantIds)await owner.creditTransaction.create({data:{id:`fixture-grant-${id}`,tenantId:id,amount:100,balanceAfter:100,reason:'Owned test credit grant'}});
+    const password=`Publication!${randomBytes(16).toString('hex')}`,passwordHash=await bcrypt.hash(password,10);
+    const permissionKeys=['auth:login_password','settings:read','locations:read','schedules:read','shifts:read','schedules:publish','schedules:write'];
+    const catalog=await owner.permission.findMany({where:{key:{in:permissionKeys}}});assert.deepEqual(catalog.map(x=>x.key).sort(),permissionKeys.slice().sort());
+    for(let i=0;i<5;i++) {
+      const tid=i===4?tenantIds[1]:tenantId,manager=i<2;
+      const user=await owner.user.create({data:{tenantId:tid,username:`pub${nonce.replaceAll('-','').slice(0,12)}${i}`,name:'Publication fixture',role:manager?'MANAGER':'STAFF',passwordHash,mfaEnabled:false,mfaBackupCodes:[],email:null}});users.push(user);
+      // Share the exact least-privilege fixture role within a tenant; Role names are tenant-unique.
+      const roleName=manager?'MANAGER':'STAFF';
+      let role=roles.find(row=>row.tenantId===tid&&row.name===roleName);
+      if(!role) {
+        role=await owner.role.create({data:{tenantId:tid,name:roleName,slug:`publication-${i}`,isSystem:true,legacyRole:roleName}});roles.push(role);
+        for(const permission of catalog.filter(x=>manager||!['schedules:publish','schedules:write'].includes(x.key)))await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});
+      }
+      await owner.roleAssignment.create({data:{tenantId:tid,userId:user.id,roleId:role.id}});
+    }
+    location=await owner.location.create({data:{tenantId,name:'Publication UTC',timezone:'UTC'}});
+    for(let day=0;day<7;day++)await owner.staffAvailability.create({data:{tenantId,userId:users[2].id,locationId:location.id,dayOfWeek:day,startTimeMinutes:540,endTimeMinutes:780}});
+    for(let i=0;i<2;i++) {
+      const date=`2026-10-${12+i}`,schedule=await owner.schedule.create({data:{tenantId,locationId:location.id,startDate:new Date(`${date}T00:00:00Z`),endDate:new Date(`2026-10-${13+i}T00:00:00Z`),status:'DRAFT'}});schedules.push(schedule);
+      await owner.shift.create({data:{tenantId,locationId:location.id,scheduleId:schedule.id,userId:users[2].id,startTime:new Date(`${date}T09:00:00Z`),endTime:new Date(`${date}T13:00:00Z`),role:'STAFF'}});
+      await owner.scheduleDemandWindow.create({data:{tenantId,locationId:location.id,scheduleId:schedule.id,startTime:new Date(`${date}T09:00:00Z`),endTime:new Date(`${date}T13:00:00Z`),requiredStaff:1}});
+    }
+    const accounts=[];
+    for(const user of users)accounts.push(await login(user,'password',password));
+    for(const i of [0,1]) {
+      const enrollment=await request('POST','/v2/auth/mfa/enrollment',accounts[i].cookies);ok(enrollment);
+      const confirmation=await request('PUT','/v2/auth/mfa/enrollment',accounts[i].cookies,{code:totp(enrollment.body.secret)});ok(confirmation);assert.equal(confirmation.body.mfaVerified,true);
+      assert.equal(await redis.get(`session_mfa:${accounts[i].sessionId}`),'1');
+    }
+    checkpoint('real-manager-staff-foreign-login-and-manager-TOTP');
+    const A=schedules[0],B=schedules[1],path=(s,tail)=>`/v2/schedules/${s.publicId}/${tail}`;
+    const board=async index=>{const response=await request('GET','/v2/schedule-board?date=2026-10-12&view=week',accounts[index].cookies);ok(response);return response.body.data;};
+    const etag=async s=>{const row=(await board(0)).schedules.find(x=>x.id===s.publicId);assert.ok(row);assert.equal(typeof row.etag,'string');return row.etag;};
+    const inspect=async()=>{const value=await publicationDurableSnapshot(owner,tenantId,schedules.map(x=>x.id));domainReadbacks.push(value);return value;};
+    for(const i of [2,3,4])assert.equal((await board(i)).shifts.length,0);
+    checkpoint('draft-invisible-to-assigned-unassigned-foreign-staff');
+    const initialPlan=await request('GET',path(A,'publish-plan'),accounts[0].cookies);ok(initialPlan);
+    assert.equal(initialPlan.body.scheduleId,A.publicId);assert.equal(initialPlan.body.matchingWebhookDeliveryCount,0);assert.equal(initialPlan.body.matchingWebhookDeliveryCost,0);
+    assert.equal(initialPlan.body.sufficientCredits,true);assert.ok(initialPlan.body.totalConfiguredCost>0);
+    checkpoint('authoritative-configured-cost-and-zero-webhook-plan');
+    const edit=await request('PUT',path(A,'demand-windows'),accounts[1].cookies,{windows:[{startTime:'2026-10-12T09:00:00.000Z',endTime:'2026-10-12T12:00:00.000Z',requiredStaff:1,skill:null}]},{'Idempotency-Key':`draft-edit-${nonce}`,'If-Match':await etag(A)});ok(edit);
+    const afterEdit=await inspect();const stale=await request('POST',path(A,'publications'),accounts[0].cookies,{acceptedContract:initialPlan.body.acceptedContract},{'Idempotency-Key':`stale-publish-${nonce}`});assert.ok([400,409].includes(stale.status));assert.deepEqual(await inspect(),afterEdit);
+    checkpoint('actual-second-manager-draft-edit-stale-contract-atomic-refusal');
+    const plan=await request('GET',path(A,'publish-plan'),accounts[0].cookies);ok(plan);assert.notEqual(plan.body.acceptedContract.version,initialPlan.body.acceptedContract.version);
+    const publishKey=`publish-A-${nonce}`,issued={acceptedContract:structuredClone(plan.body.acceptedContract)},before=await inspect();
+    const result=await request('POST',path(A,'publications'),accounts[0].cookies,issued,{'Idempotency-Key':publishKey});ok(result);assert.equal(result.body.id,A.publicId);assert.equal(result.body.status,'PUBLISHED');assert.deepEqual(result.body.settlement.acceptedContract,issued.acceptedContract);
+    assert.equal(result.body.settlement.creditsConsumed,plan.body.totalConfiguredCost);assert.equal(result.body.settlement.newBalance,before.tenant.usageCredits-plan.body.totalConfiguredCost);assert.deepEqual(result.body.settlement.ledgerIdentities.webhookDeliveries,[]);
+    const expected=[{dedupeKey:`schedule-published:${A.id}:revision-${issued.acceptedContract.version}:${users[2].id}`,userId:users[2].id}];
+    await publicationAwaitLocalIntents(owner,tenantId,expected);await publicationNoProviderInvariant(owner);
+    const settled=await inspect();assert.equal(settled.credits.length,before.credits.length+1);assert.equal(settled.audits.length,before.audits.length+1);assert.equal(settled.deliveries.length,0);
+    const debit=settled.credits.find(row=>row.id===result.body.settlement.ledgerIdentities.schedule);assert.ok(debit);assert.equal(debit.amount,-plan.body.totalConfiguredCost);assert.equal(debit.balanceAfter,result.body.settlement.newBalance);
+    assert.equal(settled.tenant.usageCredits,result.body.settlement.newBalance,'Actual PostgreSQL wallet equals issued settlement');
+    assert.equal(settled.tenant.creditDebt,before.tenant.creditDebt,'Publication does not create debt');
+    const beforeA=before.schedules.find(row=>row.id===A.id),settledA=settled.schedules.find(row=>row.id===A.id);
+    assert.equal(beforeA.status,'DRAFT');assert.equal(beforeA.revision,issued.acceptedContract.version);
+    assert.deepEqual(settledA,{...beforeA,status:'PUBLISHED',publishedAt:new Date(result.body.publishedAt)});
+    assert.deepEqual(settled.schedules.find(row=>row.id===B.id),before.schedules.find(row=>row.id===B.id),'Publishing A leaves B unchanged');
+    assert.deepEqual(settled.audits.filter(row=>before.audits.some(old=>old.id===row.id)),before.audits);
+    const publishAudits=settled.audits.filter(row=>!before.audits.some(old=>old.id===row.id));assert.equal(publishAudits.length,1);
+    const publishAudit=publishAudits[0];assert.equal(publishAudit.action,'SCHEDULE_PUBLISH');assert.equal(publishAudit.resource,'SchedulePublishRequest');
+    assert.equal(publishAudit.tenantId,tenantId);assert.equal(publishAudit.userId,users[0].id);assert.equal(publishAudit.actorUserId,users[0].id);assert.equal(publishAudit.actorTenantId,tenantId);
+    assert.equal(result.body.settlement.ledgerIdentities.schedule,`feature-usage-schedule-publish:${publishAudit.resourceId}`);
+    assert.deepEqual(publishAudit.newValue.acceptedContract,issued.acceptedContract);assert.deepEqual(publishAudit.newValue.response.settlement,result.body.settlement);
+
+    checkpoint('real-publication-single-configured-debit-and-original-balance');
+    checkpoint('real-inapp-intent-notification-settlement-email-disabled');
+    const staff=await board(2);assert.equal(staff.shifts.length,1);assert.equal(staff.shifts[0].scheduleId,A.publicId);
+    for(const i of [3,4])assert.equal((await board(i)).shifts.length,0);
+    checkpoint('published-only-own-assigned-staff-visibility');
+    const bPlan=await request('GET',path(B,'publish-plan'),accounts[0].cookies);ok(bPlan);
+    const replay=await request('POST',path(A,'publications'),accounts[0].cookies,issued,{'Idempotency-Key':publishKey});ok(replay);assert.deepEqual(replay.body.settlement,result.body.settlement);assert.deepEqual(await inspect(),settled);
+    checkpoint('same-key-A-replay-after-B-review-no-second-settlement');
+    const conflicting=await request('POST',path(A,'publications'),accounts[0].cookies,{acceptedContract:{...issued.acceptedContract,version:issued.acceptedContract.version+1}},{'Idempotency-Key':publishKey});assert.equal(conflicting.status,409);assert.deepEqual(await inspect(),settled);
+    checkpoint('changed-publication-body-same-key-conflicts');
+    const reopenKey=`reopen-A-${nonce}`,publishedEtag=await etag(A);
+    const missing=await request('POST',path(A,'reopenings'),accounts[0].cookies,undefined,{'Idempotency-Key':reopenKey});assert.equal(missing.status,428);assert.deepEqual(await inspect(),settled);
+    const reopened=await request('POST',path(A,'reopenings'),accounts[0].cookies,undefined,{'Idempotency-Key':reopenKey,'If-Match':publishedEtag});ok(reopened);
+    const afterReopen=await inspect();assert.equal(afterReopen.schedules.find(row=>row.id===A.id).status,'DRAFT');assert.deepEqual(afterReopen.credits,settled.credits);assert.deepEqual(afterReopen.audits.filter(row=>settled.audits.some(old=>old.id===row.id)),settled.audits);
+    const reopenAudits=afterReopen.audits.filter(row=>!settled.audits.some(old=>old.id===row.id));assert.equal(reopenAudits.length,1,'One exact reopening audit');
+    const reopenAudit=reopenAudits[0];assert.equal(reopenAudit.action,'SCHEDULE_REOPENED');assert.equal(reopenAudit.resource,'schedule');assert.equal(reopenAudit.resourceId,A.publicId);
+    assert.equal(reopenAudit.tenantId,tenantId);assert.equal(reopenAudit.userId,users[0].id);assert.equal(reopenAudit.actorUserId,users[0].id);assert.equal(reopenAudit.actorTenantId,tenantId);
+    assert.deepEqual(reopenAudit.oldValue,{status:'PUBLISHED',revision:settledA.revision});assert.deepEqual(reopenAudit.newValue,{status:'DRAFT',revision:settledA.revision+1});
+    assert.deepEqual(afterReopen.schedules.find(row=>row.id===A.id),{...settledA,status:'DRAFT',publishedAt:null,revision:settledA.revision+1});
+    assert.deepEqual(afterReopen.schedules.find(row=>row.id===B.id),settled.schedules.find(row=>row.id===B.id));assert.deepEqual(afterReopen.tenant,settled.tenant);
+    assert.deepEqual(afterReopen.intents,settled.intents);assert.equal(afterReopen.changes.length,settled.changes.length+1);
+    for(const i of [2,3,4])assert.equal((await board(i)).shifts.length,0);
+    checkpoint('bodyless-reopen-current-etag-history-preserved-draft-hidden');
+    const newer=await etag(A);assert.notEqual(newer,publishedEtag);const reopenReplay=await request('POST',path(A,'reopenings'),accounts[0].cookies,undefined,{'Idempotency-Key':reopenKey,'If-Match':newer});ok(reopenReplay);assert.deepEqual(reopenReplay.body,reopened.body);assert.deepEqual(await inspect(),afterReopen);
+    checkpoint('same-schedule-reopen-key-replays-with-newer-etag');
+    const other=await request('POST',path(B,'reopenings'),accounts[0].cookies,undefined,{'Idempotency-Key':reopenKey,'If-Match':await etag(B)});assert.equal(other.status,409);assert.equal(other.body.code,'idempotency_key_reused');assert.deepEqual(await inspect(),afterReopen);
+    checkpoint('reopen-same-key-different-schedule-conflicts');
+    await publicationNoProviderInvariant(owner);assert.equal(checks.length,12);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    let nativeClosed=false,retainedClosed=false;
+    await attempt(async()=>{if(app)await bounded(app.close(),'Publication native close',15000);nativeClosed=true;});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Publication real retained hooks close',15000);retainedClosed=true;});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Publication native Redis close');});
+    await attempt(async()=>{
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{socket.once('close',done);socket.destroy();}))),'Publication socket close events',15000);
+      assert.ok(nativeClosed&&retainedClosed,'Outer socket reap does not substitute for successful real hooks');
+      assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;
+    });
+    await attempt(async()=>{
+      assert.equal(closed,true,'Never delete fixtures while real owner hooks remain unsettled');
+      await publicationNoProviderInvariant(owner);if(redis.status==='ready')await snapshotKeys();
+      const userIds=users.map(x=>x.id),roleIds=roles.map(x=>x.id);
+      const sessions=await owner.session.findMany({where:{userId:{in:userIds}}});const sessionIds=[...new Set([...sessions.map(x=>x.id),...issuedSessions.map(x=>x.id)])];
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      // Freeze exact nonce-owned roster before disposal; no unbounded deletes.
+      const models=['notification','notificationOutbox','auditLog','creditTransaction','scheduleChangeSet','shift','scheduleDemandWindow','schedule','staffAvailability','tenantSetting'];
+      for(const model of models) {
+        const rows=await owner[model].findMany({where:{tenantId:{in:tenantIds}},select:{id:true,tenantId:true}});
+        for(const row of rows)assert.ok(tenantIds.includes(row.tenantId));fixtureRows.set(model,rows.map(x=>x.id));
+      }
+      const audits=await owner.auditLog.findMany({where:{id:{in:fixtureRows.get('auditLog')}}});
+      const allowedActions=['SESSION_CREATED','MFA_ENABLED','SCHEDULE_PUBLISH','SCHEDULE_REOPENED','SCHEDULE_DEMAND_REPLACED'];
+      for(const audit of audits)assert.ok(allowedActions.includes(audit.action),'Unexpected audit retained for review');
+      const credits=await owner.creditTransaction.findMany({where:{id:{in:fixtureRows.get('creditTransaction')}}});
+      for(const credit of credits)assert.ok(credit.id===`fixture-grant-${credit.tenantId}`||credit.id.startsWith('feature-usage-schedule-publish:'),'Unexpected ledger retained');
+      const claims=await owner.mfaTotpClaim.findMany({where:{userId:{in:userIds}}});assert.ok(claims.length<=2);
+      for(const claim of claims){assert.equal(claim.tenantId,tenantIds[0]);assert.ok(users.slice(0,2).some(x=>x.id===claim.userId));}
+      await owner.$transaction(async tx=>{
+        // Parent-authorized test disposal exception only, after real hooks and
+        // financial assertions. No publication/setup constraints are bypassed.
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        for(const model of models)await tx[model].deleteMany({where:{id:{in:fixtureRows.get(model)},tenantId:{in:tenantIds}}});
+        for(const claim of claims)await tx.mfaTotpClaim.deleteMany({where:{id:claim.id,tenantId:claim.tenantId,userId:claim.userId}});
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.roleAssignment.deleteMany({where:{tenantId:{in:tenantIds},userId:{in:userIds},roleId:{in:roleIds}}});await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});await tx.role.deleteMany({where:{id:{in:roleIds},tenantId:{in:tenantIds}}});
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:tenantIds}}});if(location)await tx.location.deleteMany({where:{id:location.id,tenantId:tenantIds[0]}});await tx.tenant.deleteMany({where:{id:{in:tenantIds},slug:{in:tenantIds}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.tenant.count({where:{id:{in:tenantIds}}}),0);for(const model of models)assert.equal(await owner[model].count({where:{id:{in:fixtureRows.get(model)}}}),0);assert.equal(await owner.mfaTotpClaim.count({where:{userId:{in:userIds}}}),0);databaseCleaned=true;
+      if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact publication Redis cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Publication Redis quit');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Publication Prisma disconnect'));
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const readbackBytes=Buffer.from(JSON.stringify({sourceSha:context.sourceSha,runId:context.runId,tenantIds,domainReadbacks},null,2)+'\n');assert.ok(readbackBytes.length<=2*1024*1024);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-publication-readbacks-${nonce}.json`,readbackBytes,{flag:'wx',mode:0o600}),'Publication SQL readbacks');
+      const receipt={version:1,kind:'native-schedule-publication-local-integration',runId:context.runId,sourceSha:context.sourceSha,releaseQualified:false,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',expectedCheckpointCount:12,completedCheckpointCount:checks.length,checkpoints:checks,
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        lifecycle:{nativeClosed,retainedClosed,outerReapingIsNotHealthyClose:true},
+        limits:['Real narrow owner composition, not fullAppModule/browser/TLS','Email explicitly disabled; local DELIVERED is not email/provider proof','No RabbitMQ or webhook transport; globally empty solve/endpoints','Recorded successful-response replay only, not transport response-loss','After-wait authority/production stalled-shutdown qualification remains pending','Transaction-local exact synthetic fixture disposal is not immutable-delete product proof'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-schedule-publication-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Publication durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native publication or owned cleanup failed; preserve first attempt');
+}
+
+/** Scoped native retention HTTP/PG qualification; no provider or operating-time claim. */
+export async function runNativeRetentionPurge(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const {createHmac}=require('node:crypto'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AdminController}=require('../../apps/api/src/admin/admin.controller.ts');
+  const {MetricsService}=require('../../apps/api/src/common/metrics.service.ts');
+  const {MeteringService}=require('../../apps/api/src/billing/metering.service.ts');
+  const {readdir,rmdir}=require('node:fs/promises');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-retention-auth-${nonce}`,`native-retention-auth-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex'),serviceToken=randomBytes(32).toString('base64url');
+  let retentionTenants=[],retentionUsers=[],retentionSignupIds=[];
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',RESEND_API_KEY:'',STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET,RETENTION_PURGE_SERVICE_TOKEN:serviceToken,RETENTION_PURGE_SERVICE_TOKEN_FILE:'',
+    TENANT_EXPORT_ARTIFACT_DIRECTORY:resolve(context.workspace,`retention-exports-${nonce}`)};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map(Object.keys(configuration).map(key=>[key,process.env[key]]));
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=40);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['POST /v2/auth/password/verify','POST /v2/auth/pin/verify','GET /v2/auth/me','GET /v2/settings',
+    'PUT /v2/users/me/pin','GET /v2/auth/mfa/enrollment','POST /v2/auth/mfa/enrollment','PUT /v2/auth/mfa/enrollment',
+    'POST /v2/auth/mfa/verify','POST /v2/auth/refresh','POST /v2/auth/logout','POST /v2/admin/retention/purge-expired']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload,bearer)=>{
+    assert.ok(allowed.has(`${method} ${path}`));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(bearer)headers.Authorization=`Bearer ${bearer}`;
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const totp=base32=>{
+    let value=0,bits=0;const bytes=[];for(const letter of base32){const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(letter);assert.ok(n>=0);value=(value<<5)|n;bits+=5;if(bits>=8){bits-=8;bytes.push((value>>>bits)&255);}}
+    const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+    const digest=createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=digest[digest.length-1]&15;
+    return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
+  };
+  try{
+    Object.assign(process.env,configuration);
+    assert.equal(await owner.tenant.count(),0,'Exclusive retention fixture requires no existing tenant or unrelated global sweep work');
+    assert.equal(await owner.onboardingSignupAttempt.count(),0);assert.equal(await owner.staffInvitationOutbox.count(),0);
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController,AdminController],providers:[MetricsService,MeteringService,
+      {provide:ConfigService,useValue:configService},{provide:TenantPrismaService,useValue:tenantDb},
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+    const day=86400000,now=new Date(),old=new Date(now.getTime()-31*day),recent=new Date(now.getTime()-29*day);
+    const ownedTenants=[],fixtureUsers=[],fixedTables=['AuditLog','BillingEvent','StripeUsageEvent','CreditTransaction','PayrollLockedEntry','PayrollTimeCardApproval','TimeCard','PayrollPeriod','PayrollPolicyVersion','User','TenantSetting','Tenant'];
+    // Roster is shared with finally before fixture creation starts.
+    retentionTenants=ownedTenants;retentionUsers=fixtureUsers;
+    const tenant=async(label,data={})=>{const id=`native-retention-${nonce}-${label}`;ownedTenants.push(id);await owner.tenant.create({data:{id,slug:id,name:'Retention fixture',status:'ACTIVE',...data}});return id;};
+    const person=async(tenantId,label)=>{const id=`retention-user-${nonce}-${label}`;fixtureUsers.push(id);return owner.user.create({data:{id,tenantId,name:'Retention fixture',role:'STAFF',mfaEnabled:false,mfaBackupCodes:[]}});};
+    const snapshot=async ids=>{
+      const result={};for(const table of fixedTables){const column=table==='Tenant'?'id':'tenantId';result[table]=await owner.$queryRawUnsafe(`SELECT to_jsonb(t) AS row FROM "${table}" t WHERE "${column}" = ANY($1::text[]) ORDER BY "id"`,ids);}
+      return result;
+    };
+    const emptyBilling=async()=>{assert.equal(await owner.tenantDeletionBillingReconciliation.count({where:{state:'PENDING'}}),0,'No pending billing may enter this no-provider slice');assert.equal(await owner.tenantExportJob.count(),0,'No unrelated export work permitted');};
+    const eligibility=async(stage='application_data')=>{await emptyBilling();const {buildExpiredTenantApplicationDataWhere,buildExpiredTenantRetentionWhere}=require('../../apps/api/src/admin/tenant-account-lifecycle.ts');return (await owner.tenant.findMany({where:stage==='application_data'?buildExpiredTenantApplicationDataWhere(new Date()):buildExpiredTenantRetentionWhere(new Date()),orderBy:[{deletedAt:'asc'},{id:'asc'}],select:{id:true}})).map(row=>row.id);};
+    const invoke=async(body,bearer=serviceToken,cookies=jar())=>{await emptyBilling();return request('POST','/v2/admin/retention/purge-expired',cookies,body,bearer);};
+    const good=response=>{ok(response);assert.equal(response.body.failedTenantCount,0);assert.equal(response.body.skippedTenantCount,0);assert.deepEqual(response.body.pendingDeletionBillingCandidates,[]);return response.body;};
+    const hash=()=>randomBytes(32).toString('hex');
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'Retention auth fixture',status:'ACTIVE'}});
+    const password=`Retention!${randomBytes(16).toString('hex')}`,passwordHash=await bcrypt.hash(password,10);
+    for(const [index,tenantId]of tenantIds.entries())users.push(await owner.user.create({data:{tenantId,username:`retention${nonce.replaceAll('-','').slice(0,12)}${index}`,name:'Retention authority',role:'STAFF',passwordHash,mfaEnabled:false,mfaBackupCodes:[]}}));
+    const permissions=await owner.permission.findMany({where:{key:{in:['auth:login_password','settings:read','admin_portal:access']}}});assert.equal(permissions.length,3);
+    for(const [index,user]of users.entries()){const role=await owner.role.create({data:{tenantId:user.tenantId,name:'Retention authority',slug:'retention-authority',legacyRole:'STAFF'}});roles.push(role);for(const permission of permissions.filter(row=>index===0||row.key!=='admin_portal:access'))await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await owner.roleAssignment.create({data:{tenantId:user.tenantId,userId:user.id,roleId:role.id}});}
+    const admin=await login(users[0],'password',password),customer=await login(users[1],'password',password);
+    assert.equal(admin.response.body.requiresMfa,true);const enrollment=await request('POST','/v2/auth/mfa/enrollment',admin.cookies);ok(enrollment);
+    ok(await request('PUT','/v2/auth/mfa/enrollment',admin.cookies,{code:totp(enrollment.body.secret)}));
+    const adminBearer=decodeURIComponent(admin.cookies.get('access_token')),customerBearer=decodeURIComponent(customer.cookies.get('access_token'));
+    checkpoint('actual-admin-MFA-customer-credentials-and-service-token-authorities');
+    assert.deepEqual(await eligibility(),[]);assert.deepEqual(await eligibility('retained_records'),[]);
+    const paging=[];for(let i=0;i<26;i++)paging.push(await tenant(`page-${String(i).padStart(2,'0')}`,{status:'PURGED',deletedAt:old}));
+    const protectedIds=[];
+    protectedIds.push(await tenant('recent',{status:'PURGED',deletedAt:recent}));protectedIds.push(await tenant('active'));protectedIds.push(await tenant('customer-cancelled',{status:'CANCELLED'}));protectedIds.push(await tenant('archived',{status:'CANCELLED',deletedAt:old}));protectedIds.push(await tenant('already',{status:'PURGED',deletedAt:old,applicationDataPurgedAt:now}));
+    const held=await tenant('held',{status:'PURGED',deletedAt:old});protectedIds.push(held);
+    await owner.$transaction(async tx=>{await tx.$executeRaw`SELECT set_current_platform_admin(true, ${configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET})`;await tx.tenant.update({where:{id:held},data:{retentionLegalHoldAt:now,retentionLegalHoldReason:'Owned retention fixture hold',retentionLegalHoldByUserId:users[0].id}});});
+    const ancillary=await tenant('ancillary-active'),ancillaryUser=await person(ancillary,'ancillary');
+    const ancillarySessions=[];
+    for(const [label,expiresAt,revokedAt]of [['expired-old',new Date(now.getTime()-2*day),null],['expired-fresh',new Date(now.getTime()-3600000),null],['revoked-old',new Date(now.getTime()+day),new Date(now.getTime()-31*day)],['revoked-fresh',new Date(now.getTime()+day),new Date(now.getTime()-day)]]){
+      const row=await owner.session.create({data:{userId:ancillaryUser.id,refreshToken:hash(),ipAddress:'192.0.2.2',userAgent:'ancillary fixture',expiresAt,revokedAt}});ancillarySessions.push({label,row});
+    }
+    const oldReset=await owner.passwordResetToken.create({data:{tenantId:ancillary,userId:ancillaryUser.id,tokenHash:hash(),expiresAt:new Date(now.getTime()-2*day)}}),freshReset=await owner.passwordResetToken.create({data:{tenantId:ancillary,userId:ancillaryUser.id,tokenHash:hash(),expiresAt:new Date(now.getTime()-3600000)}});
+    const ancillaryRead=async()=>({sessions:await owner.session.findMany({where:{userId:ancillaryUser.id},orderBy:{id:'asc'}}),resets:await owner.passwordResetToken.findMany({where:{tenantId:ancillary},orderBy:{id:'asc'}})});
+    const signupOld=await owner.onboardingSignupAttempt.create({data:{identityOrganizationHash:hash(),identityHash:hash(),organizationHash:hash(),challengeHash:hash(),otpHash:hash(),otpSentAt:new Date(now.getTime()-3*day),otpExpiresAt:new Date(now.getTime()-2*day),updatedAt:new Date(now.getTime()-2*day)}});retentionSignupIds.push(signupOld.id);
+    const signupFresh=await owner.onboardingSignupAttempt.create({data:{identityOrganizationHash:hash(),identityHash:hash(),organizationHash:hash(),challengeHash:hash(),otpHash:hash(),otpSentAt:now,otpExpiresAt:new Date(now.getTime()+day)}});retentionSignupIds.push(signupFresh.id);
+    const invitationUser=await person(ancillary,'ancillary-invitation');
+    const invitations=[];for(const [user,deadline]of [[ancillaryUser,new Date(now.getTime()-day)],[invitationUser,new Date(now.getTime()+day)]])invitations.push(await owner.staffInvitationOutbox.create({data:{tenantId:ancillary,userId:user.id,recipientHash:hash(),status:'DELIVERED',deliveredAt:new Date(now.getTime()-2*day),payloadErasedAt:new Date(now.getTime()-2*day),diagnosticsEraseAfter:deadline,providerMessageId:'synthetic-retention-diagnostic',lastErrorCode:'FIXTURE_DIAGNOSTIC',retryAt:null}}));
+    const ancillaryBefore=await ancillaryRead();
+    assert.deepEqual(await eligibility(),[...paging].sort());const initial=await snapshot(ownedTenants),protectedBefore=await snapshot(protectedIds);
+    const dry={dryRun:true,stage:'application_data'};
+    for(const bearer of [undefined,'not-the-service-token',customerBearer]){const denied=await invoke(dry,bearer===undefined?null:bearer);assert.equal(denied.status,bearer===customerBearer?403:401);assert.deepEqual(await snapshot(ownedTenants),initial);}
+    assert.equal((await invoke(dry,null,admin.cookies)).status,401);
+    for(const body of [{...dry,asOf:now.toISOString()},{...dry,limit:1},{...dry,stage:'invalid'},{...dry,continuation:{deletedAt:'invalid',id:'x'}}]){assert.equal((await invoke(body)).status,422);assert.deepEqual(await snapshot(ownedTenants),initial);}
+    checkpoint('operator-bearer-authority-and-v2-schema-refusals-no-tenant-change');
+    const first=good(await invoke(dry));assert.equal(first.limit,25);assert.equal(first.dryRun,true);assert.deepEqual(first.candidates.map(row=>row.id),[...paging].sort().slice(0,25));assert.deepEqual(first.nextContinuation,{deletedAt:old.toISOString(),id:[...paging].sort()[24]});
+    const second=good(await invoke({...dry,continuation:first.nextContinuation}));assert.deepEqual(second.candidates.map(row=>row.id),[...paging].sort().slice(25));assert.equal(second.nextContinuation,null);assert.deepEqual(await snapshot(ownedTenants),initial);assert.deepEqual(await ancillaryRead(),ancillaryBefore);assert.equal(await owner.onboardingSignupAttempt.count({where:{id:{in:retentionSignupIds}}}),2);for(const row of invitations)assert.deepEqual(await owner.staffInvitationOutbox.findUniqueOrThrow({where:{id:row.id}}),row);checkpoint('exact-26-candidate-dryrun-stable-25-plus-one-pagination');
+    for(const executeConfirmation of [undefined,'wrong-confirmation']){assert.equal((await invoke({dryRun:false,stage:'application_data',...(executeConfirmation?{executeConfirmation}:{})})).status,422);assert.deepEqual(await snapshot(ownedTenants),initial);}
+    const execute={dryRun:false,stage:'application_data',executeConfirmation:'purge-expired-application-data'};
+    const executedFirst=good(await invoke(execute));assert.deepEqual(executedFirst.applicationDataPurgedTenants.map(row=>row.id),[...paging].sort().slice(0,25));
+    const betweenPageReset=await owner.passwordResetToken.create({data:{tenantId:ancillary,userId:ancillaryUser.id,tokenHash:hash(),expiresAt:new Date(now.getTime()-2*day)}});
+    const executedSecond=good(await invoke({...execute,continuation:executedFirst.nextContinuation}));assert.deepEqual(executedSecond.applicationDataPurgedTenants.map(row=>row.id),[...paging].sort().slice(25));
+    assert.deepEqual(await owner.passwordResetToken.findUniqueOrThrow({where:{id:betweenPageReset.id}}),betweenPageReset,'Continuation must not run first-page dormant sweep');
+    for(const id of paging){const row=await owner.tenant.findUniqueOrThrow({where:{id}});assert.ok(row.applicationDataPurgedAt);assert.equal(row.status,'PURGED');assert.equal(row.slug,`deleted-${id}`);}
+    assert.deepEqual(await snapshot(protectedIds),protectedBefore);const paged=await snapshot(ownedTenants);assert.equal(good(await invoke(execute)).processedTenantCount,0);assert.deepEqual(await snapshot(ownedTenants),paged);assert.equal(await owner.passwordResetToken.findUnique({where:{id:betweenPageReset.id}}),null,'Fresh first-page replay must sweep eligible sentinel');checkpoint('confirmed-pages-tombstones-protected-status-hold-and-safe-replay');
+    assert.deepEqual(await ancillaryRead(),{sessions:ancillarySessions.filter(item=>item.label.endsWith('fresh')).map(item=>item.row).sort((a,b)=>a.id.localeCompare(b.id)),resets:[freshReset]});
+    assert.equal(await owner.passwordResetToken.findUnique({where:{id:oldReset.id}}),null);checkpoint('first-page-dormant-session-and-reset-sweep-independent-protected-readback');
+    assert.equal(await owner.onboardingSignupAttempt.findUnique({where:{id:signupOld.id}}),null);assert.deepEqual(await owner.onboardingSignupAttempt.findUniqueOrThrow({where:{id:signupFresh.id}}),signupFresh);
+    const erasedInvitation=await owner.staffInvitationOutbox.findUniqueOrThrow({where:{id:invitations[0].id}});assert.ok(erasedInvitation.diagnosticsErasedAt);assert.deepEqual({...erasedInvitation,diagnosticsErasedAt:null,updatedAt:invitations[0].updatedAt},{...invitations[0],providerMessageId:null,lastErrorCode:null});assert.deepEqual(await owner.staffInvitationOutbox.findUniqueOrThrow({where:{id:invitations[1].id}}),invitations[1]);
+    checkpoint('signup-expiry-and-invitation-diagnostic-minimization-protected-pairs');
+    // Subsequent eligible fixture groups are created only after paging finishes.
+    const payroll=async(id,kind,year=2026)=>{
+      const staff=await person(id,id+'-'+kind),reviewer=await person(id,id+'-'+kind+'-reviewer');
+      const policy=await owner.payrollPolicyVersion.create({data:{tenantId:id,version:1,timeZone:'UTC',cadence:'WEEKLY',anchorDate:new Date(`${year}-06-01`),effectiveFrom:new Date(`${year}-06-01`),operationId:randomUUID(),requestHash:hash(),createdByUserId:reviewer.id}});
+      const period=await owner.payrollPeriod.create({data:{tenantId:id,policyVersionId:policy.id,localStartDate:new Date(`${year}-06-01`),localEndDateExclusive:new Date(`${year}-06-08`),startsAt:new Date(`${year}-06-01`),endsAt:new Date(`${year}-06-08`),timeZone:'UTC',cadence:'WEEKLY'}});
+      if(kind==='nonlocked')return {staff,reviewer,policy,period};
+      const clockInAt=new Date(`${year}-06-02T09:00:00Z`),clockOutAt=new Date(`${year}-06-02T10:00:00Z`);
+      const card=await owner.timeCard.create({data:{tenantId:id,userId:staff.id,payrollPeriodId:period.id,clockInAt,clockOutAt:kind==='open'?null:clockOutAt,status:kind==='open'?'OPEN':'CLOSED',workTimeZone:'UTC',revision:1,breakMinutes:0}});
+      if(kind==='open')return {staff,reviewer,policy,period,card};
+      const approvedAt=new Date(`${year}-06-08T01:00:00Z`);await owner.payrollPeriod.update({where:{id:period.id},data:{status:'REVIEW',revision:1,reviewStartedAt:approvedAt,reviewStartedByUserId:reviewer.id}});
+      await owner.payrollTimeCardApproval.create({data:{tenantId:id,periodId:period.id,timeCardId:card.id,timeCardRevision:1,decision:'APPROVED',operationId:randomUUID(),requestHash:hash(),decidedAt:approvedAt,decidedByUserId:reviewer.id}});
+      const entry=await owner.payrollLockedEntry.create({data:{tenantId:id,periodId:period.id,sequence:0,sourceType:'TIME_CARD',sourceId:card.id,sourceRevision:1,employeeId:staff.id,workTimeZone:'UTC',clockInAt,clockOutAt,breakMinutes:0,payableMinutes:60,approvedAt,approvedByUserId:reviewer.id,canonicalSha256:hash()}});
+      await owner.payrollPeriod.update({where:{id:period.id},data:{status:'LOCKED',revision:2,lockedAt:new Date(`${year}-06-08T02:00:00Z`),lockedByUserId:reviewer.id,lockOperationId:randomUUID(),lockRequestHash:hash(),lockedEntrySha256:hash(),lockedEntryCount:1,totalPayableMinutes:60}});
+      return {staff,reviewer,policy,period,card,entry};
+    };
+    const valid=await tenant('financial');const pf=await payroll(valid,'valid');
+    const billing=await owner.billingEvent.create({data:{tenantId:valid,type:'fixture.invoice',amount:123,currency:'usd',metadata:{private:'fixture'}}});
+    const usage=await owner.stripeUsageEvent.create({data:{tenantId:valid,metric:'ACTIVE_STAFF',periodStart:new Date('2026-06-01'),periodEnd:new Date('2026-07-01'),quantity:2,eventName:'fixture',stripeCustomerId:'fixture-no-provider',identifier:randomUUID(),idempotencyKey:randomUUID(),status:'SENT',sentAt:now,metadata:{private:'fixture'},lastError:'fixture diagnostic'}});
+    const credit=await owner.creditTransaction.create({data:{tenantId:valid,amount:1,reason:'Owned retention fixture',balanceAfter:1}});
+    const audit=await owner.auditLog.create({data:{tenantId:valid,userId:pf.staff.id,actorUserId:pf.reviewer.id,actorTenantId:valid,action:'RETENTION_FIXTURE',resource:'User',resourceId:pf.staff.id,oldValue:{private:'before'},newValue:{private:'after'},ipAddress:'192.0.2.1',userAgent:'private fixture'}});
+    await owner.tenant.update({where:{id:valid},data:{status:'PURGED',deletedAt:old}});assert.deepEqual(await eligibility(),[valid]);
+    const savedPeriod=await owner.payrollPeriod.findUniqueOrThrow({where:{id:pf.period.id}}),savedEntry=await owner.payrollLockedEntry.findUniqueOrThrow({where:{id:pf.entry.id}});
+    assert.equal(good(await invoke(execute)).processedTenantCount,1);
+    assert.deepEqual(await owner.billingEvent.findUniqueOrThrow({where:{id:billing.id}}),{...billing,metadata:null});
+    const usageAfter=await owner.stripeUsageEvent.findUniqueOrThrow({where:{id:usage.id}});assert.ok(usageAfter.updatedAt>=usage.updatedAt);assert.deepEqual({...usageAfter,updatedAt:usage.updatedAt},{...usage,metadata:null,lastError:null});
+    assert.deepEqual(await owner.creditTransaction.findUniqueOrThrow({where:{id:credit.id}}),credit);assert.deepEqual(await owner.payrollPeriod.findUniqueOrThrow({where:{id:pf.period.id}}),savedPeriod);assert.deepEqual(await owner.payrollLockedEntry.findUniqueOrThrow({where:{id:pf.entry.id}}),savedEntry);
+    assert.equal(await owner.timeCard.count({where:{tenantId:valid}}),0);assert.equal(await owner.payrollTimeCardApproval.count({where:{tenantId:valid}}),0);assert.equal(await owner.user.count({where:{tenantId:valid}}),0);
+    const redacted=await owner.auditLog.findUniqueOrThrow({where:{id:audit.id}});for(const field of ['id','tenantId','action','resource','resourceId','actorTenantId'])assert.equal(redacted[field],audit[field]);assert.deepEqual(redacted.createdAt,audit.createdAt);assert.equal(redacted.userId,null);assert.match(redacted.actorUserId,/^deleted-user:/);for(const field of ['oldValue','newValue','ipAddress','userAgent'])assert.equal(redacted[field],null);
+    checkpoint('real-locked-payroll-financial-preservation-and-exact-private-field-minimization');
+    const historical=[];
+    for(const label of ['retained-eight','retained-six','retained-held']){
+      const id=await tenant(label);const hp=await payroll(id,'valid',2017);
+      await owner.billingEvent.create({data:{tenantId:id,type:'fixture.historical',amount:123,currency:'usd',metadata:{private:'historical'},createdAt:new Date('2017-07-01')}});
+      await owner.stripeUsageEvent.create({data:{tenantId:id,metric:'ACTIVE_STAFF',periodStart:new Date('2017-06-01'),periodEnd:new Date('2017-07-01'),quantity:2,eventName:'fixture',stripeCustomerId:'fixture-no-provider',identifier:randomUUID(),idempotencyKey:randomUUID(),status:'SENT',sentAt:new Date('2017-07-01'),metadata:{private:'historical'},lastError:'historical diagnostic'}});
+      await owner.creditTransaction.create({data:{tenantId:id,amount:1,reason:'Owned historical retention fixture',balanceAfter:1,createdAt:new Date('2017-07-01')}});
+      await owner.auditLog.create({data:{tenantId:id,userId:hp.staff.id,actorUserId:hp.reviewer.id,actorTenantId:id,action:'RETENTION_HISTORICAL_FIXTURE',resource:'User',resourceId:hp.staff.id,newValue:{private:'historical'},createdAt:new Date('2017-07-01')}});
+      await owner.tenant.update({where:{id},data:{status:'PURGED',deletedAt:old}});historical.push(id);
+    }
+    assert.deepEqual(await eligibility(),[...historical].sort());
+    const historicalApplication=good(await invoke(execute));assert.deepEqual(historicalApplication.applicationDataPurgedTenants.map(row=>row.id).sort(),[...historical].sort());
+    for(const id of historical){
+      for(const model of ['billingEvent','stripeUsageEvent','creditTransaction','auditLog','payrollLockedEntry','payrollPeriod','payrollPolicyVersion'])assert.equal(await owner[model].count({where:{tenantId:id}}),1,`${model} historical retained row must exist`);
+      for(const model of ['user','timeCard','payrollTimeCardApproval'])assert.equal(await owner[model].count({where:{tenantId:id}}),0);
+    }
+    const [oldRetained,youngRetained,heldOld]=historical;
+
+    const failures=[];
+    for(const kind of ['open','nonlocked','missing-snapshot']){
+      const id=await tenant(kind);if(kind==='missing-snapshot'||kind==='open'){const staff=await person(id,kind);await owner.timeCard.create({data:{tenantId:id,userId:staff.id,clockInAt:new Date('2026-06-02T09:00:00Z'),clockOutAt:kind==='open'?null:new Date('2026-06-02T10:00:00Z'),status:kind==='open'?'OPEN':'CLOSED',workTimeZone:'UTC'}});assert.equal(await owner.payrollPeriod.count({where:{tenantId:id}}),0);}else await payroll(id,kind);
+      await owner.auditLog.create({data:{tenantId:id,action:'RETENTION_REFUSAL_FIXTURE',resource:'Tenant',resourceId:id,newValue:{preserve:true}}});await owner.tenant.update({where:{id},data:{status:'PURGED',deletedAt:old}});failures.push(id);
+    }
+    assert.deepEqual((await eligibility()).sort(),[...failures].sort());const refusalBefore=await snapshot(failures);
+    const sweptDespiteRefusal=await owner.passwordResetToken.create({data:{tenantId:ancillary,userId:ancillaryUser.id,tokenHash:hash(),expiresAt:new Date(now.getTime()-2*day)}});
+    const refusedPurge=await invoke(execute);ok(refusedPurge);assert.equal(refusedPurge.body.failedTenantCount,3);assert.deepEqual(refusedPurge.body.failedTenants.map(row=>row.id).sort(),[...failures].sort());assert.equal(refusedPurge.body.processedTenantCount,0);assert.deepEqual(await snapshot(failures),refusalBefore);
+    assert.equal(await owner.passwordResetToken.findUnique({where:{id:sweptDespiteRefusal.id}}),null);
+    checkpoint('payroll-pre-redaction-refusal-preserves-candidates-ancillary-sweep-commits-separately');
+    // These remain eligible but cannot pollute retained_records selection: age31days.
+    const eight=new Date(now);eight.setUTCFullYear(eight.getUTCFullYear()-8);const six=new Date(now);six.setUTCFullYear(six.getUTCFullYear()-6);
+    for(const [id,deletedAt]of [[oldRetained,eight],[youngRetained,six],[heldOld,eight]])await owner.tenant.update({where:{id},data:{deletedAt}});
+    await owner.$transaction(async tx=>{await tx.$executeRaw`SELECT set_current_platform_admin(true, ${configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET})`;await tx.tenant.update({where:{id:heldOld},data:{retentionLegalHoldAt:now,retentionLegalHoldReason:'Owned historical hold',retentionLegalHoldByUserId:users[0].id}});});
+    assert.deepEqual(await eligibility('retained_records'),[oldRetained]);const retainedBefore=await snapshot([oldRetained,youngRetained,heldOld]);
+    const retainedDry=good(await invoke({dryRun:true,stage:'retained_records'}));assert.deepEqual(retainedDry.candidates.map(row=>row.id),[oldRetained]);assert.deepEqual(await snapshot([oldRetained,youngRetained,heldOld]),retainedBefore);
+    assert.equal((await invoke({dryRun:false,stage:'retained_records',executeConfirmation:'purge-expired-retained-records'})).status,403);assert.deepEqual(await snapshot([oldRetained,youngRetained,heldOld]),retainedBefore);checkpoint('seven-year-service-dryrun-and-execute-denial-preserve-held-and-younger');
+    const retainedExecuted=good(await invoke({dryRun:false,stage:'retained_records',executeConfirmation:'purge-expired-retained-records'},adminBearer));assert.deepEqual(retainedExecuted.purgedTenants.map(row=>row.id),[oldRetained]);assert.equal(await owner.tenant.findUnique({where:{id:oldRetained}}),null);
+    const erasedRetained=await snapshot([oldRetained]);for(const table of fixedTables)assert.deepEqual(erasedRetained[table],[],`${table} eligible historical rows erased`);const protectedRetained=await snapshot([youngRetained,heldOld]);for(const table of fixedTables)assert.deepEqual(protectedRetained[table],retainedBefore[table].filter(item=>(table==='Tenant'?item.row.id:item.row.tenantId)!==oldRetained));checkpoint('actual-MFA-admin-seven-year-retained-execution-distinct-from-service');
+    assert.equal(checks.length,10);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    await attempt(async()=>{if(app)await bounded(app.close(),'Credential native close',15000);});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Credential retained close',15000);});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Credential native Redis close');});
+    await attempt(async()=>{
+      // destroy() initiates closure; ownership settles only after every close event.
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{
+        socket.once('close',done);socket.destroy();
+      }))),'Credential owned socket close events',15000);
+    });
+    await attempt(async()=>{assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;});
+    await attempt(async()=>{
+      assert.equal(closed,true);if(redis.status==='ready')await snapshotKeys();
+      const allTenants=[...tenantIds,...retentionTenants],userIds=[...users.map(row=>row.id),...retentionUsers],roleIds=roles.map(row=>row.id);
+      assert.equal(new Set(allTenants).size,allTenants.length);for(const id of allTenants)assert.ok(id.startsWith(`native-retention-${nonce}`)||tenantIds.includes(id));
+      const storedSessions=await owner.session.findMany({where:{userId:{in:userIds}},select:{id:true}}),sessionIds=[...new Set([...storedSessions.map(row=>row.id),...issuedSessions.map(row=>row.id)])];
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      assert.equal(await owner.tenantDeletionBillingReconciliation.count({where:{tenantId:{in:allTenants}}}),0);
+      assert.equal(await owner.tenantExportJob.count({where:{tenantId:{in:allTenants}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:allTenants}}}),0);
+      // Exact owned synthetic records only, outside the actual purge under test.
+      // Existing owner teardown is necessary for immutable ledger/audit/payroll rows.
+      await owner.$transaction(async tx=>{
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});await tx.onboardingSignupAttempt.deleteMany({where:{id:{in:retentionSignupIds}}});
+        for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCard','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])await tx[model].deleteMany({where:{tenantId:{in:allTenants}}});
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:allTenants}}});await tx.tenant.deleteMany({where:{id:{in:allTenants}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.tenant.count({where:{id:{in:allTenants}}}),0);assert.equal(await owner.user.count({where:{id:{in:userIds}}}),0);
+      for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCard','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])assert.equal(await owner[model].count({where:{tenantId:{in:allTenants}}}),0);
+      databaseCleaned=true;if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact retention Redis cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Credential Redis disconnect');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Credential Prisma disconnect'));
+    await attempt(async()=>{let entries;try{entries=await readdir(configuration.TENANT_EXPORT_ARTIFACT_DIRECTORY);}catch(error){if(error.code!=='ENOENT')throw error;}if(entries){assert.deepEqual(entries,[]);await rmdir(configuration.TENANT_EXPORT_ARTIFACT_DIRECTORY);}});
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-retention-local-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',
+        expectedCheckpointCount:10,completedCheckpointCount:checks.length,checkpoints:checks,apiPort,retainedPort,
+        transport:'owned-loopback-native-v2-to-real-retained-auth',credentialSource:'HTTP-issued cookies only; no synthetic session/JWT/MFA markers',
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        limitations:['Scoped real Nest auth composition, not full AppModule/production ingress','Local development cookie transport, not TLS secure-cookie proof','No browser/provider/backups/log erasure/scheduler operating evidence','MFA cleanup is invoked transitively; no eligible/protected pending-MFA fixtures or readback qualified. No payroll export-batch or timeout/restart/concurrency qualification','Payroll refusal precedes audit redaction; independent ancillary sweep may commit'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-retention-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Credential durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native retention scenario or owned cleanup failed; preserve first attempt.');
+}
