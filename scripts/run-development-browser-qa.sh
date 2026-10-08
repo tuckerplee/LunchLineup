@@ -4,6 +4,11 @@ set -euo pipefail
 umask 077
 [[ "${1:-}" == --source-context && $# == 2 && "${LUNCHLINEUP_DEVELOPMENT_QA:-}" == 1 ]] || exit 64
 context=$2
+# Only a protected per-run owner record selects a split phase. No env/argv bypass.
+owner_phase_output=$(python3 "${BASH_SOURCE[0]%/*}/read-fixed-browser-phase.py")
+mapfile -t owner_phase_fields <<<"$owner_phase_output"
+phase=${owner_phase_fields[0]}
+[[ "$phase" =~ ^(all|acquisition|runtime)$ && "${#owner_phase_fields[@]}" == 2 ]] || exit 64
 workspace=$PWD
 artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"
 source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"
@@ -12,7 +17,10 @@ qualification_root="$RUNNER_TEMP/lunchlineup-beta-qualification-$CI_RUN_ID"
 env_file="$qualification_root/runtime.env"
 project_suffix=${CI_RUN_ID,,}; project_suffix=${project_suffix//[^a-z0-9]/}
 project="lunchlineup-beta-$project_suffix"
-[[ "$context" == "$source_root/source-context.json" && ! -e "$qualification_root" && ! -L "$qualification_root" ]] || exit 64
+[[ "$context" == "$source_root/source-context.json" ]] || exit 64
+if [[ "$phase" != runtime ]]; then
+  [[ ! -e "$qualification_root" && ! -L "$qualification_root" ]] || exit 64
+fi
 node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build --require-clean >/dev/null
 node - "$artifact_root/development-browser-isolation.json" "$CI_RUN_ID" "$CI_COMMIT_SHA" <<'NODE'
 const fs=require('node:fs');const [path,runId,sourceSha]=process.argv.slice(2),proof=JSON.parse(fs.readFileSync(path));
@@ -22,10 +30,17 @@ if(proof.kind!=='disposable-development-browser-isolation-selftest'||proof.relea
 NODE
 export PATH="$build_root/scripts/ci-container-bin:$PATH"
 compose=(docker compose --project-name "$project" --env-file "$env_file" -f "$build_root/docker-compose.yml")
-mkdir -- "$qualification_root"
+[[ "$phase" == runtime ]] || mkdir -- "$qualification_root"
 runtime_root=""
 cleanup(){
   status=$?; cleanup_status=0; down_status=0
+  if [[ "$phase" == acquisition && "$status" == 0 ]]; then
+    # Owner independently settles this service and inspects acquired images before
+    # sealing inputs. No application/network/volume startup occurs in this phase.
+    # Its finite runroot stays retained until that independent cleanup completes.
+    trap - EXIT
+    exit 0
+  fi
   if [[ -f "$artifact_root/fullstack-target.json" ]]; then
     # Collect only existing declared runtime services; one-shot migrate may be absent.
     if timeout --kill-after=5s 30s docker ps -a --format json >"$artifact_root/development-final-log-containers.json" 2>"$artifact_root/development-final-log-collection.log" &&
@@ -109,9 +124,15 @@ sys.exit(0 if passed else 1)
 PY
   runtime_outcome=not-created
   if [[ "$cleanup_status" == 0 && -n "$runtime_root" && -d "$runtime_root" && ! -L "$runtime_root" && "$(cat "$runtime_root/owner")" == "$CI_RUN_ID" ]]; then
-    runtime_outcome=removed
-    rm -rf -- "$runtime_root" || { cleanup_status=$?; runtime_outcome=removal-failed; }
-    if [[ -e "$runtime_root" ]]; then cleanup_status=1; runtime_outcome=removal-failed; fi
+    if [[ "$phase" == runtime ]]; then
+      # The installed owner must independently inspect this exact private store
+      # in the retained namespace, then remove the runroot after process custody.
+      runtime_outcome=retained-for-owner
+    else
+      runtime_outcome=removed
+      rm -rf -- "$runtime_root" || { cleanup_status=$?; runtime_outcome=removal-failed; }
+      if [[ -e "$runtime_root" ]]; then cleanup_status=1; runtime_outcome=removal-failed; fi
+    fi
   elif [[ -n "$runtime_root" ]]; then
     runtime_outcome=preserved
     [[ "$cleanup_status" != 0 ]] || runtime_outcome=ownership-unverified
@@ -127,7 +148,8 @@ outcome = sys.argv[3]
 receipt = json.loads(path.read_text())
 receipt['runtimeDirectoryOutcome'] = outcome
 receipt['runtimeDirectoryRemoved'] = outcome == 'removed'
-receipt['runtimePreservationRequired'] = outcome in ('preserved', 'removal-failed', 'ownership-unverified')
+receipt['runtimePreservationRequired'] = outcome in ('preserved', 'removal-failed', 'ownership-unverified', 'retained-for-owner')
+receipt['ownerFinalizationRequired'] = outcome == 'retained-for-owner'
 receipt['cleanupVerified'] = receipt['resourceAbsenceVerified'] and status == 0 and outcome in ('removed', 'not-created')
 receipt['finalCleanupExitCode'] = status
 receipt['completedAt'] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -145,10 +167,15 @@ PY
 }
 trap cleanup EXIT
 # Unix sockets require a short path; image/volume storage remains in the bounded controller store.
-runtime_root=$(mktemp -d /tmp/llr.XXXXXX)
-printf '%s\n' "$CI_RUN_ID" >"$runtime_root/owner"
-mkdir "$runtime_root/containers"
+if [[ "$phase" == all ]]; then
+  runtime_root=$(mktemp -d /tmp/llr.XXXXXX)
+  printf '%s\n' "$CI_RUN_ID" >"$runtime_root/owner"
+  mkdir "$runtime_root/containers"
+else
+  runtime_root=${owner_phase_fields[1]}
+fi
 export XDG_RUNTIME_DIR="$runtime_root" LUNCHLINEUP_DEV_RUNTIME="$runtime_root"
+if [[ "$phase" != runtime ]]; then
 node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$qualification_root/secrets"
 "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
@@ -190,6 +217,7 @@ config.name=project;
 fs.writeFileSync(policyPath,JSON.stringify({version:1,runId:process.env.CI_RUN_ID,sourceSha:process.env.CI_COMMIT_SHA,project,externalEgress:'denied',requiredBackend:'netavark',networks:Object.entries(config.networks).map(([key,network])=>({key,name:network.name,driver:'bridge',internal:true,isolate:'true',ipv6:false})),services:servicePolicy},null,2)+'\n',{flag:'wx',mode:0o600});
 fs.writeFileSync(runtimePath,JSON.stringify(config),{flag:'wx',mode:0o600});
 NODE
+fi
 export LUNCHLINEUP_DEV_COMPOSE="$qualification_root/development-compose.json"
 build_image(){
   local action=$1 service=$2 image=$3
@@ -311,10 +339,15 @@ for(const service of required.split(','))if(!services.has(service))throw new Err
 write('proof.json',{version:1,runId:policy.runId,sourceSha:policy.sourceSha,project:policy.project,phase,checkedAt:new Date().toISOString(),scope:'running-application-containers-only',buildTrafficQualified:false,noExternalProbePerformed:true,containers});
 NODE
 }
-# Prove fresh database setup before spending time building application images.
-while IFS=$'\t' read -r action service image; do
-  case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) build_image "$action" "$service" "$image";; esac
-done <"$artifact_root/development-images.tsv" >"$artifact_root/development-build.log" 2>&1
+# Build/pull all fixed images before starting the isolated disposable database.
+if [[ "$phase" != runtime ]]; then
+  # Acquire every image before any application starts. Both split invocations
+  # share the owner's original 9,000-second final-stage deadline, never a retry.
+  while IFS=$'\t' read -r action service image; do
+    build_image "$action" "$service" "$image"
+  done <"$artifact_root/development-images.tsv" >"$artifact_root/development-build.log" 2>&1
+  if [[ "$phase" == acquisition ]]; then exit 0; fi
+fi
 # All networks are internal and independently inspected before any runtime starts.
 prepare_runtime_networks
 if awk -F '\t' '$2 == "pitr-wal-provider" { found=1 } END { exit !found }' "$artifact_root/development-images.tsv"; then
@@ -326,20 +359,24 @@ for attempt in {1..60}; do
   [[ "$attempt" != 60 ]] || { "${compose[@]}" logs --tail 80 >"$artifact_root/development-runtime.log" 2>&1; exit 1; }
   sleep 2
 done
+# This is a whole disposable database in the newly created private store.
+# Capture its actual identity and absence of application tables before migration.
+timeout --kill-after=5s 15s "${compose[@]}" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U lunchlineup_ci_admin -d lunchlineup_ci -Atc "SELECT json_build_object('database',current_database(),'role',session_user,'system',system_identifier::text,'recovery',pg_is_in_recovery(),'relations',(SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relkind IN ('r','p','m','v','f'))) FROM pg_control_system();" >"$artifact_root/development-database-before.json"
+node "$build_root/scripts/check-development-browser-database.mjs" before "$artifact_root/development-database-before.json"
 "${compose[@]}" --profile ops run --rm --no-deps -e NODE_ENV=test -e APP_ENV=test -e DEPLOY_ENV=test -e NEXT_PUBLIC_APP_ENV=test migrate >"$artifact_root/development-migrations.log" 2>&1
-while IFS=$'\t' read -r action service image; do
-  case "$service" in migrate|postgres|redis|rabbitmq|pitr-wal-provider) continue;; esac
-  build_image "$action" "$service" "$image"
-  if [[ "$service" == api ]]; then
-    "${compose[@]}" --profile ops up -d --no-build --no-deps api >>"$artifact_root/development-start.log" 2>&1
-    for attempt in {1..60}; do
-      if curl --silent --fail --max-time 3 http://127.0.0.1:4000/live >/dev/null; then break; fi
-      [[ "$attempt" != 60 ]] || { echo 'Retained API startup failed'; exit 1; }
-      sleep 2
-    done
-    verify_runtime_attachments early-api api,postgres,redis,rabbitmq
-  fi
-done <"$artifact_root/development-images.tsv" >>"$artifact_root/development-build.log" 2>&1
+# Validate the actual restricted app login, not only environment names/grants.
+timeout --kill-after=5s 15s "${compose[@]}" exec -T postgres psql -X -v ON_ERROR_STOP=1 -U lunchlineup_ci_app -d lunchlineup_ci -Atc "SELECT json_build_object('database',current_database(),'role',session_user,'superuser',rolsuper,'bypassrls',rolbypassrls,'createrole',rolcreaterole,'createdb',rolcreatedb,'replication',rolreplication) FROM pg_roles WHERE rolname=current_user;" >"$artifact_root/development-database-role.json"
+node "$build_root/scripts/check-development-browser-database.mjs" role "$artifact_root/development-database-role.json"
+
+# Retain the same early API instance through the full browser lifetime. Image
+# acquisition is already complete, so this phase can have no external network.
+"${compose[@]}" --profile ops up -d --no-build --no-deps api >>"$artifact_root/development-start.log" 2>&1
+for attempt in {1..60}; do
+  if curl --silent --fail --max-time 3 http://127.0.0.1:4000/live >/dev/null; then break; fi
+  [[ "$attempt" != 60 ]] || { echo 'Retained API startup failed'; exit 1; }
+  sleep 2
+done
+verify_runtime_attachments early-api api,postgres,redis,rabbitmq
 "${compose[@]}" --profile ops up -d --no-build --no-deps engine api api-v2 pdf-parser worker web proxy >>"$artifact_root/development-start.log" 2>&1
 for attempt in {1..120}; do
   status=$(curl --silent --max-time 5 --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/auth/login || true)

@@ -62,6 +62,7 @@ class socket:
 artifact_root="$FIXTURE_ROOT/artifacts"
 runtime_root="$FIXTURE_ROOT/runtime"
 qualification_root="$FIXTURE_ROOT"
+phase=all
 project='${project}'
 CI_RUN_ID=cleanup-fixture
 CI_COMMIT_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

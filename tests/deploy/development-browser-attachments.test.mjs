@@ -99,14 +99,16 @@ for (const [description, modify] of [
   if (description.includes('default route')) assert.equal(existsSync(join(output, 'api-ipv4-routes.txt')), true);
 }));
 
-test('attachment admission runs after early API startup before later sorted image builds and before fixtures', () => {
+test('attachment admission retains early API after all image acquisition and before fixtures', () => {
   const early = source.indexOf('verify_runtime_attachments early-api');
   const final = source.indexOf('verify_runtime_attachments pre-fixtures');
   const fixtures = source.indexOf('env "${browser_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json"');
   assert.match(source, /for\(const name of \[\.\.\.selected\]\.sort\(\)\)/);
-  assert.ok('api' < 'web');
+  assert.ok(source.indexOf('build_image \"$action\" \"$service\" \"$image\"') < source.indexOf('--no-deps postgres redis rabbitmq'));
+  assert.ok(source.indexOf('if [[ \"$phase\" == acquisition ]]; then exit 0; fi') < source.indexOf('--no-deps postgres redis rabbitmq'));
   assert.ok(early > source.indexOf('--no-deps api >>'));
-  assert.match(source.slice(early), /^verify_runtime_attachments early-api api,postgres,redis,rabbitmq\n  fi\ndone /);
+  assert.match(source.slice(early), /^verify_runtime_attachments early-api api,postgres,redis,rabbitmq\n/);
+  assert.equal(source.slice(early).includes('build_image \"$action\"'), false);
   assert.ok(final > early);
   assert.ok(fixtures > final);
 });
