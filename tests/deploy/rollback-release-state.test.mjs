@@ -18,7 +18,7 @@ const { privateKey: fixturePrivateKey, publicKey: fixturePublicKey } = generateK
 const fixturePublicKeyPem = fixturePublicKey.export({ type: 'spki', format: 'pem' }).toString();
 const fakeCosignSource = [
   "import { createHash, createPublicKey, verify } from 'node:crypto';",
-  "import { readFileSync } from 'node:fs';",
+  "import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';",
   "const args = process.argv.slice(2);",
   "const option = (name) => args[args.indexOf(name) + 1];",
   "if (args[0] !== 'verify-blob' || !args[1]) process.exit(2);",
@@ -28,6 +28,13 @@ const fakeCosignSource = [
   "const payload = { artifactSha256: bundle.artifactSha256, certificateIdentity: bundle.certificateIdentity, oidcIssuer: bundle.oidcIssuer };",
   "const valid = verify(null, Buffer.from(JSON.stringify(payload)), createPublicKey(process.env.TEST_COSIGN_PUBLIC_KEY_PEM), Buffer.from(bundle.signatureBase64 || '', 'base64'));",
   "if (bundle.artifactSha256 !== digest || bundle.certificateIdentity !== option('--certificate-identity') || bundle.oidcIssuer !== option('--certificate-oidc-issuer') || !valid) process.exit(1);",
+  "if (process.env.TEST_MATERIALIZER_RACE_PLAN) {",
+  "  const plan = JSON.parse(readFileSync(process.env.TEST_MATERIALIZER_RACE_PLAN, 'utf8'));",
+  "  const count = Number(existsSync(plan.counter) ? readFileSync(plan.counter, 'utf8') : 0) + 1;",
+  "  writeFileSync(plan.counter, String(count));",
+  "  appendFileSync(plan.log, JSON.stringify({ artifact: args[1], signature: option('--bundle') }) + '\\n');",
+  "  if (count === plan.at) { const temporary = plan.destination + '.replacement'; writeFileSync(temporary, readFileSync(plan.source)); renameSync(temporary, plan.destination); writeFileSync(plan.marker, 'applied'); }",
+  "}",
 ].join(String.fromCharCode(10));
 
 function writeSignature(artifactPath, signaturePath) {
@@ -387,4 +394,63 @@ test('post-arm failure injection matrix always triggers centralized rollback', (
   }
   assert.equal(shouldRollback({ rollbackArmed: false, deployResult: 'failure', smokeResult: 'skipped' }), false);
   assert.equal(shouldRollback({ rollbackArmed: true, deployResult: 'success', smokeResult: 'success' }), false);
+});
+
+for (const at of [1, 2]) {
+  test(`rollback materializer consumes authenticated original during verifier race ${at}`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'll-materializer-snapshot-race-'));
+    try {
+      const output = join(scratch, 'materialized');
+      const original = state();
+      const alternate = stateForSha('b'.repeat(40), { runtimeSecret: { ...original.runtimeSecret, secretVersion: 'c'.repeat(32) } });
+      const alternateArchive = JSON.parse(Buffer.from(alternate.deploymentContractBundleBase64, 'base64'));
+      const changedPath = 'scripts/activate-retained-rollback.sh';
+      const changedEntry = alternateArchive.files.find(entry => entry.path === changedPath);
+      const changedBytes = Buffer.from('#!/bin/sh\n# alternate self-consistent retained release\nexit 0\n');
+      changedEntry.contentsBase64 = changedBytes.toString('base64');
+      alternate.releaseManifest.deploymentContract.files[changedPath] = hash(changedBytes);
+      const changedArchive = Buffer.from(JSON.stringify(alternateArchive));
+      alternate.deploymentContractBundleBase64 = changedArchive.toString('base64');
+      alternate.releaseManifest.deploymentContract.bundle.sha256 = hash(changedArchive);
+      alternate.releaseManifest.deploymentContract.bundle.bytes = changedArchive.length;
+      const replacement = join(scratch, 'alternate.json');
+      writeFileSync(replacement, JSON.stringify(alternate));
+      const planPath = join(scratch, 'plan.json');
+      const plan = { at, destination: join(scratch, 'materialized-rollback-state.json'), source: replacement,
+        counter: join(scratch, 'counter'), log: join(scratch, 'log'), marker: join(scratch, 'replaced') };
+      writeFileSync(planPath, JSON.stringify(plan));
+      const result = run(original, output, join(scratch, 'github.env'), { TEST_MATERIALIZER_RACE_PLAN: planPath });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.ok(existsSync(plan.marker), 'race barrier was not exercised');
+      assert.equal(JSON.parse(readFileSync(plan.destination)).sourceSha, alternate.sourceSha);
+      const manifest = JSON.parse(readFileSync(join(output, 'app/.release/release-manifest.json')));
+      assert.equal(manifest.sourceSha, original.sourceSha);
+      assert.deepEqual(JSON.parse(readFileSync(join(output, 'runtime-secret.json'))), original.runtimeSecret);
+      for (const entry of JSON.parse(Buffer.from(original.deploymentContractBundleBase64, 'base64')).files) {
+        assert.deepEqual(readFileSync(join(output, 'app', entry.path)), Buffer.from(entry.contentsBase64, 'base64'));
+      }
+      const calls = readFileSync(plan.log, 'utf8').trim().split('\n').map(JSON.parse);
+      assert.equal(calls.length, 2);
+      for (const call of calls) assert.equal(existsSync(call.artifact), false, 'verification scratch not cleaned');
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  });
+}
+
+test('rollback secret-field refusal examines authenticated original despite clean replacement', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-materializer-secret-race-'));
+  try {
+    const output = join(scratch, 'materialized');
+    const replacement = join(scratch, 'clean.json');
+    writeFileSync(replacement, JSON.stringify(state()));
+    const plan = { at: 1, destination: join(scratch, 'materialized-rollback-state.json'), source: replacement,
+      counter: join(scratch, 'counter'), log: join(scratch, 'log'), marker: join(scratch, 'replaced') };
+    const planPath = join(scratch, 'plan.json'); writeFileSync(planPath, JSON.stringify(plan));
+    const result = run(state({ runtimeEnvBase64: Buffer.from('SYNTHETIC=value').toString('base64') }),
+      output, join(scratch, 'github.env'), { TEST_MATERIALIZER_RACE_PLAN: planPath });
+    assert.notEqual(result.status, 0);
+    assert.ok(existsSync(plan.marker));
+    assert.match(result.stderr, /forbidden runtime secret material/);
+    assert.equal(existsSync(output), false);
+    assert.equal(existsSync(join(scratch, 'github.env')), false);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });

@@ -126,3 +126,51 @@ if (!existsSync(process.env.SIGNED_RELEASE_SWAP_MARKER)) {
     rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test('verified snapshot callbacks are synchronous and scratch is removed on every consumer outcome', async () => {
+  const { withVerifiedReleaseAuthenticity } = await import('../../scripts/signed-release-authenticity.mjs');
+  const { existsSync, readdirSync } = await import('node:fs');
+  const scratch = mkdtempSync(join(tmpdir(), 'll-snapshot-consumer-'));
+  const old = { binary: process.env.COSIGN_BINARY, prefix: process.env.COSIGN_ARGUMENT_PREFIX_JSON };
+  try {
+    const paths = { statePath: join(scratch, 'state.json'), indexPath: join(scratch, 'index.json'),
+      bundleSignaturePath: join(scratch, 'state.sig'), indexSignaturePath: join(scratch, 'index.sig') };
+    writeFileSync(paths.statePath, JSON.stringify({ version: 2, sourceSha: 'a'.repeat(40), releaseManifest: { sourceSha: 'a'.repeat(40) } }));
+    writeReleaseIndex(paths.statePath, paths.indexPath, signer);
+    writeFileSync(paths.bundleSignaturePath, '{}'); writeFileSync(paths.indexSignaturePath, '{}');
+    const verifier = join(scratch, 'accept-fixture.mjs');
+    writeFileSync(verifier, 'process.exitCode = 0;\n');
+    process.env.COSIGN_BINARY = process.execPath;
+    process.env.COSIGN_ARGUMENT_PREFIX_JSON = JSON.stringify([verifier]);
+    let callbackCalls = 0;
+    for (const outcome of ['return', 'throw', 'thenable']) {
+      let snapshots;
+      const consumer = (verified, owned) => {
+        callbackCalls += 1;
+        snapshots = owned;
+        assert.equal(verified.sourceSha, 'a'.repeat(40));
+        for (const [key, path] of Object.entries(owned)) {
+          assert.ok(existsSync(path)); assert.notEqual(path, paths[key]);
+          assert.deepEqual(readFileSync(path), readFileSync(paths[key]));
+        }
+        if (outcome === 'throw') throw new Error('controlled consumer refusal');
+        if (outcome === 'thenable') return { then() { throw new Error('must not assimilate thenable'); } };
+        return 42;
+      };
+      if (outcome === 'return') assert.equal(withVerifiedReleaseAuthenticity({ ...paths, ...signer }, consumer), 42);
+      else assert.throws(() => withVerifiedReleaseAuthenticity({ ...paths, ...signer }, consumer),
+        outcome === 'throw' ? /controlled consumer refusal/ : /Promise or thenable/);
+      assert.ok(snapshots);
+      for (const path of Object.values(snapshots)) assert.equal(existsSync(path), false, 'private snapshots survive consumer termination');
+    }
+    let asynchronousCalled = false;
+    assert.throws(() => withVerifiedReleaseAuthenticity({ ...paths, ...signer }, async () => { asynchronousCalled = true; }), /must be synchronous/);
+    assert.equal(asynchronousCalled, false);
+    assert.equal(callbackCalls, 3);
+    assert.deepEqual(readdirSync(scratch).sort(), ['accept-fixture.mjs', 'index.json', 'index.sig', 'state.json', 'state.sig']);
+  } finally {
+    if (old.binary === undefined) delete process.env.COSIGN_BINARY; else process.env.COSIGN_BINARY = old.binary;
+    if (old.prefix === undefined) delete process.env.COSIGN_ARGUMENT_PREFIX_JSON; else process.env.COSIGN_ARGUMENT_PREFIX_JSON = old.prefix;
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
