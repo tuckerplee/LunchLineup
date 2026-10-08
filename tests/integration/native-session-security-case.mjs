@@ -265,3 +265,298 @@ export async function runNativeSessionSecurity(context){
   }
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native session security and every owned cleanup failure retained.');
 }
+
+/** Separately selected credential slice. Same disposable owner/target contract;
+ * actual retained controllers, services, guards, HTTP bridge, PostgreSQL/Redis.
+ * No provider, browser, password-reset delivery, or whole-release claim. */
+export async function runNativeCredentialSecurity(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const {createHmac}=require('node:crypto'),bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-credentials-${nonce}`,`native-credentials-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex');
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',RESEND_API_KEY:'',STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map(Object.keys(configuration).map(key=>[key,process.env[key]]));
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=40);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['POST /v2/auth/password/verify','POST /v2/auth/pin/verify','GET /v2/auth/me','GET /v2/settings',
+    'PUT /v2/users/me/pin','GET /v2/auth/mfa/enrollment','POST /v2/auth/mfa/enrollment','PUT /v2/auth/mfa/enrollment',
+    'POST /v2/auth/mfa/verify','POST /v2/auth/refresh','POST /v2/auth/logout']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload)=>{
+    assert.ok(allowed.has(`${method} ${path}`));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const totp=base32=>{
+    let value=0,bits=0;const bytes=[];for(const letter of base32){const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(letter);assert.ok(n>=0);value=(value<<5)|n;bits+=5;if(bits>=8){bits-=8;bytes.push((value>>>bits)&255);}}
+    const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+    const digest=createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=digest[digest.length-1]&15;
+    return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
+  };
+  try{
+    Object.assign(process.env,configuration);
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController],providers:[
+      {provide:ConfigService,useValue:configService},{provide:TenantPrismaService,useValue:tenantDb},
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'Private credential fixture',status:'ACTIVE'}});
+    const password=`Credential!${randomBytes(16).toString('hex')}`,pin=String(randomInt(100000,999999));
+    let newPin;do{newPin=String(randomInt(100000,999999));}while(newPin===pin);
+    const salt=randomBytes(16).toString('hex'),pinHash=`${salt}:${scryptSync(pin,salt,64).toString('hex')}`;
+    const passwordHash=await bcrypt.hash(password,10);
+    for(const [index,tenantId]of [tenantIds[0],tenantIds[0],tenantIds[1]].entries())users.push(await owner.user.create({data:{tenantId,
+      username:`credential${nonce.replaceAll('-','').slice(0,12)}${index}`,name:'Credential fixture',role:'STAFF',passwordHash,pinHash,
+      pinResetRequired:index===1,mfaEnabled:false,mfaBackupCodes:[]}}));
+    const permissions=await owner.permission.findMany({where:{key:{in:['auth:login_password','auth:login_pin','settings:read']}}});assert.equal(permissions.length,3);
+    for(const tenantId of tenantIds){const role=await owner.role.create({data:{tenantId,name:'Credential staff',slug:'credential-staff',isSystem:true,legacyRole:'STAFF'}});roles.push(role);
+      for(const permission of permissions)await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});
+      for(const user of users.filter(row=>row.tenantId===tenantId))await owner.roleAssignment.create({data:{tenantId,userId:user.id,roleId:role.id}});
+    }
+    checkpoint('restricted-roles-RLS-and-owned-fixtures');
+    const beforeLogin=await owner.session.count({where:{userId:{in:users.map(row=>row.id)}}});assert.equal(beforeLogin,0);
+    refused(await request('POST','/v2/auth/password/verify',jar(),{identifier:users[0].username,tenantSlug:tenantIds[0],password:'wrong-credential'}));
+    refused(await request('POST','/v2/auth/pin/verify',jar(),{identifier:users[0].username,tenantSlug:tenantIds[1],pin}));
+    assert.equal(await owner.session.count({where:{userId:{in:users.map(row=>row.id)}}}),0);checkpoint('wrong-password-and-foreign-workspace-no-session');
+    const primaryLogin=await login(users[0],'password',password),sibling=await login(users[0],'pin',pin),foreign=await login(users[2],'pin',pin);
+    ok(await request('GET','/v2/settings',primaryLogin.cookies));ok(await request('GET','/v2/auth/me',sibling.cookies));checkpoint('password-and-PIN-issued-cookie-native-readback');
+    const forced=await login(users[1],'pin',pin);assert.equal(forced.response.body.pinResetRequired,true);assert.ok(forced.response.body.redirectTo.startsWith('/auth/reset-pin'));
+    refused(await request('GET','/v2/settings',forced.cookies));ok(await request('GET','/v2/auth/me',forced.cookies));checkpoint('credential-forced-PIN-recovery-boundary');
+    ok(await request('PUT','/v2/users/me/pin',forced.cookies,{currentPin:pin,newPin}));
+    const rotated=await owner.user.findUniqueOrThrow({where:{id:users[1].id}});assert.equal(rotated.pinResetRequired,false);assert.equal(rotated.pinHash===pinHash,false);
+    const [newSalt,newHash]=rotated.pinHash.split(':');assert.equal(scryptSync(newPin,newSalt,64).toString('hex')===newHash,true);
+    assert.equal(await owner.session.count({where:{userId:users[1].id,revokedAt:null}}),0);refused(await request('GET','/v2/auth/me',forced.cookies));
+    refused(await request('POST','/v2/auth/pin/verify',jar(),{identifier:users[1].username,tenantSlug:tenantIds[0],pin}));
+    const resetLogin=await login(users[1],'pin',newPin);ok(await request('GET','/v2/settings',resetLogin.cookies));ok(await request('GET','/v2/settings',foreign.cookies));checkpoint('native-PIN-write-old-denied-new-login-foreign-preserved');
+    const enrollment=await request('POST','/v2/auth/mfa/enrollment',primaryLogin.cookies);ok(enrollment);assert.equal(typeof enrollment.body.secret==='string'&&/^[A-Z2-7]{32}$/.test(enrollment.body.secret),true);
+    assert.equal(new URL(enrollment.body.otpauthUrl).protocol,'otpauth:');assert.ok(enrollment.body.expiresInSeconds>0&&enrollment.body.expiresInSeconds<=600);
+    const pending=await owner.session.findUniqueOrThrow({where:{id:primaryLogin.sessionId}});assert.equal(/^enc:v[12]:/.test(pending.mfaEnrollmentSecret),true);assert.equal(pending.mfaEnrollmentSecret.includes(enrollment.body.secret),false);
+    assert.ok(pending.mfaEnrollmentExpiresAt>new Date());assert.equal((await owner.user.findUniqueOrThrow({where:{id:users[0].id}})).mfaEnabled,false);
+    const siblingEnrollment=await request('POST','/v2/auth/mfa/enrollment',sibling.cookies);ok(siblingEnrollment);
+    assert.equal(typeof siblingEnrollment.body.secret==='string'&&/^[A-Z2-7]{32}$/.test(siblingEnrollment.body.secret),true);
+    assert.equal(siblingEnrollment.body.secret===enrollment.body.secret,false);
+    const primaryPendingAfterSibling=await owner.session.findUniqueOrThrow({where:{id:primaryLogin.sessionId}});
+    const siblingPending=await owner.session.findUniqueOrThrow({where:{id:sibling.sessionId}});
+    assert.equal(primaryPendingAfterSibling.userId,users[0].id);assert.equal(siblingPending.userId,users[0].id);
+    assert.equal(primaryPendingAfterSibling.id===siblingPending.id,false);
+    assert.equal(primaryPendingAfterSibling.mfaEnrollmentSecret===pending.mfaEnrollmentSecret,true);
+    assert.equal(primaryPendingAfterSibling.mfaEnrollmentExpiresAt.getTime(),pending.mfaEnrollmentExpiresAt.getTime());
+    assert.equal(/^enc:v[12]:/.test(siblingPending.mfaEnrollmentSecret),true);
+    assert.equal(siblingPending.mfaEnrollmentSecret.includes(siblingEnrollment.body.secret),false);
+    assert.equal(siblingPending.mfaEnrollmentSecret===primaryPendingAfterSibling.mfaEnrollmentSecret,false);
+    assert.ok(siblingPending.mfaEnrollmentExpiresAt>new Date());
+    assert.ok(siblingPending.mfaEnrollmentExpiresAt.getTime()<=Date.now()+600000);
+    assert.ok(siblingEnrollment.body.expiresInSeconds>0&&siblingEnrollment.body.expiresInSeconds<=600);
+    checkpoint('exact-session-encrypted-pending-generations');
+    const confirmation=await request('PUT','/v2/auth/mfa/enrollment',primaryLogin.cookies,{code:totp(enrollment.body.secret)});ok(confirmation);assert.equal(confirmation.body.mfaVerified,true);
+    const codes=confirmation.body.backupCodes;assert.ok(Array.isArray(codes)&&codes.length===10);
+    const enabled=await owner.user.findUniqueOrThrow({where:{id:users[0].id}});assert.equal(enabled.mfaEnabled,true);assert.equal(/^enc:v[12]:/.test(enabled.mfaSecret),true);
+    assert.equal(enabled.mfaSecret.includes(enrollment.body.secret),false);assert.equal(enabled.mfaBackupCodes.length,10);for(const code of codes)assert.equal(enabled.mfaBackupCodes.includes(code),false);
+    const afterPending=await owner.session.findMany({where:{userId:users[0].id}});for(const row of afterPending){assert.equal(row.mfaEnrollmentSecret,null);assert.equal(row.mfaEnrollmentExpiresAt,null);}
+    assert.equal(await redis.get(`session_mfa:${primaryLogin.sessionId}`),'1');ok(await request('GET','/v2/settings',primaryLogin.cookies));checkpoint('real-TOTP-confirm-durable-secret-trigger-and-protected-access');
+    refused(await request('GET','/v2/settings',sibling.cookies));
+    const challenge=await request('POST','/v2/auth/mfa/verify',sibling.cookies,{code:codes[0]});ok(challenge);assert.equal(challenge.body.mfaVerified,true);
+    assert.equal((await owner.user.findUniqueOrThrow({where:{id:users[0].id}})).mfaBackupCodes.length,9);
+    assert.equal(await redis.get(`session_mfa:${sibling.sessionId}`),'1');ok(await request('GET','/v2/settings',sibling.cookies));checkpoint('recovery-code-challenge-exact-session-and-count');
+    const fresh=await login(users[0],'password',password);assert.equal(fresh.response.body.requiresMfa,true);
+    refused(await request('POST','/v2/auth/mfa/verify',fresh.cookies,{code:codes[0]}));assert.equal(await redis.get(`session_mfa:${fresh.sessionId}`),null);
+    assert.equal((await owner.user.findUniqueOrThrow({where:{id:users[0].id}})).mfaBackupCodes.length,9);checkpoint('consumed-recovery-proof-refused-in-new-credential-session');
+    const stale=cloneJar(primaryLogin.cookies),oldValidator=(await owner.session.findUniqueOrThrow({where:{id:primaryLogin.sessionId}})).refreshToken;
+    const refresh=await request('POST','/v2/auth/refresh',primaryLogin.cookies);ok(refresh);assert.equal(refresh.body.mfaVerified,true);
+    const currentSession=await owner.session.findUniqueOrThrow({where:{id:primaryLogin.sessionId}});assert.equal(currentSession.refreshToken===oldValidator,false);
+    assert.equal(await owner.refreshTokenReplay.count({where:{sessionId:primaryLogin.sessionId,validatorHash:oldValidator}}),1);
+    assert.equal(primaryLogin.cookies.get('refresh_token')===stale.get('refresh_token'),false);assert.equal(primaryLogin.cookies.get('csrf_token')===stale.get('csrf_token'),false);
+    ok(await request('GET','/v2/settings',primaryLogin.cookies));checkpoint('refresh-rotates-validator-ledger-CSRF-real-MFA');
+    const unknown=cloneJar(sibling.cookies),issuedSiblingRefresh=decodeURIComponent(sibling.cookies.get('refresh_token'));
+    const siblingParts=issuedSiblingRefresh.split('.');assert.equal(siblingParts.length,3);assert.equal(siblingParts[0],'v2');
+    let unknownValidator;do{unknownValidator=randomBytes(32).toString('base64url');}while(unknownValidator===siblingParts[2]);
+    unknown.set('refresh_token',`v2.${siblingParts[1]}.${unknownValidator}`);
+    refused(await request('POST','/v2/auth/refresh',unknown));
+    assert.equal((await owner.session.findUniqueOrThrow({where:{id:sibling.sessionId}})).revokedAt,null);
+    ok(await request('GET','/v2/settings',sibling.cookies));checkpoint('unknown-refresh-validator-cannot-revoke-sibling');
+    refused(await request('POST','/v2/auth/refresh',stale));assert.ok((await owner.session.findUniqueOrThrow({where:{id:primaryLogin.sessionId}})).revokedAt);
+    refused(await request('GET','/v2/settings',primaryLogin.cookies));ok(await request('GET','/v2/settings',sibling.cookies));ok(await request('GET','/v2/settings',foreign.cookies));checkpoint('recognized-refresh-replay-revokes-only-bound-session');
+    const oldSibling=cloneJar(sibling.cookies);ok(await request('POST','/v2/auth/logout',sibling.cookies));assert.ok((await owner.session.findUniqueOrThrow({where:{id:sibling.sessionId}})).revokedAt);
+    refused(await request('GET','/v2/settings',oldSibling));assert.equal(sibling.cookies.get('access_token'),'');assert.equal(sibling.cookies.get('refresh_token'),'');checkpoint('actual-API-logout-revocation-cookie-clear');
+    const audits=await owner.auditLog.findMany({where:{tenantId:{in:tenantIds}},select:{action:true,resourceId:true,newValue:true}});
+    const createdSessions=await owner.session.findMany({where:{userId:{in:users.map(row=>row.id)}}});
+    // Successful new-PIN login prunes its revoked predecessor; audit history remains.
+    const expectedIssued=[primaryLogin,sibling,foreign,forced,resetLogin,fresh].map(row=>row.sessionId);
+    assert.equal(new Set(expectedIssued).size,6);assert.deepEqual(issuedSessions.map(row=>row.id),expectedIssued);
+    assert.deepEqual(createdSessions.map(row=>row.id).sort(),expectedIssued.filter(id=>id!==forced.sessionId).sort());
+    assert.equal(await owner.session.findUnique({where:{id:forced.sessionId}}),null);
+    const loginAudits=audits.filter(row=>row.action==='SESSION_CREATED');assert.equal(loginAudits.length,6);
+    assert.deepEqual(loginAudits.map(row=>row.resourceId).sort(),[...expectedIssued].sort());
+    for(const issued of issuedSessions){const audit=loginAudits.find(row=>row.resourceId===issued.id);assert.equal(audit.newValue.loginMethod,issued.loginMethod);} 
+    assert.equal(audits.filter(row=>row.action==='USER_PIN_ROTATED').length,1);assert.equal(audits.filter(row=>row.action==='MFA_ENABLED').length,1);
+    for(const row of audits){assert.ok(['SESSION_CREATED','USER_PIN_ROTATED','MFA_ENABLED'].includes(row.action));const text=JSON.stringify(row);for(const sensitive of [password,pin,newPin,enrollment.body.secret,...codes])assert.equal(text.includes(sensitive),false);}
+    checkpoint('independent-auth-audit-counts-and-secret-redaction');
+    assert.equal(checks.length,14);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    await attempt(async()=>{if(app)await bounded(app.close(),'Credential native close',15000);});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Credential retained close',15000);});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Credential native Redis close');});
+    await attempt(async()=>{
+      // destroy() initiates closure; ownership settles only after every close event.
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{
+        socket.once('close',done);socket.destroy();
+      }))),'Credential owned socket close events',15000);
+    });
+    await attempt(async()=>{assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;});
+    await attempt(async()=>{
+      assert.equal(closed,true);if(redis.status==='ready')await snapshotKeys();
+      const userIds=users.map(row=>row.id),roleIds=roles.map(row=>row.id);
+      const storedSessions=await owner.session.findMany({where:{userId:{in:userIds}},select:{id:true,userId:true}});
+      const sessionIds=[...new Set([...storedSessions.map(row=>row.id),...issuedSessions.map(row=>row.id)])];
+      for(const row of issuedSessions)assert.ok(userIds.includes(row.userId));
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      const audits=await owner.auditLog.findMany({where:{tenantId:{in:tenantIds}},select:{action:true,resourceId:true}});
+      for(const row of audits){assert.ok(['SESSION_CREATED','USER_PIN_ROTATED','MFA_ENABLED'].includes(row.action),'Preserve unexpected fixture audit');assert.ok([...userIds,...sessionIds].includes(row.resourceId));}
+      assert.equal(await owner.creditTransaction.count({where:{tenantId:{in:tenantIds}}}),0);
+      assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:tenantIds}}}),0);
+      const claimScope={OR:[{tenantId:{in:tenantIds}},{userId:{in:userIds}}]};
+      const claims=await owner.mfaTotpClaim.findMany({where:claimScope,select:{id:true,tenantId:true,userId:true}});
+      assert.ok(claims.length<=1,'Only the single enrollment TOTP may create a fixture claim');
+      for(const claim of claims){assert.equal(claim.tenantId,tenantIds[0]);assert.equal(claim.userId,users[0].id);}
+      await owner.$transaction(async tx=>{
+        const tenants=await tx.tenant.findMany({where:{id:{in:tenantIds}},select:{id:true,slug:true}});for(const row of tenants)assert.equal(row.id,row.slug);
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        // Replica-mode teardown suppresses FK cascades; explicitly delete exact claims.
+        for(const claim of claims){const removed=await tx.mfaTotpClaim.deleteMany({where:{id:claim.id,tenantId:claim.tenantId,userId:claim.userId}});assert.equal(removed.count,1);}
+        assert.equal(await tx.mfaTotpClaim.count({where:claimScope}),0);
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.auditLog.deleteMany({where:{tenantId:{in:tenantIds},resourceId:{in:[...userIds,...sessionIds]},action:{in:['SESSION_CREATED','USER_PIN_ROTATED','MFA_ENABLED']}}});
+        await tx.roleAssignment.deleteMany({where:{tenantId:{in:tenantIds},userId:{in:userIds},roleId:{in:roleIds}}});await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});await tx.role.deleteMany({where:{id:{in:roleIds},tenantId:{in:tenantIds}}});
+        await tx.tenantSetting.deleteMany({where:{tenantId:{in:tenantIds}}});await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:tenantIds}}});await tx.tenant.deleteMany({where:{id:{in:tenantIds},slug:{in:tenantIds}}});
+      },{maxWait:5000,timeout:20000});assert.equal(await owner.tenant.count({where:{id:{in:tenantIds}}}),0);
+      assert.equal(await owner.mfaTotpClaim.count({where:claimScope}),0);databaseCleaned=true;
+      if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact credential Redis-key cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Credential Redis disconnect');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Credential Prisma disconnect'));
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-credential-security-local-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',
+        expectedCheckpointCount:14,completedCheckpointCount:checks.length,checkpoints:checks,apiPort,retainedPort,
+        transport:'owned-loopback-native-v2-to-real-retained-auth',credentialSource:'HTTP-issued cookies only; no synthetic session/JWT/MFA markers',
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        limitations:['Scoped real Nest auth composition, not full AppModule/production ingress','Local development cookie transport, not TLS secure-cookie proof','No browser/provider/password-reset-outbox/removal/concurrent-authority qualification'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-credential-security-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Credential durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native credential scenario or owned cleanup failed; preserve first attempt.');
+}
