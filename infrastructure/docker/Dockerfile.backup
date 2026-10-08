@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags='-s -w' -o /mc .
 # Stage 2: Runtime
 FROM alpine:3.22@sha256:14358309a308569c32bdc37e2e0e9694be33a9d99e68afb0f5ff33cc1f695dce AS runner
 RUN mkdir -p /usr/share/man \
-  && apk add --no-cache postgresql-client rsync zstd gpg aws-cli rclone nodejs coreutils \
+  && apk add --no-cache bash postgresql-client rsync zstd gpg aws-cli rclone nodejs coreutils \
   && if ! grep -q '^postgres:' /etc/group; then addgroup -S -g 70 postgres; fi \
   && if ! grep -q '^postgres:' /etc/passwd; then adduser -S -D -H -u 70 -G postgres postgres; fi
 WORKDIR /app
