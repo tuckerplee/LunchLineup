@@ -205,6 +205,7 @@ export function TenantsClient() {
     const [notice, setNotice] = useState<string | null>(null);
     // Kept separately so list refreshes cannot erase unresolved mutation guidance.
     const [lifecycleFeedback, setLifecycleFeedback] = useState<{ message: string; detail?: string } | null>(null);
+    const [mobileSummaryExpanded, setMobileSummaryExpanded] = useState(false);
     const [query, setQuery] = useState('');
     const [appliedQuery, setAppliedQuery] = useState('');
     const [pagination, setPagination] = useState(EMPTY_ADMIN_LIST_PAGINATION);
@@ -534,7 +535,17 @@ export function TenantsClient() {
                 </div>
             </section>
 
-            <section className={styles.summaryGrid} aria-label="Loaded tenant summary" aria-describedby="loaded-tenant-summary-context" style={{ display: 'grid', gap: '0.75rem' }}>
+            <button
+                type="button"
+                className={`btn btn-secondary ${styles.summaryToggle}`}
+                aria-expanded={mobileSummaryExpanded}
+                aria-controls="loaded-tenant-summary"
+                onClick={() => setMobileSummaryExpanded((expanded) => !expanded)}
+            >
+                Loaded organization summary
+                <span aria-hidden="true">{mobileSummaryExpanded ? '−' : '+'}</span>
+            </button>
+            <section id="loaded-tenant-summary" data-mobile-expanded={mobileSummaryExpanded} className={styles.summaryGrid} aria-label="Loaded tenant summary" aria-describedby="loaded-tenant-summary-context" style={{ display: 'grid', gap: '0.75rem' }}>
                 <p id="loaded-tenant-summary-context" className={styles.summaryContext}>Loaded organizations only</p>
                 {summary.map((item, index) => {
                     const palette = SUMMARY_COLORS[index];
