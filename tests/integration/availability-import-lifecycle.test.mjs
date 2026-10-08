@@ -306,6 +306,7 @@ test('Postgres rejects terminal cancellation until encrypted source state is ato
   const importId = `import-availability-${suffix}`;
   const completedAt = new Date('2026-07-16T12:00:00.000Z');
   const sourceEnvelope = Buffer.concat([Buffer.from('LLAI\x03', 'binary'), Buffer.alloc(29, 0x5a)]);
+  const failures = [];
 
   try {
     await prisma.$executeRaw`
@@ -385,8 +386,27 @@ test('Postgres rejects terminal cancellation until encrypted source state is ato
       resultErasedAt: completedAt,
       completedAt,
     }]);
+  } catch (failure) {
+    failures.push(failure);
   } finally {
-    await prisma.$executeRaw`DELETE FROM "Tenant" WHERE "id" = ${tenantId}`.catch(() => undefined);
-    await prisma.$disconnect();
+    try {
+      // The owned User restricts tenant deletion; delete exact children first.
+      // Ordinary owner DML preserves all constraints and lifecycle assertions.
+      await prisma.$transaction(async tx => {
+        await tx.availabilityImportJob.deleteMany({ where: { id: importId, tenantId, userId } });
+        await tx.user.deleteMany({ where: { id: userId, tenantId } });
+        await tx.tenant.deleteMany({ where: { id: tenantId } });
+        assert.equal(await tx.availabilityImportJob.count({ where: { id: importId } }), 0);
+        assert.equal(await tx.user.count({ where: { id: userId } }), 0);
+        assert.equal(await tx.tenant.count({ where: { id: tenantId } }), 0);
+      });
+    } catch (failure) {
+      failures.push(failure);
+    } finally {
+      try { await prisma.$disconnect(); }
+      catch (failure) { failures.push(failure); }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Cancellation proof, exact fixture cleanup or disconnect failed');
   }
 });
