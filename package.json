@@ -52,7 +52,7 @@
   "overrides": {
     "postcss": "^8.5.23",
     "minimatch@>=10": {
-      "brace-expansion": "5.0.9"
+      "brace-expansion": "5.0.12"
     },
     "casbin": {
       "csv-parse": "7.0.2"
