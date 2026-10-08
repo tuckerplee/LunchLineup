@@ -755,10 +755,13 @@ require_command zstd
 require_command gpg
 require_command sha256sum
 require_command mktemp
+require_command ln
 
 mkdir -p "${BACKUP_DIR}"
-BACKUP_FILE="${BACKUP_DIR}/${BACKUP_PREFIX}-${TIMESTAMP}.sql.zst.gpg"
 TMP_BACKUP_FILE="$(mktemp "${BACKUP_DIR}/${BACKUP_PREFIX}-${TIMESTAMP}.sql.zst.gpg.tmp.XXXXXX")"
+# The reserved temporary name supplies a per-run suffix even when backups start
+# in the same second. Keep the established archive suffix for restore/retention.
+BACKUP_FILE="${BACKUP_DIR}/${BACKUP_PREFIX}-${TIMESTAMP}-${TMP_BACKUP_FILE##*.}.sql.zst.gpg"
 BACKUP_KEY="$(read_backup_key)"
 
 cleanup() {
@@ -790,10 +793,13 @@ pg_dump \
       3<<<"${BACKUP_KEY}"
 
 [ -s "${TMP_BACKUP_FILE}" ] || fail "Backup output is empty."
-mv "${TMP_BACKUP_FILE}" "${BACKUP_FILE}"
+# Publish the completed inode atomically without replacing any retained archive.
+ln -T -- "${TMP_BACKUP_FILE}" "${BACKUP_FILE}" \
+  || fail "Backup destination already exists or cannot be published."
 BACKUP_SHA256_LINE="$(sha256sum "${BACKUP_FILE}")"
 BACKUP_SHA256="${BACKUP_SHA256_LINE%% *}"
-printf '%s  %s\n' "${BACKUP_SHA256}" "$(basename "${BACKUP_FILE}")" >"${BACKUP_FILE}.sha256"
+(set -o noclobber; printf '%s  %s\n' "${BACKUP_SHA256}" "$(basename "${BACKUP_FILE}")" >"${BACKUP_FILE}.sha256") \
+  || fail "Backup checksum destination already exists or cannot be published."
 
 sync_offsite
 
