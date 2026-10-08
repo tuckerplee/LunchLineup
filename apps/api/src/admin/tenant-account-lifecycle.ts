@@ -83,7 +83,7 @@ export async function applyDormantSessionRetention(
         eligibleCount: bigint | number | string;
         clearedCount: bigint | number | string;
     }>>(Prisma.sql`SELECT * FROM public.clear_expired_mfa_enrollments(
-        (${asOf.toISOString()}::timestamptz AT TIME ZONE 'UTC'), ${batchLimit}, ${dryRun})`);
+        (${asOf.toISOString()}::timestamptz AT TIME ZONE 'UTC'), ${batchLimit}::integer, ${dryRun})`);
     if (!Array.isArray(pendingRows) || pendingRows.length !== 1) {
         throw new Error('MFA enrollment retention returned an invalid receipt.');
     }
@@ -99,7 +99,7 @@ export async function applyDormantSessionRetention(
     let purgedCount = 0;
     if (!dryRun && eligibleCount > 0) {
         const purgedRows = await tx.$queryRaw<Array<{ purgedCount: bigint | number | string }>>(
-            Prisma.sql`SELECT public.purge_dormant_sessions(${asOf}, ${batchLimit}) AS "purgedCount"`,
+            Prisma.sql`SELECT public.purge_dormant_sessions((${asOf}::timestamptz AT TIME ZONE 'UTC'), ${batchLimit}::integer) AS "purgedCount"`,
         );
         purgedCount = retentionCount(purgedRows[0]?.purgedCount, 'Dormant session retention purge');
     }
@@ -137,7 +137,7 @@ export async function applyPasswordResetTokenRetention(
     let purgedCount = 0;
     if (!dryRun && eligibleCount > 0) {
         const purgedRows = await tx.$queryRaw<Array<{ purgedCount: bigint | number | string }>>(
-            Prisma.sql`SELECT public.purge_expired_password_reset_tokens(${asOf}, ${batchLimit}) AS "purgedCount"`,
+            Prisma.sql`SELECT public.purge_expired_password_reset_tokens((${asOf}::timestamptz AT TIME ZONE 'UTC'), ${batchLimit}::integer) AS "purgedCount"`,
         );
         purgedCount = retentionCount(
             purgedRows[0]?.purgedCount,

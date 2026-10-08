@@ -572,8 +572,8 @@ export async function applyStaffInvitationOutboxRetention(
     if (!dryRun && eligibleCount > 0) {
         const purged = await tx.$queryRaw<Array<{ purgedCount: bigint | number }>>(Prisma.sql`
             SELECT public.purge_staff_invitation_outbox_diagnostics(
-                ${asOf},
-                ${RETENTION_BATCH_LIMIT}
+                (${asOf}::timestamptz AT TIME ZONE 'UTC'),
+                ${RETENTION_BATCH_LIMIT}::integer
             ) AS "purgedCount"
         `);
         purgedCount = Number(purged[0]?.purgedCount ?? 0);
