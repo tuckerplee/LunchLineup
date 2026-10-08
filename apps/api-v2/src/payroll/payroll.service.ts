@@ -486,6 +486,7 @@ export class PayrollService {
         transaction.payrollExportBatch.findFirst({ where: { tenantId: identity.tenantId, periodId: period.id } }),
       ]);
       assertCurrent();
+      if (batch) await this.verifyExportCreditProvenance(transaction, batch, assertCurrent);
       const exportBatch = batch
         ? await this.serializeExport(transaction, identity.tenantId, batch, lineLimit, lineCursor, assertCurrent)
         : null;

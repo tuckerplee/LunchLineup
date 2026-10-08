@@ -14,7 +14,7 @@ import { authorizeCurrentMutation, assertCurrentMutation } from '../../apps/api-
 // Redis atomicity, native execution, payroll mutations or release qualification.
 export type PeriodRow = Record<string, any>;
 export type PeriodDeadline = 'stored' | 'policy' | 'mfa-wall' | 'mfa-monotonic';
-export type PeriodGate = 'row' | 'summary' | 'receipt';
+export type PeriodGate = 'row' | 'summary' | 'receipt' | 'credit';
 export type PeriodWriter = 'session' | 'grant' | 'account' | 'pin' | 'policy' | 'tenant' | 'role';
 export const periodIds = { tenant: 'period-tenant', actor: 'period-actor', session: 'period-session',
   role: 'period-reader-role', creator: 'period-historical-staff', location: 'period-historical-location', batch: 'period-batch' };
@@ -114,9 +114,12 @@ export function payrollPeriodReadFixture(flavor: 'native' | 'retained', deadline
     (tables.payrollExportLine ??= []).push(line); return publicLine;
   });
   tables.payrollExportBatch = [{ id: i.batch, publicId: periodUuid(70), tenantId: i.tenant, periodId: 'period-2', formatVersion: 1,
+    operationId: 'saved-period-export', creditTransactionId: 'feature-usage-payroll-export:saved-period-export',
     status: 'RECONCILED', rowCount: 2, totalPayableMinutes: 960, consumedCredits: 1, newBalance: 9,
     contentSha256: payrollContentSha256(buildPayrollCsv(publicLines)), createdAt: new Date('2026-08-08T00:00:00Z'), updatedAt: new Date('2026-08-10T00:00:00Z'),
     downloadedAt: new Date('2026-08-08T00:00:00Z'), reconciledAt: new Date('2026-08-10T00:00:00Z') }];
+  tables.creditTransaction = [{ id: 'feature-usage-payroll-export:saved-period-export', tenantId: i.tenant,
+    amount: -1, debtAmount: 0, reason: 'Payroll export (period-2)', balanceAfter: 9, debtAfter: 0 }];
   tables.payrollReconciliationLineState = [1, 2].map(n => ({ tenantId: i.tenant, batchId: i.batch, lineId: `line-${n}`,
     status: n === 1 ? 'ACCEPTED' : 'REJECTED', reason: n === 1 ? null : 'controlled rejection' }));
   tables.payrollReconciliationReceipt = [{ id: 'receipt-1', publicId: periodUuid(71), tenantId: i.tenant, batchId: i.batch,
@@ -168,7 +171,8 @@ export function payrollPeriodReadFixture(flavor: 'native' | 'retained', deadline
       equal(k(args.select ?? {}), fields.sort(), `${table} exact reference fields`);
       require(Object.values(args.select).every(v => v === true), 'Scalar reference fields');
     };
-    require(where.tenantId === i.tenant, `Every domain ${table} query tenant-scoped`);
+    // Ledger lookup uses the batch's exact primary key; the owner verifies its tenant.
+    require(table === 'creditTransaction' || where.tenantId === i.tenant, `Every domain ${table} query tenant-scoped`);
     if (table === 'payrollPeriod') {
       if (args.select) references(['id', 'publicId']);
       else if (method === 'findFirst') {
@@ -251,8 +255,17 @@ export function payrollPeriodReadFixture(flavor: 'native' | 'retained', deadline
       require(Array.isArray(where.amendmentId.in) && where.amendmentId.in.every((id: string) => snapshot.payrollAmendment.some(row => row.id === id && row.tenantId === i.tenant)), 'Own amendment ids');
       if (flavor === 'retained') { equal(args.orderBy, { amendmentId: 'asc' }, 'Decision order'); equal(args.take, where.amendmentId.in.length, 'Decision cap'); }
     } else if (table === 'payrollExportBatch') {
-      require(method === 'findFirst', 'Saved period batch lookup'); equal(k(args), ['where'], 'Batch options'); equal(where, { tenantId: i.tenant, periodId: where.periodId }, 'Period batch scope');
-      require(snapshot.payrollPeriod.some(row => row.id === where.periodId && row.tenantId === i.tenant), 'Own batch period');
+      require(method === 'findFirst', 'Saved period batch lookup'); equal(k(args), ['where'], 'Batch options');
+      if (flavor === 'native' && Object.hasOwn(where, 'publicId')) equal(where, { tenantId: i.tenant, publicId: periodUuid(70) }, 'Exact export read scope');
+      else {
+        equal(where, { tenantId: i.tenant, periodId: where.periodId }, 'Period batch scope');
+        require(snapshot.payrollPeriod.some(row => row.id === where.periodId && row.tenantId === i.tenant), 'Own batch period');
+      }
+    } else if (table === 'creditTransaction') {
+      require(flavor === 'native' && method === 'findUnique', 'Native saved export provenance read');
+      equal(k(args), ['select', 'where'], 'Ledger options');
+      equal(where, { id: snapshot.payrollExportBatch[0].creditTransactionId }, 'Exact saved ledger identity');
+      equal(args.select, { id: true, tenantId: true, amount: true, debtAmount: true, reason: true, balanceAfter: true, debtAfter: true }, 'Ledger provenance projection');
     } else if (table === 'payrollExportLine') {
       require(where.batchId === i.batch, 'Exact saved batch');
       if (method === 'findFirst') {
@@ -325,7 +338,7 @@ export function payrollPeriodReadFixture(flavor: 'native' | 'retained', deadline
     if (args.take !== undefined) rows = rows.slice(0, args.take);
     const result = rows.map(row => args.include ? { ...clone(row), role: clone(snapshot.role.find(r => r.id === row.roleId)) } : project(row, args.select));
     const isRow = table === 'payrollPeriod' && !args.select, isReceipt = table === 'payrollReconciliationReceipt';
-    if (phase === 'owner' && gateHits === 0 && ((pause === 'row' && isRow) || (pause === 'receipt' && isReceipt))) {
+    if (phase === 'owner' && gateHits === 0 && ((pause === 'row' && isRow) || (pause === 'receipt' && isReceipt) || (pause === 'credit' && table === 'creditTransaction'))) {
       gateHits++; arrived.release(); await release.promise;
     }
     if (method === 'groupBy') { const counts = new Map<string, number>(); for (const row of rows) counts.set(row.status, (counts.get(row.status) ?? 0) + 1); return [...counts].map(([status, count]) => ({ status, _count: { _all: count } })); }
