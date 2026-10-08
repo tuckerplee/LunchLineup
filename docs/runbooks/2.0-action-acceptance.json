@@ -12174,7 +12174,7 @@
       "sourceAnchors": [
         {
           "path": "apps/web/app/dashboard/scheduling/page.tsx",
-          "line": 2794,
+          "line": 2802,
           "sourceLine": "export default function SchedulingPage() {"
         }
       ],

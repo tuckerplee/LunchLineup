@@ -630,7 +630,15 @@ function SchedulingContent() {
   const schedulableStaff = useMemo(() => staff.filter((person) => isSchedulableStaffRole(person.role)), [staff]);
 
   const resources = useMemo(() => {
-    const staffResources = schedulableStaff.map((person) => ({
+    // Retained assignments need display rows even when their assignee is no longer schedulable.
+    // Keep schedulableStaff unchanged: forms and mutation commands still accept only active staff.
+    const displayedStaff = new Map(schedulableStaff.map((person) => [person.id, person]));
+    for (const shift of shifts) {
+      if (shift.userId && shift.user?.id === shift.userId && !displayedStaff.has(shift.userId)) {
+        displayedStaff.set(shift.userId, shift.user);
+      }
+    }
+    const staffResources = [...displayedStaff.values()].map((person) => ({
       id: person.id,
       title: person.name || 'Unnamed',
       role: person.role,
@@ -641,7 +649,7 @@ function SchedulingContent() {
       ...staffResources,
       { id: UNASSIGNED_RESOURCE_ID, title: 'Open Shifts', role: 'UNASSIGNED', avatarInitials: 'OS', hue: 210 },
     ];
-  }, [schedulableStaff]);
+  }, [schedulableStaff, shifts]);
 
   const openShifts = useMemo(() => shifts.filter((shift) => !shift.userId), [shifts]);
   const visibleShifts = openFocus ? openShifts : shifts;

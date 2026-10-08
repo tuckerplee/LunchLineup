@@ -174,7 +174,7 @@ export class ScheduleBoardService {
                   is: {
                     role: { in: ['MANAGER', 'STAFF'] },
                     deletedAt: null,
-                    suspendedAt: null,
+                    // Existing assignments remain visible after account deactivation.
                   },
                 },
               },
