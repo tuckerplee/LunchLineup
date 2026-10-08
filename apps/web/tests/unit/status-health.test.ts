@@ -95,33 +95,33 @@ describe('status health response validation', () => {
         payload: null,
       });
       expect(deriveIncidentState(result)).toMatchObject({
-        activeCount: 0,
-        heading: 'No active incidents',
+        activeCount: null,
+        heading: 'Incident history unavailable',
       });
     },
   );
 });
 describe('status incident derivation', () => {
-  it('keeps the healthy incident-history message when checks pass', () => {
+  it('keeps incident state unknown even when automated checks pass', () => {
     expect(deriveIncidentState(probe('ok'))).toEqual({
-      activeCount: 0,
-      heading: 'No active incidents',
-      detail: 'Automated health signals are shown separately; incident history is published only from the reviewed incident log.',
+      activeCount: null,
+      heading: 'Incident history unavailable',
+      detail: 'A current reviewed incident log has not been connected to this page. Automated health signals do not establish whether incidents are active.',
       detectedAt: null,
     });
   });
 
   it('does not turn a reachable partial signal into an active incident', () => {
     expect(deriveIncidentState(probe('reachable'))).toMatchObject({
-      activeCount: 0,
-      heading: 'No active incidents',
+      activeCount: null,
+      heading: 'Incident history unavailable',
     });
   });
 
-  it.each(['degraded', 'unavailable'] as const)('keeps %s automated health separate from incident history', (status) => {
+  it.each(['degraded', 'unavailable', 'not_configured'] as const)('keeps %s automated health separate from incident history', (status) => {
     expect(deriveIncidentState(probe(status))).toMatchObject({
-      activeCount: 0,
-      heading: 'No active incidents',
+      activeCount: null,
+      heading: 'Incident history unavailable',
       detectedAt: null,
     });
   });

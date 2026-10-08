@@ -430,12 +430,14 @@ export class StripeMeterErrorService {
             })
           : null;
         if (
-          byIdentifier &&
-          byIdempotencyKey &&
-          byIdentifier.id !== byIdempotencyKey.id
+          sample.identifier &&
+          sample.idempotencyKey &&
+          (Boolean(byIdentifier) !== Boolean(byIdempotencyKey) ||
+            (byIdentifier && byIdempotencyKey &&
+              byIdentifier.id !== byIdempotencyKey.id))
         ) {
           throw new BadRequestException(
-            "Stripe meter error correlations identify different usage events",
+            "Stripe meter error correlations do not identify the same usage event",
           );
         }
         return byIdentifier ?? byIdempotencyKey;

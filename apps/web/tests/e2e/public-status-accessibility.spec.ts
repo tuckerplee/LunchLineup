@@ -66,8 +66,11 @@ test.describe('Public status page', () => {
     await expect(page.getByRole('heading', { name: 'Tracked Components' })).toBeVisible();
     await expect(page.getByRole('list', { name: 'Tracked service components' }).getByRole('listitem')).toHaveCount(6);
     await expect(page.getByRole('heading', { name: 'Incident History' })).toBeVisible();
-    await expect(page.getByText('No active incidents', { exact: true })).toBeVisible();
-    await expect(page.getByText('Active incidents').locator('..').getByText('0', { exact: true })).toBeVisible();
+    await expect(page.getByText('Incident history unavailable', { exact: true })).toBeVisible();
+    await expect(page.getByText('Active incidents').locator('..').getByText('Unknown', { exact: true })).toBeVisible();
+    await expect(page.getByText('No active incidents', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('No verified review date', { exact: true })).toBeVisible();
+    await expect(page.getByText(/incident review pending/)).toBeVisible();
     await expect(page.getByRole('link', { name: 'Sign in' }).last()).toHaveAttribute('href', '/auth/login');
   });
 

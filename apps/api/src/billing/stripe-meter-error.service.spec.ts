@@ -473,6 +473,49 @@ describe("StripeMeterErrorService", () => {
   });
 
   it.each([
+    ['both resolve', true, true, false],
+    ['identifier only resolves', true, false, false],
+    ['idempotency key only resolves', false, true, false],
+    ['neither resolves', false, false, false],
+    ['different rows in same tenant', true, true, true],
+  ] as const)('enforces every supplied meter reference: %s', async (_label, identifierFound, keyFound, conflict) => {
+    const row = { id: 'dual-usage', tenantId: 'tenant-dual', status: 'SENT', attempts: 1,
+      identifier: 'dual-identifier', idempotencyKey: 'dual-key', metadata: {} };
+    const other = { ...row, id: 'other-usage', identifier: 'other-identifier' };
+    const event = { id: eventId, type: 'v1.billing.meter.no_meter_found', object: 'v2.core.event',
+      livemode: true, related_object: null,
+      reason: { type: 'request', request: { identifier: 'dual-identifier', idempotency_key: 'dual-key' } },
+      data: { developer_message_summary: 'No meter found.' } };
+    const { service, findUnique, updateMany, tenantDb } = buildService({ rows: [row, other], event });
+    findUnique.mockImplementation(async ({ where }: any) => where.identifier
+      ? (identifierFound ? row : null) : (keyFound ? (conflict ? other : row) : null));
+    const before = structuredClone([row, other]);
+    if (identifierFound && keyFound && !conflict) {
+      await expect(service.handleWebhook(Buffer.from('{}'), 'sig')).resolves.toEqual({ matched: 1, transitioned: 1 });
+      expect(updateMany).toHaveBeenCalledTimes(1);
+      expect(updateMany.mock.calls[0][0].where).toMatchObject({ id: 'dual-usage', tenantId: 'tenant-dual', status: 'SENT', identifier: 'dual-identifier', idempotencyKey: 'dual-key' });
+      expect(row.status).toBe('DEAD_LETTERED');
+      expect(other).toEqual(before[1]);
+      const after = structuredClone(row);
+      // Restore the durable lookup after identity rotation. Replay must use the
+      // existing event receipt rather than pretend the old identity still exists.
+      findUnique.mockImplementation(async ({ where }: any) => [row, other].find(candidate =>
+        (where.identifier && candidate.identifier === where.identifier)
+        || (where.idempotencyKey && candidate.idempotencyKey === where.idempotencyKey)) ?? null);
+      await expect(service.handleWebhook(Buffer.from('{}'), 'sig')).resolves.toEqual({ matched: 1, transitioned: 0 });
+      expect(updateMany).toHaveBeenCalledTimes(1); expect(row).toEqual(after);
+    } else {
+      await expect(service.handleWebhook(Buffer.from('{}'), 'sig')).rejects.toBeInstanceOf(
+        !identifierFound && !keyFound ? ServiceUnavailableException : BadRequestException,
+      );
+      expect(updateMany).not.toHaveBeenCalled(); expect(tenantDb.withTenant).not.toHaveBeenCalled();
+      expect([row, other]).toEqual(before);
+    }
+    expect(findUnique).toHaveBeenCalledWith({ where: { identifier: 'dual-identifier' } });
+    expect(findUnique).toHaveBeenCalledWith({ where: { idempotencyKey: 'dual-key' } });
+  });
+
+  it.each([
     ["idempotency key", { idempotency_key: "stripe_usage_original" }],
     ["identifier", { identifier: "ll_active_staff_123" }],
   ])(
