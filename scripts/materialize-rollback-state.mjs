@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join, posix, resolve } from 'node:path';
 import { validateLaunchProofManifestUri } from './deployed-release-inputs.mjs';
 import { validateRuntimeSecretDescriptor } from './rehydrate-runtime-secret.mjs';
@@ -64,14 +64,16 @@ if (outputIndex === -1 || !process.argv[outputIndex + 1]) {
   fail('Usage: materialize-rollback-state.mjs --output-dir DIR --state-file PATH --index-file PATH --bundle-signature-bundle PATH --index-signature-bundle PATH --expected-certificate-identity ID --expected-oidc-issuer URL [--github-env PATH]');
 }
 const statePath = resolve(requiredOption('--state-file'));
+let verified;
 try {
-  verifyReleaseAuthenticity({
+  verified = verifyReleaseAuthenticity({
     statePath,
     indexPath: resolve(requiredOption('--index-file')),
     bundleSignaturePath: resolve(requiredOption('--bundle-signature-bundle')),
     indexSignaturePath: resolve(requiredOption('--index-signature-bundle')),
     certificateIdentity: requiredOption('--expected-certificate-identity'),
     oidcIssuer: requiredOption('--expected-oidc-issuer'),
+    productionTrust: process.argv.includes('--production-trust'),
   });
 } catch (error) {
   fail(`Rollback state authenticity verification failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -79,11 +81,11 @@ try {
 
 let state;
 try {
-  const stateText = readFileSync(statePath, 'utf8');
+  const stateText = verified.artifactBytes.statePath.toString('utf8');
   for (const forbidden of ['runtimeEnvBase64', 'runtimeBytes', 'productionRuntimeEnv', 'PRODUCTION_RUNTIME_ENV_B64']) {
     if (stateText.includes(`"${forbidden}"`)) fail('Rollback state contains forbidden runtime secret material.');
   }
-  state = JSON.parse(stateText);
+  state = verified.state;
 } catch (error) {
   fail(`Rollback state file must contain JSON: ${error instanceof Error ? error.message : String(error)}`);
 }

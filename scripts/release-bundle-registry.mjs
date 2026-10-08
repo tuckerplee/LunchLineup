@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runBoundedProviderCommand, validateRuntimeSecretDescriptor } from './rehydrate-runtime-secret.mjs';
-import { verifyCosignBlob, verifyReleaseAuthenticity, writeReleaseIndex } from './signed-release-authenticity.mjs';
+import { verifyCosignBlob, verifyReleaseAuthenticity, withVerifiedReleaseAuthenticity, writeReleaseIndex } from './signed-release-authenticity.mjs';
 
 const retentionTagKey = 'lunchlineup-release-retention';
 const activeRetentionTag = 'active';
@@ -481,7 +481,9 @@ function upload(uri, suffix, input, immutable = false) {
   fail('Immutable release publication requires s3:// in production.');
 }
 function validateState(path) {
-  const bytes = readFileSync(path);
+  return validateStateBytes(readFileSync(path));
+}
+function validateStateBytes(bytes) {
   const text = bytes.toString('utf8');
   const state = JSON.parse(text);
   if (state.version !== 2 || !/^[a-f0-9]{40}$/.test(state.sourceSha ?? '') || state.releaseManifest?.sourceSha !== state.sourceSha) {
@@ -524,6 +526,7 @@ function signerOptions() {
   return {
     certificateIdentity: option('--expected-certificate-identity'),
     oidcIssuer: option('--expected-oidc-issuer'),
+    productionTrust: process.argv.includes('--production-trust'),
   };
 }
 function signedInputPaths() {
@@ -584,8 +587,8 @@ function ensureImmutableSignature(uri, suffix, artifactPath, suppliedSignaturePa
   }
 }
 function verifyPointerArtifact(indexPath, signaturePath, expectedSha, signer) {
-  verifyCosignBlob(indexPath, signaturePath, signer);
-  const pointer = JSON.parse(readFileSync(indexPath, 'utf8'));
+  const authenticated = verifyCosignBlob(indexPath, signaturePath, signer);
+  const pointer = JSON.parse(authenticated.artifactBytes.toString('utf8'));
   if (
     pointer.version !== 3
     || pointer.kind !== 'lunchlineup-release-registry-index'
@@ -593,6 +596,7 @@ function verifyPointerArtifact(indexPath, signaturePath, expectedSha, signer) {
     || pointer.authenticity?.certificateIdentity !== signer.certificateIdentity
     || pointer.authenticity?.oidcIssuer !== signer.oidcIssuer
   ) fail('Authenticated release registry pointer does not name the expected release source SHA.');
+  return { ...authenticated, pointer };
 }
 function pointerSourceSha(indexPath, signer) {
   const pointer = JSON.parse(readFileSync(indexPath, 'utf8'));
@@ -611,10 +615,10 @@ function readbackMutablePointer(uri, targetIndexPath, targetSignaturePath, expec
   for (const path of [readbackIndex, readbackSignature]) if (existsSync(path)) unlinkSync(path);
   download(uri, 'index.sigstore.json', readbackSignature);
   download(uri, 'index.json', readbackIndex);
-  verifyPointerArtifact(readbackIndex, readbackSignature, expectedSha, signer);
+  const authenticated = verifyPointerArtifact(readbackIndex, readbackSignature, expectedSha, signer);
   if (
-    !readFileSync(readbackIndex).equals(readFileSync(targetIndexPath))
-    || !readFileSync(readbackSignature).equals(readFileSync(targetSignaturePath))
+    !authenticated.artifactBytes.equals(readFileSync(targetIndexPath))
+    || !authenticated.signatureBytes.equals(readFileSync(targetSignaturePath))
   ) fail('Authenticated mutable release registry pointer readback does not exactly match the intended signed pointer bytes.');
 }
 function conditionalMutableUpload(uri, suffix, input, expectedEtag) {
@@ -668,8 +672,10 @@ function loadAuthenticatedMutablePointer(uri, signer, scratchRoot) {
   const sourceSha = pointerSourceSha(mutableIndex, signer);
   download(uri, `indexes/${sourceSha}.json`, immutableIndex);
   download(uri, `indexes/${sourceSha}.sigstore.json`, immutableSignature);
-  verifyPointerArtifact(immutableIndex, immutableSignature, sourceSha, signer);
-  if (!readFileSync(mutableIndex).equals(readFileSync(immutableIndex))) {
+  const retained = verifyPointerArtifact(immutableIndex, immutableSignature, sourceSha, signer);
+  writeFileSync(immutableIndex, retained.artifactBytes, { mode: 0o600 });
+  writeFileSync(immutableSignature, retained.signatureBytes, { mode: 0o600 });
+  if (!readFileSync(mutableIndex).equals(retained.artifactBytes)) {
     fail('Mutable release registry pointer does not match authenticated immutable pointer material.');
   }
 
@@ -677,8 +683,8 @@ function loadAuthenticatedMutablePointer(uri, signer, scratchRoot) {
   if (signatureEtag !== null) {
     download(uri, 'index.sigstore.json', mutableSignature);
     try {
-      verifyPointerArtifact(mutableIndex, mutableSignature, sourceSha, signer);
-      signatureMatches = readFileSync(mutableSignature).equals(readFileSync(immutableSignature));
+      const current = verifyPointerArtifact(mutableIndex, mutableSignature, sourceSha, signer);
+      signatureMatches = current.signatureBytes.equals(retained.signatureBytes);
     } catch {
       signatureMatches = false;
     }
@@ -692,8 +698,8 @@ function loadAuthenticatedMutablePointer(uri, signer, scratchRoot) {
     }
     if (existsSync(mutableSignature)) unlinkSync(mutableSignature);
     download(uri, 'index.sigstore.json', mutableSignature);
-    verifyPointerArtifact(mutableIndex, mutableSignature, sourceSha, signer);
-    if (!readFileSync(mutableSignature).equals(readFileSync(immutableSignature))) {
+    const repaired = verifyPointerArtifact(mutableIndex, mutableSignature, sourceSha, signer);
+    if (!repaired.signatureBytes.equals(retained.signatureBytes)) {
       fail('Authenticated split-pair repair did not restore the immutable pointer signature.');
     }
   }
@@ -788,38 +794,40 @@ function updateMutablePointer(uri, indexPath, signaturePath, expectedSha, signer
     rmSync(scratchRoot, { recursive: true, force: true });
   }
 }
-function publishSignedRelease(uri, statePath, bootstrap = false) {
-  verifyS3RegistryProtection(uri);
-  if (bootstrap) assertEmpty(uri);
-  const state = validateState(statePath);
+function publishSignedRelease(uri, inputStatePath, bootstrap = false) {
   const signer = signerOptions();
-  const paths = signedInputPaths();
-  const verified = verifyReleaseAuthenticity({ statePath, ...paths, ...signer });
-  if (verified.sourceSha !== state.sourceSha) fail('Verified release authenticity source SHA does not match release state.');
-  const releaseObject = `releases/${state.sourceSha}.json`;
-  const releaseSignatureObject = `releases/${state.sourceSha}.sigstore.json`;
-  const indexObject = `indexes/${state.sourceSha}.json`;
-  const indexSignatureObject = `indexes/${state.sourceSha}.sigstore.json`;
-  ensureImmutableObject(uri, releaseObject, statePath, 'release bundle');
-  ensureImmutableObject(uri, indexObject, paths.indexPath, 'release index');
-  const retainedBundleSignature = ensureImmutableSignature(
-    uri, releaseSignatureObject, statePath, paths.bundleSignaturePath, signer, 'release-bundle-signature',
-  );
-  const retainedIndexSignature = ensureImmutableSignature(
-    uri, indexSignatureObject, paths.indexPath, paths.indexSignaturePath, signer, 'release-index-signature',
-  );
-  try {
+  const inputPaths = signedInputPaths();
+  return withVerifiedReleaseAuthenticity({ statePath: inputStatePath, ...inputPaths, ...signer }, (verified, paths) => {
+    const statePath = paths.statePath;
+    const state = validateStateBytes(readFileSync(statePath));
+    if (bootstrap) validateBootstrapInputs(statePath);
     verifyS3RegistryProtection(uri);
-    setReleaseRetentionState(uri, state.sourceSha, activeRetentionTag);
-    const pointer = updateMutablePointer(uri, paths.indexPath, retainedIndexSignature.path, state.sourceSha, signer);
-    if (pointer.previousSourceSha && pointer.previousSourceSha !== state.sourceSha) {
-      setReleaseRetentionState(uri, pointer.previousSourceSha, obsoleteRetentionTag);
+    if (bootstrap) assertEmpty(uri);
+    const releaseObject = `releases/${state.sourceSha}.json`;
+    const releaseSignatureObject = `releases/${state.sourceSha}.sigstore.json`;
+    const indexObject = `indexes/${state.sourceSha}.json`;
+    const indexSignatureObject = `indexes/${state.sourceSha}.sigstore.json`;
+    ensureImmutableObject(uri, releaseObject, statePath, 'release bundle');
+    ensureImmutableObject(uri, indexObject, paths.indexPath, 'release index');
+    const retainedBundleSignature = ensureImmutableSignature(
+      uri, releaseSignatureObject, statePath, paths.bundleSignaturePath, signer, 'release-bundle-signature',
+    );
+    const retainedIndexSignature = ensureImmutableSignature(
+      uri, indexSignatureObject, paths.indexPath, paths.indexSignaturePath, signer, 'release-index-signature',
+    );
+    try {
+      verifyS3RegistryProtection(uri);
+      setReleaseRetentionState(uri, state.sourceSha, activeRetentionTag);
+      const pointer = updateMutablePointer(uri, paths.indexPath, retainedIndexSignature.path, state.sourceSha, signer);
+      if (pointer.previousSourceSha && pointer.previousSourceSha !== state.sourceSha) {
+        setReleaseRetentionState(uri, pointer.previousSourceSha, obsoleteRetentionTag);
+      }
+    } finally {
+      if (retainedBundleSignature.cleanup && existsSync(retainedBundleSignature.path)) unlinkSync(retainedBundleSignature.path);
+      if (retainedIndexSignature.cleanup && existsSync(retainedIndexSignature.path)) unlinkSync(retainedIndexSignature.path);
     }
-  } finally {
-    if (retainedBundleSignature.cleanup && existsSync(retainedBundleSignature.path)) unlinkSync(retainedBundleSignature.path);
-    if (retainedIndexSignature.cleanup && existsSync(retainedIndexSignature.path)) unlinkSync(retainedIndexSignature.path);
-  }
-  process.stdout.write(`${bootstrap ? 'release_registry_bootstrapped' : 'release_bundle_published'} source_sha=${state.sourceSha} bundle_sha256=${verified.bundleSha256}\n`);
+    process.stdout.write(`${bootstrap ? 'release_registry_bootstrapped' : 'release_bundle_published'} source_sha=${state.sourceSha} bundle_sha256=${verified.bundleSha256}\n`);
+  });
 }
 function validateBootstrapInputs(statePath) {
   const state = validateState(statePath);
@@ -865,7 +873,7 @@ async function prepareBootstrapRetained(uri, retainedUri, statePath) {
     throw error;
   }
 }
-function resolvePrevious(uri, output, selection = { mode: 'cli' }) {
+function resolvePreviousPrivate(uri, output, selection) {
   const signer = signerOptions();
   const requestedSourceSha = selection.mode === 'current'
     ? undefined
@@ -913,22 +921,37 @@ function resolvePrevious(uri, output, selection = { mode: 'cli' }) {
       indexSignaturePath,
       ...signer,
     });
-    const state = validateState(output);
+    const state = validateStateBytes(verified.artifactBytes.statePath);
     if (state.sourceSha !== sourceSha || verified.sourceSha !== sourceSha) {
       fail('Signed release registry index does not match the immutable bundle source SHA.');
     }
+    // Persist only authenticated bytes into this invocation's private output set.
+    for (const [name, destination] of Object.entries({ statePath: output, indexPath, bundleSignaturePath, indexSignaturePath })) {
+      writeFileSync(destination, verified.artifactBytes[name], { mode: 0o600 });
+    }
     if (existsSync(registryIndexPath)) unlinkSync(registryIndexPath);
     if (existsSync(registryIndexSignaturePath)) unlinkSync(registryIndexSignaturePath);
-    const selection = requestedSourceSha === undefined ? 'current' : 'explicit';
-    process.stdout.write(
-      'release_bundle_resolved source_sha=' + sourceSha
-      + ' selection=' + selection
-      + ' bundle_sha256=' + verified.bundleSha256 + '\n',
-    );
-    return { sourceSha, bundleSha256: verified.bundleSha256 };
+    return { sourceSha, bundleSha256: verified.bundleSha256,
+      selection: requestedSourceSha === undefined ? 'current' : 'explicit' };
   } catch (error) {
     for (const path of outputs) if (existsSync(path)) unlinkSync(path);
     throw error;
+  }
+}
+function resolvePrevious(uri, output, selection = { mode: 'cli' }) {
+  // Caller-chosen paths are delivery destinations, never verification inputs.
+  const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-registry-resolve-'));
+  const privateOutput = join(scratch, 'release.json');
+  try {
+    const result = resolvePreviousPrivate(uri, privateOutput, selection);
+    for (const suffix of ['', '.index.json', '.index.sigstore.json', '.sigstore.json']) {
+      writeFileSync(output + suffix, readFileSync(privateOutput + suffix), { mode: 0o600 });
+    }
+    process.stdout.write('release_bundle_resolved source_sha=' + result.sourceSha
+      + ' selection=' + result.selection + ' bundle_sha256=' + result.bundleSha256 + '\n');
+    return { sourceSha: result.sourceSha, bundleSha256: result.bundleSha256 };
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 }
 function repointCurrent(uri) {
@@ -954,18 +977,20 @@ function repointCurrent(uri) {
     }
     const resolved = resolvePrevious(uri, statePath, { mode: 'explicit', sourceSha });
     if (resolved.sourceSha !== sourceSha) fail('Authenticated retained release does not match the requested repoint source SHA.');
-    setReleaseRetentionState(uri, sourceSha, activeRetentionTag);
-    const pointer = updateMutablePointer(
-      uri,
-      statePath + '.index.json',
-      statePath + '.index.sigstore.json',
-      sourceSha,
-      signer,
-      expectedCurrentSha,
-    );
-    if (pointer.previousSourceSha && pointer.previousSourceSha !== sourceSha) {
-      setReleaseRetentionState(uri, pointer.previousSourceSha, obsoleteRetentionTag);
-    }
+    withVerifiedReleaseAuthenticity({
+      statePath,
+      indexPath: statePath + '.index.json',
+      bundleSignaturePath: statePath + '.sigstore.json',
+      indexSignaturePath: statePath + '.index.sigstore.json',
+      ...signer,
+    }, (verified, paths) => {
+      if (verified.sourceSha !== sourceSha) fail('Repoint snapshot source SHA differs from the selected retained release.');
+      setReleaseRetentionState(uri, sourceSha, activeRetentionTag);
+      const pointer = updateMutablePointer(uri, paths.indexPath, paths.indexSignaturePath, sourceSha, signer, expectedCurrentSha);
+      if (pointer.previousSourceSha && pointer.previousSourceSha !== sourceSha) {
+        setReleaseRetentionState(uri, pointer.previousSourceSha, obsoleteRetentionTag);
+      }
+    });
     verifyS3RegistryProtection(uri);
     const currentAfter = resolvePrevious(uri, currentAfterPath, { mode: 'current' });
     if (currentAfter.sourceSha !== sourceSha) {
@@ -979,7 +1004,6 @@ function repointCurrent(uri) {
   }
 }
 function bootstrapRetained(uri, statePath) {
-  validateBootstrapInputs(statePath);
   publishSignedRelease(uri, statePath, true);
 }
 async function main() {

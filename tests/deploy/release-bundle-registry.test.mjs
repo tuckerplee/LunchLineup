@@ -24,7 +24,8 @@ const verifierFixtureRoot = mkdtempSync(join(tmpdir(), 'll-fake-cosign-'));
 const fakeCosignPath = join(verifierFixtureRoot, 'fake-cosign.mjs');
 writeFileSync(fakeCosignPath, `
 import { createHash, createPublicKey, verify } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 const args = process.argv.slice(2);
 const option = (name) => args[args.indexOf(name) + 1];
 if (args[0] !== 'verify-blob' || !args[1]) process.exit(2);
@@ -51,6 +52,35 @@ if (
 ) {
   console.error('offline fixture signature rejected');
   process.exit(1);
+}
+if (process.env.TEST_RACE_LOG) appendFileSync(process.env.TEST_RACE_LOG, JSON.stringify({ artifact: args[1], signature: option('--bundle') }) + '\\n');
+if (process.env.TEST_RACE_PLAN) {
+  const plan = JSON.parse(readFileSync(process.env.TEST_RACE_PLAN, 'utf8'));
+  const calls = Number(existsSync(plan.counter) ? readFileSync(plan.counter, 'utf8') : 0) + 1;
+  writeFileSync(plan.counter, String(calls));
+  let replacements = plan.replacements || [];
+  let matches = calls === plan.at;
+  if (plan.discoverRepoint) {
+    const value = JSON.parse(artifact);
+    const directories = readdirSync(plan.privateTmp).filter(name => name.startsWith('lunchlineup-registry-repoint-'));
+    const targets = directories.map(name => join(plan.privateTmp, name, 'release.json')).filter(path => existsSync(path));
+    matches = value.sourceSha === plan.expectedSource && targets.length === 1;
+    if (matches) replacements = plan.replacementSources.map(([suffix, source]) => [targets[0] + suffix, source]);
+  }
+  if (plan.discoverMutable) {
+    const value = JSON.parse(artifact);
+    const directories = readdirSync(plan.privateTmp).filter(name => name.startsWith('lunchlineup-registry-repoint-'));
+    const targets = directories.map(name => join(plan.privateTmp, name, 'immutable-index.json')).filter(path => existsSync(path));
+    matches = value.currentSuccessfulSha === plan.expectedSource && targets.length === 1;
+    if (matches) replacements = [[targets[0], plan.replacementIndex], [targets[0].replace(/json$/, 'sigstore.json'), plan.replacementSignature]];
+  }
+  if (matches && !existsSync(plan.marker)) {
+    for (const [destination, source] of replacements) {
+      const temporary = destination + '.race-replacement';
+      writeFileSync(temporary, readFileSync(source)); renameSync(temporary, destination);
+    }
+    writeFileSync(plan.marker, String(calls));
+  }
 }
 `);
 after(() => rmSync(verifierFixtureRoot, { recursive: true, force: true }));
@@ -169,6 +199,13 @@ const objectPath = (key) => join(root, ...key.split('/'));
 const metadataPath = (key) => objectPath(key) + '.metadata.json';
 const output = (value) => process.stdout.write(JSON.stringify(value));
 const command = args[0] + ' ' + args[1];
+if (process.env.TEST_PROVIDER_RACE_PLAN && command === 's3api put-object') {
+  const plan = JSON.parse(readFileSync(process.env.TEST_PROVIDER_RACE_PLAN, 'utf8'));
+  if (option('--key') === plan.key && !existsSync(plan.marker)) {
+    for (const [destination, source] of plan.replacements) copyFileSync(source, destination);
+    writeFileSync(plan.marker, 'applied');
+  }
+}
 
 if (command === 's3api get-bucket-versioning') {
   output(mode === 'missing-versioning' ? {} : { Status: 'Enabled' });
@@ -885,4 +922,182 @@ test('bootstrap dispatch is isolated from push-only deployment', () => {
     assert.match(line, /github\.event_name == 'workflow_dispatch' && inputs\.internal_beta_candidate == true/);
     assert.doesNotMatch(line, /bootstrap_release_registry|emergency_production_rollback/);
   }
+});
+
+function raceState(sourceSha) {
+  return { version: 2, sourceSha, releaseManifest: { sourceSha }, runtimeSecret: {
+    version: 1, provider: 'aws-secretsmanager', reference: 'arn:aws:secretsmanager:us-west-2:123456789012:secret:lunchlineup',
+    secretVersion: 'a'.repeat(32), sha256: 'b'.repeat(64),
+  } };
+}
+
+function racePair(scratch) {
+  const original = join(scratch, 'original.json'), alternate = join(scratch, 'alternate.json');
+  writeFileSync(original, JSON.stringify(raceState(sha)));
+  writeFileSync(alternate, JSON.stringify(raceState('b'.repeat(40))));
+  const signed = signedArgs(original); signedArgs(alternate);
+  const suffixes = ['', '.index.json', '.sigstore.json', '.index.sigstore.json'];
+  return { original, alternate, signed, suffixes,
+    bytes: Object.fromEntries(suffixes.map(suffix => [suffix, readFileSync(original + suffix)])),
+    replacements: suffixes.map(suffix => [original + suffix, alternate + suffix]) };
+}
+
+function verifierRace(scratch, replacements, at = 1, extras = {}) {
+  const planPath = join(scratch, 'race-plan.json');
+  const marker = join(scratch, 'race-applied'), counter = join(scratch, 'race-count'), log = join(scratch, 'verifier-calls.jsonl');
+  writeFileSync(planPath, JSON.stringify({ at, replacements, marker, counter, ...extras }));
+  return { env: { TEST_RACE_PLAN: planPath, TEST_RACE_LOG: log }, marker, log };
+}
+
+function assertOriginalRegistry(registry, pair) {
+  for (const [suffix, relative] of [
+    ['', `releases/${sha}.json`], ['.sigstore.json', `releases/${sha}.sigstore.json`],
+    ['.index.json', `indexes/${sha}.json`], ['.index.sigstore.json', `indexes/${sha}.sigstore.json`],
+    ['.index.json', 'index.json'], ['.index.sigstore.json', 'index.sigstore.json'],
+  ]) assert.deepEqual(readFileSync(join(registry, relative)), pair.bytes[suffix], `replacement bytes poisoned ${relative}`);
+  assert.equal(existsSync(join(registry, 'releases', 'b'.repeat(40) + '.json')), false);
+}
+
+for (const at of [1, 2]) {
+  test(`publication holds all four original inputs through verifier race ${at}`, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'll-publication-race-'));
+    try {
+      const pair = racePair(scratch); const registry = join(scratch, 'registry');
+      const race = verifierRace(scratch, pair.replacements, at);
+      const result = run(['publish', '--registry-uri', pathToFileURL(registry).href, '--state-file', pair.original, ...pair.signed], race.env);
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.ok(existsSync(race.marker), 'verifier race was not reached');
+      assert.equal(JSON.parse(readFileSync(pair.original)).sourceSha, 'b'.repeat(40));
+      assertOriginalRegistry(registry, pair);
+      const calls = readFileSync(race.log, 'utf8').trim().split('\n').map(JSON.parse);
+      for (const call of calls) {
+        assert.ok(!pair.replacements.some(([path]) => path === call.artifact || path === call.signature));
+        assert.equal(existsSync(call.artifact), false, 'private verification snapshot survived');
+      }
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  });
+}
+
+for (const key of [`releases/${sha}.json`, `indexes/${sha}.sigstore.json`, 'index.json']) {
+  test(`publication uses held snapshots at provider boundary ${key}`, { skip: process.platform === 'win32' }, () => {
+    const scratch = mkdtempSync(join(tmpdir(), 'll-publication-provider-race-'));
+    try {
+      const pair = racePair(scratch); const provider = fakeAwsEnvironment(scratch);
+      const planPath = join(scratch, 'provider-race.json'), marker = join(scratch, 'provider-race-applied');
+      writeFileSync(planPath, JSON.stringify({ key: 'release-registry/' + key, replacements: pair.replacements, marker }));
+      const result = run(['publish', '--registry-uri', 's3://fake-bucket/release-registry', '--state-file', pair.original, ...pair.signed],
+        { ...provider.env, TEST_PROVIDER_RACE_PLAN: planPath });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+      assert.ok(existsSync(marker), 'publication boundary race was not exercised');
+      assertOriginalRegistry(join(provider.providerRoot, 'release-registry'), pair);
+    } finally { rmSync(scratch, { recursive: true, force: true }); }
+  });
+}
+
+test('retained signature reconciliation uses original publication despite source replacements', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-signature-reconcile-race-'));
+  try {
+    const pair = racePair(scratch); const registry = join(scratch, 'registry'), uri = pathToFileURL(registry).href;
+    assert.equal(run(['publish', '--registry-uri', uri, '--state-file', pair.original, ...pair.signed]).status, 0);
+    rmSync(join(registry, 'index.json'));
+    const race = verifierRace(scratch, pair.replacements, 2);
+    const result = run(['publish', '--registry-uri', uri, '--state-file', pair.original, ...pair.signed], race.env);
+    assert.equal(result.status, 0, result.stderr);
+    assert.ok(existsSync(race.marker));
+    assertOriginalRegistry(registry, pair);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('resolve uses private inputs and overwrites candidate output replacements only with authenticated bytes', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-resolve-output-race-'));
+  try {
+    const pair = racePair(scratch); const registry = join(scratch, 'registry'), uri = pathToFileURL(registry).href;
+    assert.equal(run(['publish', '--registry-uri', uri, '--state-file', pair.original, ...pair.signed]).status, 0);
+    const output = join(scratch, 'delivered.json');
+    for (const suffix of pair.suffixes) writeFileSync(output + suffix, 'preexisting candidate output');
+    const race = verifierRace(scratch, pair.suffixes.map(suffix => [output + suffix, pair.alternate + suffix]));
+    const resolved = run(['resolve', '--registry-uri', uri, '--output', output], race.env);
+    assert.equal(resolved.status, 0, `${resolved.stdout}\n${resolved.stderr}`);
+    assert.ok(existsSync(race.marker));
+    for (const suffix of pair.suffixes) assert.deepEqual(readFileSync(output + suffix), pair.bytes[suffix]);
+    for (const call of readFileSync(race.log, 'utf8').trim().split('\n').map(JSON.parse)) {
+      assert.ok(!pair.suffixes.some(suffix => call.artifact === output + suffix || call.signature === output + suffix));
+      assert.equal(existsSync(call.artifact), false);
+    }
+    const failed = join(scratch, 'failed.json'); writeFileSync(failed, 'retain prior output');
+    const refused = run(['resolve', '--registry-uri', uri, '--output', failed], { COSIGN_BINARY: join(scratch, 'absent-verifier'), COSIGN_ARGUMENT_PREFIX_JSON: '' });
+    assert.notEqual(refused.status, 0);
+    assert.doesNotMatch(refused.stdout, /release_bundle_resolved/);
+    assert.equal(readFileSync(failed, 'utf8'), 'retain prior output');
+    assert.equal(existsSync(failed + '.index.json'), false);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('bootstrap confirmation and live proof cannot authorize a replaced different release', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-bootstrap-source-race-'));
+  try {
+    const pair = racePair(scratch); const registry = join(scratch, 'registry');
+    const proofPaths = [join(scratch, 'api-proof.json'), join(scratch, 'web-proof.json')];
+    for (const [index, path] of proofPaths.entries()) writeFileSync(path, JSON.stringify({
+      status: 'passed', sourceSha: sha, servedReleaseSha: sha, releaseIdentityHeader: 'X-LunchLineup-Release',
+      healthUrl: index ? 'https://lunchlineup.example/' : 'https://lunchlineup.example/api/health',
+      surface: index ? 'public-html' : 'health', httpStatus: 200, responseSha256: 'c'.repeat(64), responseBytes: 2048, checkedAt: new Date().toISOString(),
+    }));
+    const options = ['--verified-source-sha', sha, '--confirm', 'bootstrap-current-live-release:' + sha,
+      '--max-live-proof-age-seconds', '300', '--expected-api-health-url', 'https://lunchlineup.example/api/health',
+      '--expected-public-web-url', 'https://lunchlineup.example/', ...proofPaths.flatMap(path => ['--live-identity-proof', path])];
+    const race = verifierRace(scratch, pair.replacements, 2);
+    const result = run(['bootstrap-retained', '--registry-uri', pathToFileURL(registry).href, '--state-file', pair.original, ...pair.signed, ...options], race.env);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.ok(existsSync(race.marker)); assertOriginalRegistry(registry, pair);
+    const deniedRegistry = join(scratch, 'denied');
+    const denied = run(['bootstrap-retained', '--registry-uri', pathToFileURL(deniedRegistry).href, '--state-file', pair.alternate, ...signedArgs(pair.alternate), ...options]);
+    assert.notEqual(denied.status, 0);
+    assert.equal(existsSync(join(deniedRegistry, 'index.json')), false);
+    assert.doesNotMatch(denied.stdout, /release_registry_bootstrapped/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('repoint retains verified target while original downloaded delivery paths are replaced', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-repoint-source-race-'));
+  try {
+    const pair = racePair(scratch); const registry = join(scratch, 'registry'), uri = pathToFileURL(registry).href;
+    assert.equal(run(['publish', '--registry-uri', uri, '--state-file', pair.original, ...pair.signed]).status, 0);
+    assert.equal(run(['publish', '--registry-uri', uri, '--state-file', pair.alternate]).status, 0);
+    const privateTmp = join(scratch, 'private-tmp'); mkdirSync(privateTmp);
+    const race = verifierRace(scratch, [], 0, { discoverRepoint: true, privateTmp, expectedSource: sha,
+      replacementSources: pair.suffixes.map(suffix => [suffix, pair.alternate + suffix]) });
+    const result = run(['repoint', '--registry-uri', uri, '--source-sha', sha,
+      '--expected-current-source-sha', 'b'.repeat(40), '--confirm', 'repoint-current-to:' + sha], { ...race.env, TMPDIR: privateTmp });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.ok(existsSync(race.marker), 'final verified target race was not reached');
+    assert.deepEqual(readFileSync(join(registry, 'index.json')), pair.bytes['.index.json']);
+    assert.deepEqual(readFileSync(join(registry, 'index.sigstore.json')), pair.bytes['.index.sigstore.json']);
+    const stale = run(['repoint', '--registry-uri', uri, '--source-sha', 'b'.repeat(40),
+      '--expected-current-source-sha', 'b'.repeat(40), '--confirm', 'repoint-current-to:' + 'b'.repeat(40)]);
+    assert.notEqual(stale.status, 0);
+    assert.match(stale.stderr, /expected-current-source-sha/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
+});
+
+test('authenticated split-pair repair restores retained bytes despite downloaded-source replacement', { skip: process.platform === 'win32' }, () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-pointer-download-race-'));
+  try {
+    const pair = racePair(scratch); const provider = fakeAwsEnvironment(scratch);
+    const old = seedProviderRelease(provider.providerRoot, pair.original, { retention: 'obsolete' });
+    const current = seedProviderRelease(provider.providerRoot, pair.alternate, { current: true });
+    const expectedIndex = readFileSync(current.indexPath), expectedSignature = readFileSync(current.indexSignaturePath);
+    seedProviderObject(provider.providerRoot, 'release-registry/index.sigstore.json', old.indexSignaturePath);
+    const privateTmp = join(scratch, 'private-tmp'); mkdirSync(privateTmp);
+    const race = verifierRace(scratch, [], 0, { discoverMutable: true, privateTmp, expectedSource: 'b'.repeat(40),
+      replacementIndex: old.indexPath, replacementSignature: old.indexSignaturePath });
+    const result = run(['repoint', '--registry-uri', 's3://fake-bucket/release-registry', '--source-sha', 'b'.repeat(40),
+      '--expected-current-source-sha', 'b'.repeat(40), '--confirm', 'repoint-current-to:' + 'b'.repeat(40)],
+      { ...provider.env, ...race.env, TMPDIR: privateTmp });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.ok(existsSync(race.marker), 'retained pointer race was not reached');
+    assert.deepEqual(readFileSync(join(provider.providerRoot, 'release-registry/index.json')), expectedIndex);
+    assert.deepEqual(readFileSync(join(provider.providerRoot, 'release-registry/index.sigstore.json')), expectedSignature);
+    assert.match(readFileSync(provider.providerLog, 'utf8'), /--if-match/);
+  } finally { rmSync(scratch, { recursive: true, force: true }); }
 });
