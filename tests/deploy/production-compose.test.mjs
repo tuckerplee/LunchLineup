@@ -1885,7 +1885,17 @@ test('Grafana dashboard exposes backup freshness and host filesystem pressure', 
   assert.match(dashboard, /time\(\) - lunchlineup_backup_last_success_timestamp_seconds/);
   assert.match(dashboard, /Host Filesystem Free/);
   assert.match(dashboard, /node_filesystem_avail_bytes/);
-  assert.match(dashboard, /API Availability SLO \(30d\)/);
+  const nativeAvailability = JSON.parse(dashboard).panels.filter((panel) => panel.id === 13);
+  assert.equal(nativeAvailability.length, 1);
+  const [availability] = nativeAvailability;
+  assert.equal(availability.title, 'Native API Availability (30d, provisional)');
+  assert.deepEqual(availability.datasource, { type: 'prometheus', uid: 'prometheus' });
+  const failures = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[30d]))';
+  const eligible = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30d]))';
+  assert.deepEqual(availability.targets, [{ refId: 'A', expr: `(100 * (1 - ((${failures} or vector(0)) / ${eligible}))) and (${eligible} > 0)`, legendFormat: 'availability', instant: true }]);
+  assert.match(availability.description, /No traffic yields no data/);
+  assert.match(availability.description, /provisional until complete historical collection and independent launch evidence exist/);
+  assert.match(availability.description, /cannot certify a complete 30-day SLO or months of private testing/);
   assert.match(dashboard, /Public Web Availability SLO \(30d\)/);
   assert.match(dashboard, /lunchlineup_public_web_probe_success/);
   assert.match(dashboard, /"id": "tempo"/);
