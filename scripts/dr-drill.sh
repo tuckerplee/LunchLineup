@@ -576,7 +576,33 @@ run_adapter_process_tree_bounded() {
     return 78
   fi
   (
-    sleep "$seconds"
+    # Cancellation may arrive before the background child's PID assignment.
+    # Record it without exiting, then always kill/reap our own sleeper.
+    timer_cancelled=false
+    timer_sleep_status=0
+    timer_sleep_reaped=false
+    trap 'timer_cancelled=true' TERM
+    sleep "$seconds" &
+    timer_sleep_pid=$!
+    if [ "$timer_cancelled" = false ]; then
+      if wait "$timer_sleep_pid"; then
+        timer_sleep_reaped=true
+      else
+        timer_sleep_status=$?
+        [ "$timer_cancelled" = true ] || timer_sleep_reaped=true
+      fi
+    fi
+    if [ "$timer_cancelled" = true ]; then
+      # Repeated cancellation cannot interrupt the mandatory child wait.
+      trap '' TERM
+      if [ "$timer_sleep_reaped" = false ]; then
+        kill -KILL "$timer_sleep_pid" 2>/dev/null || true
+        wait "$timer_sleep_pid" 2>/dev/null || true
+      fi
+      exit 0
+    fi
+    [ "$timer_sleep_status" -eq 0 ] || exit "$timer_sleep_status"
+    trap - TERM
     if dr_owner_cgroup_v2_populated "${adapter_cgroup}"; then
       printf '%s\n' timeout >"${reason_file}"
       dr_owner_cgroup_v2_terminate "${adapter_cgroup}" \
