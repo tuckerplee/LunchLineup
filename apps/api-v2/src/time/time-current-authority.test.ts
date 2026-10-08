@@ -738,3 +738,51 @@ describe('native Time same-proof retries, current scope and observer custody', (
     await expect(f.invoke()).rejects.toMatchObject({ status: 409 }); expect(f.attempted).toEqual([]); assertNoDomainCommit(f, original);
   });
 });
+
+
+describe('C04 original request policy cap regression', () => {
+  it('time retains original cap across payroll waits, but a fresh request may use the longer policy', async () => {
+    const f = model('clockIn'); await f.validBefore(); shorten(f, 'effective');
+    const original = clone(f.state), observe = f.observer.observeSessionMfa.getMockImplementation()!;
+    f.observer.observeSessionMfa.mockImplementation(async selected => {
+      const proof = await observe(selected); f.state.setting.security.sessionTimeoutMinutes = 480; return proof;
+    });
+    const result = await atWait(f, 'payrollAdvisory', f.invoke, () => expire('effective'));
+    expect(result.error).toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(f.attempted).toEqual([]); assertNoDomainCommit(f, original);
+    expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    assertPositive('clockIn', await f.invoke(), f);
+    expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(2);
+  });
+  it('time still enforces a stricter current cap within the original lifetime', async () => {
+    const f = model('clockIn'); await f.validBefore();
+    f.state.session.createdAt = new Date(Date.now() - 10 * 60_000);
+    const original = clone(f.state);
+    const result = await atWait(f, 'observer', f.invoke, () => {
+      f.state.setting.security.sessionTimeoutMinutes = 5;
+    }, 1);
+    expect(result.error).toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(f.attempted).toEqual([]); assertNoDomainCommit(f, original);
+  });
+  it('time serialization retry and committed replay cannot renew the original policy cap', async () => {
+    const f = model('clockIn'); await f.validBefore(); shorten(f, 'effective');
+    const original = clone(f.state);
+    f.controls.serialEffect = 'TimeCardCreate'; f.controls.serialRemaining = 1;
+    f.controls.afterAbort = () => { f.state.setting.security.sessionTimeoutMinutes = 480; expire('effective'); };
+    await expect(f.invoke()).rejects.toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(f.attempted).toHaveLength(1); assertNoDomainCommit(f, original);
+    expect(f.observer.observeSessionMfa).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(new Date(now));
+    const replay = model('clockIn'); await replay.validBefore(); await replay.invoke();
+    replay.committed.length = 0; replay.attempted.length = 0;
+    shorten(replay, 'effective'); const saved = clone(replay.state);
+    const observe = replay.observer.observeSessionMfa.getMockImplementation()!;
+    replay.observer.observeSessionMfa.mockImplementation(async selected => {
+      const proof = await observe(selected); replay.state.setting.security.sessionTimeoutMinutes = 480; return proof;
+    });
+    const result = await atWait(replay, 'contextEntry', replay.invoke, () => expire('effective'));
+    expect(result.error).toMatchObject({ status: 403, code: 'permission_denied' });
+    expect(replay.attempted).toEqual([]); assertNoDomainCommit(replay, saved);
+    expect(replay.observer.observeSessionMfa).toHaveBeenCalledTimes(2);
+  });
+});

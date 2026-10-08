@@ -557,27 +557,22 @@ export class PayrollService {
   }
 
   async exportEntitlement(identity: SessionIdentity) {
-    return this.database.withTenant(identity.tenantId, async (transaction) => {
+    identity = mutationIdentity(identity);
+    const authority = await this.prepareCurrentMutation(identity, 'payroll:export');
+    return authority.run(async (transaction, assertCurrent) => {
+      let response;
       try {
         const entitlement = await assertFeatureEntitled(transaction, identity.tenantId, 'time_cards', true);
-        if (!entitlement) {
-          return {
-            creditCost: null,
-            eligible: false,
-            reason: 'Payroll export requires usage credits.',
-          };
-        }
-        return {
-          creditCost: entitlement.creditCost,
-          eligible: true,
-          reason: 'Payroll export is eligible.',
-        };
+        response = entitlement
+          ? { creditCost: entitlement.creditCost, eligible: true, reason: 'Payroll export is eligible.' }
+          : { creditCost: null, eligible: false, reason: 'Payroll export requires usage credits.' };
       } catch (error) {
-        if (error instanceof ProblemError && error.status === 403) {
-          return { creditCost: null, eligible: false, reason: error.message.slice(0, 500) };
-        }
-        throw error;
+        if (!(error instanceof ProblemError && error.status === 403)) throw error;
+        response = { creditCost: null, eligible: false, reason: error.message.slice(0, 500) };
       }
+      // Authority failures must not be normalized as feature ineligibility.
+      assertCurrent();
+      return response;
     });
   }
 
@@ -1651,6 +1646,7 @@ export class PayrollService {
         await applyPayrollTransactionTimeouts(transaction);
         return authorizeCurrentMutation(transaction, identity, permission);
       }, TRANSACTION_OPTIONS));
+    const requestExpiresAt = preflight.expiresAtEpochMs;
     let observation: MfaVerificationObservation | null = null;
     if (preflight.requiresMfa) {
       if (!observe) throw payrollProblem(503, 'identity_service_unavailable', 'Session validation is temporarily unavailable.', 'Service unavailable');
@@ -1669,7 +1665,12 @@ export class PayrollService {
         async transaction => {
           await applyPayrollTransactionTimeouts(transaction);
           const authority = await authorizeCurrentMutation(transaction, identity, permission);
-          const assertCurrent = () => assertCurrentMutation(authority, observation);
+          const assertCurrent = () => {
+            if (requestExpiresAt <= Date.now()) {
+              throw payrollProblem(403, 'permission_denied', 'The original request session deadline has expired.', 'Forbidden');
+            }
+            assertCurrentMutation(authority, observation);
+          };
           assertCurrent();
           const response = await operation(transaction, assertCurrent);
           assertCurrent();

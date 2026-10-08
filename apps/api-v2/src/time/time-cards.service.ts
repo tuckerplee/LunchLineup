@@ -149,6 +149,7 @@ export class TimeCardService {
     const owner = this.mfaObserver, observe = owner?.observeSessionMfa;
     const preflight = await retryPayrollSerializableMutation(() => this.database.withTenant(identity.tenantId,
       tx => authorizeCurrentMutation(tx, identity, permission), options));
+    const requestExpiresAt = preflight.expiresAtEpochMs;
     let observation: MfaVerificationObservation | null = null;
     if (preflight.requiresMfa) {
       if (typeof observe !== 'function') {
@@ -174,7 +175,12 @@ export class TimeCardService {
             targetUserId ? { targetUserId, allowDeletedTarget: true } : {});
           const current = Object.freeze({ ...identity, sub: authority.actor.id,
             publicUserId: authority.actor.publicId, permissions: [...authority.actorAccess.permissions] });
-          const assertCurrent = () => assertCurrentMutation(authority, observation);
+          const assertCurrent = () => {
+            if (requestExpiresAt <= Date.now()) {
+              throw timeCardProblem(403, 'permission_denied', 'The original request session deadline has expired.', 'Forbidden');
+            }
+            assertCurrentMutation(authority, observation);
+          };
           assertCurrent();
           const result = await operation(tx, current, assertCurrent, targetUserId);
           assertCurrent();
