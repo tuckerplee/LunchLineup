@@ -520,9 +520,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                 u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
             )));
             setSchedulingProfileUser((current) => {
-                const target = current?.id === id ? current : users.find((user) => user.id === id);
-                return target
-                    ? { ...target, username: payload.username ?? target.username, pinEnabled: true, pinResetRequired: true }
+                return current?.id === id
+                    ? { ...current, username: payload.username ?? current.username, pinEnabled: true, pinResetRequired: true }
                     : current;
             });
             setLastTemporaryPin(payload.temporaryPin ?? null);
@@ -532,7 +531,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
         } finally {
             setIsSaving(null);
         }
-    }, [users]);
+    }, []);
 
     const removeStaff = useCallback(async (id: string) => {
         setIsSaving(id);
@@ -555,6 +554,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
         const { action, user } = pendingAction;
         setPendingAction(null);
         if (action === 'reset-pin') {
+            // Select the credential recipient on confirmation, never on a late response.
+            setSchedulingProfileUser(user);
             void resetPin(user.id);
             return;
         }

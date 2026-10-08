@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { Check, FilePenLine, X } from 'lucide-react';
 import type { PayrollAmendmentInput } from './payroll-api';
 import { payrollInstantToLocalInput, payrollLocalInputToIso } from './payroll-amendment-time';
@@ -22,6 +22,7 @@ type PayrollAmendmentsProps = {
 };
 
 export function PayrollAmendments({ entries, amendments, periods, sourcePeriod, currentUserId, canCreate, canDecide, isBusy, onCreate, onDecision }: PayrollAmendmentsProps) {
+  const editorGeneration = useRef(0);
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
   const [adjustmentPeriodId, setAdjustmentPeriodId] = useState('');
   const [reason, setReason] = useState('');
@@ -38,6 +39,7 @@ export function PayrollAmendments({ entries, amendments, periods, sourcePeriod, 
 
   function openForm(entry: PayrollLockedEntry) {
     if (!canCreatePayrollAmendmentForEntry(canCreate, currentUserId, entry.employeeId)) return;
+    editorGeneration.current += 1;
     setEditingEntryId(entry.id);
     setAdjustmentPeriodId(futureAdjustmentPeriods[0]?.id ?? '');
     setReason('');
@@ -67,14 +69,20 @@ export function PayrollAmendments({ entries, amendments, periods, sourcePeriod, 
       setFormError('Enter a valid replacement time range and non-negative whole break minutes.');
       return;
     }
-    const created = await onCreate(editingEntry.id, {
+    const generation = editorGeneration.current;
+    const entryId = editingEntry.id;
+    const created = await onCreate(entryId, {
       adjustmentPeriodId,
       reason: reason.trim(),
       replacementClockInAt: clockInAt,
       replacementClockOutAt: clockOutAt,
       replacementBreakMinutes: parsedBreak,
     });
-    if (created) setEditingEntryId(null);
+    // An acknowledged request owns only the draft that was submitted.
+    // Editing or cancelling while it settles must preserve the newer editor.
+    if (created) setEditingEntryId((current) => (
+      editorGeneration.current === generation && current === entryId ? null : current
+    ));
   }
 
   return (
@@ -89,15 +97,15 @@ export function PayrollAmendments({ entries, amendments, periods, sourcePeriod, 
         <form className={styles.amendmentForm} onSubmit={submit} noValidate>
           <div className={styles.sectionHeading}>
             <strong>Create amendment</strong>
-            <button className={styles.iconButton} type="button" onClick={() => setEditingEntryId(null)} aria-label="Cancel amendment"><X size={16} aria-hidden="true" /></button>
+            <button className={styles.iconButton} type="button" onClick={() => { editorGeneration.current += 1; setEditingEntryId(null); }} aria-label="Cancel amendment"><X size={16} aria-hidden="true" /></button>
           </div>
           <div className={styles.formGrid}>
-            <label className="form-group"><span className="form-label">Future open period</span><select className="form-input" value={adjustmentPeriodId} onChange={(event) => setAdjustmentPeriodId(event.target.value)} required><option value="">Choose period</option>{futureAdjustmentPeriods.map((period) => <option key={period.id} value={period.id}>{period.localStartDate} to {period.localEndDateExclusive}</option>)}</select></label>
-            <label className="form-group"><span className="form-label">Replacement clock in ({editingEntry.workTimeZone})</span><input className="form-input" type="datetime-local" value={clockIn} onChange={(event) => setClockIn(event.target.value)} required /></label>
-            <label className="form-group"><span className="form-label">Replacement clock out ({editingEntry.workTimeZone})</span><input className="form-input" type="datetime-local" value={clockOut} onChange={(event) => setClockOut(event.target.value)} required /></label>
-            <label className="form-group"><span className="form-label">Replacement break minutes</span><input className="form-input" type="number" min="0" step="1" value={breakMinutes} onChange={(event) => setBreakMinutes(event.target.value)} required /></label>
+            <label className="form-group"><span className="form-label">Future open period</span><select className="form-input" value={adjustmentPeriodId} onChange={(event) => { editorGeneration.current += 1; setAdjustmentPeriodId(event.target.value); }} required><option value="">Choose period</option>{futureAdjustmentPeriods.map((period) => <option key={period.id} value={period.id}>{period.localStartDate} to {period.localEndDateExclusive}</option>)}</select></label>
+            <label className="form-group"><span className="form-label">Replacement clock in ({editingEntry.workTimeZone})</span><input className="form-input" type="datetime-local" value={clockIn} onChange={(event) => { editorGeneration.current += 1; setClockIn(event.target.value); }} required /></label>
+            <label className="form-group"><span className="form-label">Replacement clock out ({editingEntry.workTimeZone})</span><input className="form-input" type="datetime-local" value={clockOut} onChange={(event) => { editorGeneration.current += 1; setClockOut(event.target.value); }} required /></label>
+            <label className="form-group"><span className="form-label">Replacement break minutes</span><input className="form-input" type="number" min="0" step="1" value={breakMinutes} onChange={(event) => { editorGeneration.current += 1; setBreakMinutes(event.target.value); }} required /></label>
           </div>
-          <label className="form-group"><span className="form-label">Reason</span><textarea className="form-input" value={reason} onChange={(event) => setReason(event.target.value)} maxLength={500} rows={3} required /></label>
+          <label className="form-group"><span className="form-label">Reason</span><textarea className="form-input" value={reason} onChange={(event) => { editorGeneration.current += 1; setReason(event.target.value); }} maxLength={500} rows={3} required /></label>
           {formError ? <div role="alert" className={styles.inlineError}>{formError}</div> : null}
           <button className="btn btn-primary btn-sm" type="submit" disabled={isBusy || futureAdjustmentPeriods.length === 0}><FilePenLine size={15} aria-hidden="true" /> Create amendment only</button>
         </form>

@@ -168,3 +168,67 @@ describe('actual Location edit acknowledgement handling', () => {
     expect(callbacks.notice).not.toHaveBeenCalled(); expect(callbacks.finish).toHaveBeenCalledExactlyOnceWith();
   });
 });
+
+// Controlled actual handlers and effect listener; this is not browser focus/DOM proof.
+function deletion() {
+  const finish = vi.fn(); const deactivated = vi.fn(); const error = vi.fn();
+  const begin = vi.fn(() => finish);
+  h = clientComponentHarness(() => LocationLifecycleActions({ location: A, canWrite: true, canDelete: true,
+    onMutationStart: begin, onUpdated: vi.fn(), onDeactivated: deactivated, onError: error, onNotice: vi.fn() }));
+  render(); h.flushEffects();
+  button(render(), 'Deactivate').props.onClick();
+  const dialog = nodes(render()).find(n => n.props.role === 'alertdialog')!;
+  (dialog as unknown as { ref: { current: unknown } }).ref.current = { querySelectorAll: () => [], focus: vi.fn() };
+  h.flushEffects();
+  const keydown = vi.mocked(document.addEventListener).mock.calls.find(([name]) => name === 'keydown')![1] as (event: unknown) => void;
+  nodes(dialog).find(n => n.type === 'input')!.props.onChange(changeEvent(A.name));
+  return { begin, finish, deactivated, error, keydown };
+}
+const escape = () => ({ key: 'Escape', preventDefault: vi.fn(), stopPropagation: vi.fn() });
+describe('actual Location deactivation single-flight and Escape', () => {
+  it('retains the pending modal and sends exactly one DELETE despite repeated queued confirmation and Escape', async () => {
+    const c = deletion(); const pending = deferred<Response>(); m.fetch.mockReturnValueOnce(pending.promise);
+    const confirm = button(render(), 'Deactivate location');
+    confirm.props.onClick(); confirm.props.onClick(); c.keydown(escape());
+    expect(nodes(render()).some(n => n.props.role === 'alertdialog')).toBe(true);
+    expect(button(render(), 'Deactivating...').props.disabled).toBe(true);
+    expect(button(render(), 'Cancel').props.disabled).toBe(true);
+    // A queued cancel callback must also respect pending custody.
+    button(render(), 'Cancel').props.onClick();
+    expect(nodes(render()).some(n => n.props.role === 'alertdialog')).toBe(true);
+    expect(m.fetch).toHaveBeenCalledExactlyOnceWith('/locations/' + A.id, expect.objectContaining({ method: 'DELETE' }));
+    expect(c.begin).toHaveBeenCalledTimes(1); expect(c.deactivated).not.toHaveBeenCalled();
+    pending.resolve(new Response(null, { status: 204 }));
+    await h.until(tree => !nodes(tree).some(n => n.props.role === 'alertdialog'));
+    expect(c.deactivated).toHaveBeenCalledExactlyOnceWith(A.id); expect(c.finish).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the target and confirmation after failure and allows one intentional retry', async () => {
+    const c = deletion(); const pending = deferred<Response>(); m.fetch.mockReturnValueOnce(pending.promise);
+    button(render(), 'Deactivate location').props.onClick(); c.keydown(escape());
+    pending.resolve(response({ detail: 'Location still has active work.' }, 409));
+    await h.until(tree => nodes(tree).some(n => n.type === 'button' && text(n.props.children).trim() === 'Deactivate location' && !n.props.disabled));
+    expect(c.deactivated).not.toHaveBeenCalled(); expect(c.error).toHaveBeenLastCalledWith('Location still has active work.');
+    expect(nodes(render()).find(n => n.type === 'input')!.props.value).toBe(A.name);
+    m.fetch.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    button(render(), 'Deactivate location').props.onClick();
+    await h.until(tree => !nodes(tree).some(n => n.props.role === 'alertdialog'));
+    expect(m.fetch).toHaveBeenCalledTimes(2); expect(c.begin).toHaveBeenCalledTimes(2); expect(c.finish).toHaveBeenCalledTimes(2);
+    expect(c.deactivated).toHaveBeenCalledExactlyOnceWith(A.id);
+  });
+
+  it('allows idle Escape to cancel without beginning a mutation', () => {
+    const c = deletion(); c.keydown(escape());
+    expect(nodes(render()).some(n => n.props.role === 'alertdialog')).toBe(false);
+    expect(m.fetch).not.toHaveBeenCalled(); expect(c.begin).not.toHaveBeenCalled();
+  });
+
+  it('guards two synchronous edit submissions before a rerender', async () => {
+    const c = lifecycle(); const pending = deferred<Response>(); m.fetch.mockReturnValueOnce(pending.promise);
+    const submit = form(render()).props.onSubmit;
+    const first = submit(submitEvent()); await submit(submitEvent());
+    expect(m.fetch).toHaveBeenCalledTimes(1); expect(c.begin).toHaveBeenCalledTimes(1);
+    pending.resolve(response(saved)); await first;
+    expect(c.updated).toHaveBeenCalledExactlyOnceWith(saved); expect(c.finish).toHaveBeenCalledTimes(1);
+  });
+});

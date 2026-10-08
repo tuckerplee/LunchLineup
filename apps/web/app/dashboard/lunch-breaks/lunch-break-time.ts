@@ -3,7 +3,7 @@ import {
   dateValueInTimeZone,
   formatTimeInTimeZone,
   localDateRange,
-  localDateTimeToIso,
+  unambiguousLocalDateTimeToIso,
   timeValueInTimeZone,
 } from '../../../lib/location-timezone';
 
@@ -64,17 +64,34 @@ export function resolveLunchBreakInstant(
   endIso: string,
   timeValue: string,
   timeZone: string,
+  originalStartIso?: string | null,
 ): string | null {
   try {
     const startMs = new Date(startIso).getTime();
     const endMs = new Date(endIso).getTime();
-    if (!Number.isFinite(startMs) || !Number.isFinite(endMs)) return null;
+    if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) return null;
 
     const startDate = dateValueInTimeZone(startIso, timeZone);
-    let candidate = localDateTimeToIso(startDate, timeValue, timeZone);
-    if (new Date(candidate).getTime() < startMs) {
-      candidate = localDateTimeToIso(addLocalDays(startDate, 1), timeValue, timeZone);
+    // A persisted instant identifies the occurrence of a repeated wall clock.
+    // Retain that occurrence only while the edited clock still matches and the
+    // authoritative instant belongs to this shift's actual calendar interval.
+    if (originalStartIso) {
+      const originalMs = new Date(originalStartIso).getTime();
+      if (Number.isFinite(originalMs) && originalMs >= startMs && originalMs < endMs) {
+        const originalDate = dateValueInTimeZone(originalStartIso, timeZone);
+        if (originalDate >= startDate
+          && originalDate <= dateValueInTimeZone(endIso, timeZone)
+          && timeValueInTimeZone(originalStartIso, timeZone) === timeValue) {
+          return new Date(originalMs).toISOString();
+        }
+      }
     }
+    // Choose the shift's local day before resolving the wall clock. An overnight
+    // break may be unambiguous tomorrow even when today's clock repeats it.
+    const breakDate = timeValue < timeValueInTimeZone(startIso, timeZone)
+      ? addLocalDays(startDate, 1)
+      : startDate;
+    const candidate = unambiguousLocalDateTimeToIso(breakDate, timeValue, timeZone);
     const candidateMs = new Date(candidate).getTime();
     return candidateMs >= startMs && candidateMs <= endMs ? candidate : null;
   } catch {
@@ -91,8 +108,8 @@ export function lunchBreakShiftRange(
 ): { startIso: string; endIso: string } | null {
   try {
     if (endDayOffset !== 0 && endDayOffset !== 1) return null;
-    const startIso = localDateTimeToIso(dateValue, startTime, timeZone);
-    const endIso = localDateTimeToIso(addLocalDays(dateValue, endDayOffset), endTime, timeZone);
+    const startIso = unambiguousLocalDateTimeToIso(dateValue, startTime, timeZone);
+    const endIso = unambiguousLocalDateTimeToIso(addLocalDays(dateValue, endDayOffset), endTime, timeZone);
     if (new Date(endIso).getTime() <= new Date(startIso).getTime()) return null;
     return { startIso, endIso };
   } catch {

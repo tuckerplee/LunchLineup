@@ -70,11 +70,19 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
         return staff.find((person) => person.id === selectedTeamUserId)?.name ?? '';
     }, [isTeamTime, selectedTeamUserId, staff]);
 
+    // An open card can outlive its location's availability in the live list.
+    // Keep its recorded location selectable for an explicit recovery clock-out.
+    const selectableLocations = useMemo(() => {
+        const recorded = activeCardForSelectedUser?.location;
+        if (!recorded || locations.some((location) => location.id === recorded.id)) return locations;
+        return [...locations, { id: recorded.id, name: recorded.name }];
+    }, [activeCardForSelectedUser, locations]);
     const selectedLocationName = useMemo(() => (
-        locations.find((location) => location.id === selectedLocationId)?.name ?? ''
-    ), [locations, selectedLocationId]);
+        selectableLocations.find((location) => location.id === selectedLocationId)?.name ?? ''
+    ), [selectableLocations, selectedLocationId]);
 
-    const clockInTargetIsExplicit = isClockInTargetExplicit({
+    const clockInTargetIsExplicit = (!canReadLocations
+        || locations.some((location) => location.id === selectedLocationId)) && isClockInTargetExplicit({
         view,
         currentUserId,
         selectedTeamUserId,
@@ -512,7 +520,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                             style={{ border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem 0.5rem', background: '#fff', color: 'var(--text-primary)' }}
                         >
                             <option value="">Choose a location</option>
-                            {locations.map((location) => (
+                            {selectableLocations.map((location) => (
                                 <option key={location.id} value={location.id}>{location.name}</option>
                             ))}
                         </select>
