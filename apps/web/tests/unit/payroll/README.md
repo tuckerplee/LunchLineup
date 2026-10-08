@@ -2,6 +2,8 @@
 
 ## Files
 
+- `payroll-response-binding.test.ts`: Exact payroll period/command response binding, malformed acknowledgements and compatible native/legacy receipt shapes.
+
 - `README.md` - This focused payroll test inventory.
 - `payroll-api-contract.test.ts` - Bounded card/line endpoints, forward-state, exact policy/amendment form replay after ambiguous readback, expected-cost payload/key, and zero reverse-transition contracts.
 - `payroll-amendment-time.test.ts` - Locked-entry timezone round trips plus nonexistent and ambiguous DST rejection.

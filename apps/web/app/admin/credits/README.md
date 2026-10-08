@@ -4,6 +4,11 @@ Tenant credit-balance administration route.
 
 ## File map
 
+- `credit-grant-acknowledgement.ts`: Status and response validation for administrative credit-grant acknowledgements.
+- `credit-grant-estimate.ts`: Credit balance validation, debt-first grant estimates and confirmation text.
+- `credit-read-owner.ts`: Epoch and cursor ownership for replacement, tenant-page and credit-history reads.
+- `credits.module.css`: Responsive credits workspace, balance, grant form and history layout styles.
+
 - `README.md` - This route folder guide.
 - `page.tsx` - Server route wrapper and admin access gate.
 - `CreditsClient.tsx` - Client workspace with server-side tenant search, independent manual balance/history continuations, credit grants, projected balance review, and ledger history.

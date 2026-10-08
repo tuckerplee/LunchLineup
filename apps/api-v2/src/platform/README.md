@@ -2,6 +2,8 @@
 
 ## Files
 
+- `credit-capacity-refusal.test.ts`: Retained credit-capacity refusal mapping to an actionable native error without a successful grant acknowledgement.
+
 - `README.md`: this platform-folder guide.
 - `contract-check.ts`: runtime schema checking with local TypeBox UUID and UTC-instant formats.
 - `database.ts`: tenant-RLS transaction boundary and readiness probe.

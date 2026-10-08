@@ -2,6 +2,14 @@
 
 ## Files
 
+- `admin-credit-grant-input.fixture.ts`: Staged actor, grant-input and wallet transaction fixtures for the administrative credit boundary.
+- `admin-credit-grant-input.spec.ts`: Administrative credit JSON validation, authority ordering, debt-first capacity and replay regressions.
+- `platform-archive-actor.fixture.spec.ts`: Exact-owned archive actor seed rollback, uncertain commit cleanup and independent absence-readback regressions.
+- `platform-archive-actor.fixture.ts`: Owned platform archive actor fixture with exact seed identities, guarded cleanup and independent row readback.
+- `platform-tenant-lifecycle-authority.fixture.ts`: Staged live actor/session authority model for platform tenant lifecycle admission tests.
+- `platform-tenant-lifecycle-authority.spec.ts`: Platform tenant lifecycle authority revocation, captured actor attribution and durable archive admission regressions.
+- `platform-tenant-lifecycle-authority.ts`: Captured platform actor and observer identity, attributed audit projection and transaction-bound lifecycle admission.
+
 - `README.md`: this admin folder guide.
 - `admin-user-mfa-recovery.service.spec.ts`: focused tests for target confirmation, exact live actor-account/session/RBAC reauthorization, stable row locking, factor and TOTP-claim clearing, session revocation, attributed audit rollback, and one bounded whole-transaction retry without duplicate audit.
 - `admin-user-mfa-recovery.service.ts`: platform-admin-only lost-factor recovery transaction that reauthorizes the exact actor account, session, and current RBAC state and enforces dual-source authority for a protected system-admin target before clearing MFA state, revoking target sessions, and recording a redacted attributed audit event; one recognized Serializable conflict restarts the complete transaction once.

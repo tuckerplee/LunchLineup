@@ -2,6 +2,10 @@
 
 ## Files
 
+- `check-development-browser-database.mjs`: Validates fixed disposable database freshness and restricted application-role observations; does not provision a database.
+- `fixed-browser-source-profile.mjs`: Reads the protected fixed-browser source profile and binds its version-two source identity to the exact invocation while preserving the generic default.
+- `read-fixed-browser-phase.py`: Reads the protected fixed phase record and verifies the visible read-only runtime-input mount before selecting a browser phase.
+
 - `README.md`: this scripts folder guide.
 - `read-internal-ci-migrations.mjs`: read-only migration-ledger and restricted-role proof bound to the internal CI source and exact disposable database target.
 - `verify-action-acceptance.mjs`: source-only action/catalog/owner/test/browser inventory verifier; never grants acceptance or release qualification.

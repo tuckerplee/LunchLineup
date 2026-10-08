@@ -2,6 +2,10 @@
 
 ## Files
 
+- `admin-credit-read-ownership.test.ts`: Credit read epoch/cursor ownership and actual client handling of obsolete responses and newer searches.
+- `location-response-handlers.test.ts`: Actual location handlers: overlapping reads/writes, mutation acknowledgement validation and retained draft regressions.
+- `tenant-lifecycle-outcome.test.ts`: Exact tenant target, action status and boolean acknowledgement contracts for lifecycle responses.
+
 - `README.md`: this unit test folder guide.
 - `client-component-harness.ts`: controlled hook ledger for actual client handlers; does not model DOM, React scheduling or browser acceptance.
 - `dashboard-notification-handler.test.ts`: actual notification header handler regressions for authoritative counts, stale polls, readback and recovery.
