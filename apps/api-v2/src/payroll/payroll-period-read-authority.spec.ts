@@ -125,7 +125,7 @@ describe('native payroll period protected read authority', () => {
     if (result.value) populated(result.value, method, f);
     forbidden(await f.checkWriterDenied()); f.assertClosed(before); forbidden(result.error); expect(result.value).toBeNull();
   });
-  for (const method of methods) for (const at of ['row', method === 'list' ? 'summary' : 'receipt'] as PeriodGate[]) for (const deadline of deadlines) {
+  for (const method of methods) for (const at of (method === 'list' ? ['row', 'summary'] : ['row', 'receipt', 'credit']) as PeriodGate[]) for (const deadline of deadlines) {
     it(`${method} refuses ${deadline} expiry across actual ${at} await without result or domain writes`, async () => {
       const f = payrollPeriodReadFixture('native', deadline); await f.admit(); const before = f.rowsBefore(); f.pause(at);
       const result = await runPeriodPaused(f, () => read(f, method), true); f.assertClosed(before);
@@ -153,6 +153,35 @@ describe('native payroll period protected read authority', () => {
     const next = await detail(f, 1, '2', first.nextCardCursor!);
     expect(next).toEqual({ period: expectedPeriod(1, null, true), cards: [expectedCard(3)], nextCardCursor: null, lockedEntries: [], amendments: [] });
     expect(JSON.stringify(first)).not.toContain('old revision'); f.assertClosed(before);
+  });
+  const creditCorruptions: Record<string, (f: Fixture) => void> = {
+    missing: f => { f.tables.creditTransaction.length = 0; },
+    tenant: f => { f.tables.creditTransaction[0].tenantId = 'other-tenant'; },
+    amount: f => { f.tables.creditTransaction[0].amount = -2; },
+    debt: f => { f.tables.creditTransaction[0].debtAmount = 1; },
+    reason: f => { f.tables.creditTransaction[0].reason = 'Payroll export (other-period)'; },
+    balance: f => { f.tables.creditTransaction[0].balanceAfter = 8; },
+  };
+  for (const [corruption, change] of Object.entries(creditCorruptions)) it(`period detail refuses ${corruption} saved credit provenance like direct export read`, async () => {
+    const f = payrollPeriodReadFixture('native'); await f.admit(); change(f); const before = f.rowsBefore();
+    for (const operation of [() => detail(f, 2), () => owner(f).getExport(f.identity, periodUuid(70), { lineLimit: '1' })]) {
+      const result = await capture(operation());
+      expect(result.value).toBeNull(); expect(result.error).toBeInstanceOf(ProblemError);
+      expect(result.error).toMatchObject({ status: 503, code: 'payroll_export_integrity_failed' });
+      f.assertClosed(before);
+    }
+    expect(f.reads.filter(r => r.phase === 'owner' && r.table === 'creditTransaction')).toHaveLength(2);
+  });
+  it('preserves valid historical nested settlement and no-batch detail without ledger reads or writes', async () => {
+    const f = payrollPeriodReadFixture('native'); await f.admit(); const before = f.rowsBefore();
+    const valid = await detail(f, 2); populated(valid, 'detail', f);
+    const direct = await owner(f).getExport(f.identity, periodUuid(70), { lineLimit: '1' });
+    expect(valid.period.exportBatch).toEqual(direct);
+    const ledgerReads = f.reads.filter(r => r.phase === 'owner' && r.table === 'creditTransaction').length;
+    const noBatch = await detail(f, 1);
+    expect(noBatch.period.exportBatch).toBeNull(); expect(noBatch.cards).toEqual([expectedCard(1)]);
+    expect(f.reads.filter(r => r.phase === 'owner' && r.table === 'creditTransaction')).toHaveLength(ledgerReads);
+    f.assertClosed(before);
   });
   it('preserves locked/amendment history plus saved export, both line/card pages and reconciliation references', async () => {
     const f = payrollPeriodReadFixture('native'); await f.admit(); const before = f.rowsBefore();
