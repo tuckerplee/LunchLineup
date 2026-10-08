@@ -1,12 +1,14 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { readFixedBrowserSourceProfile } from './fixed-browser-source-profile.mjs';
 import { readInternalCiSourceContext } from './internal-ci-source-context.mjs';
 import { stableJson, writeExclusiveJson } from './internal-ci-evidence.mjs';
 const args=process.argv.slice(2), one=(f)=>{const i=args.indexOf(f);return i<0?'':args[i+1]??'';};
 const sourceContext=one('--source-context'), outputArgument=one('--output'), publicOutputArgument=one('--public-build-config'), secretsArgument=one('--secrets-dir');
 if(!sourceContext||!outputArgument||!publicOutputArgument||!secretsArgument) throw new Error('Qualification environment arguments are required.');
-const context=readInternalCiSourceContext(resolve(sourceContext)), output=resolve(outputArgument), publicOutput=resolve(publicOutputArgument), secretsDir=resolve(secretsArgument);
+const expectedSource=readFixedBrowserSourceProfile({contextPath:resolve(sourceContext)});
+const context=readInternalCiSourceContext(resolve(sourceContext),{expectedSource}), output=resolve(outputArgument), publicOutput=resolve(publicOutputArgument), secretsDir=resolve(secretsArgument);
 const composeText=readFileSync(resolve(context.buildSourcePath,'docker-compose.yml'),'utf8'), composeDefaults={}, canonicalConflictOverrides=new Set(['NEXT_PUBLIC_APP_ORIGIN','NEXT_PUBLIC_APP_URL']);
 for(const match of composeText.matchAll(/\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}/g)){if(match.index>0&&composeText[match.index-1]==='$')continue;const [,name,value]=match;if(Object.hasOwn(composeDefaults,name)&&composeDefaults[name]!==value&&!canonicalConflictOverrides.has(name))throw new Error(`Compose variable ${name} has conflicting defaults.`);composeDefaults[name]=value;}
 const secret=(prefix,bytes=32)=>`${prefix}${randomBytes(bytes).toString('base64url')}`; const pg=secret('pg_'), appPg=secret('app_pg_'), mq=secret('mq_');

@@ -2,11 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, lstatSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readFixedBrowserSourceProfile } from './fixed-browser-source-profile.mjs';
 import { readRegularEvidenceSnapshot } from './internal-ci-evidence.mjs';
 import { verifyInternalCiSourceSelection, verifyInternalCiSourceProof, internalCiSourceTrackingRef } from './internal-ci-source-context.mjs';
 
 // Definition-only API: expectedSource must be supplied by the protected owner.
-// The CLI intentionally has no candidate-controlled disposable profile loader.
+// The CLI only accepts the fixed root-protected browser owner record, or its
+// original generic default. It has no candidate-controlled profile argument.
 export function verifyInternalCiSourceClone({ proofPath: proofInput, clone: cloneInput, purpose, requireClean = false, expectedSource } = {}) {
   if (!proofInput || !cloneInput || typeof requireClean !== 'boolean') throw new Error('Invalid clone verification arguments.');
   const proofPath = resolve(proofInput), clone = resolve(cloneInput);
@@ -38,6 +40,8 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     if (key === '--require-clean') options[key] = true;
     else { const value = argv[++i]; if (!value || value.startsWith('--')) throw new Error('Invalid clone verification options.'); options[key] = value; }
   }
-  const result = verifyInternalCiSourceClone({ proofPath: options['--proof'], clone: options['--clone'], purpose: options['--purpose'], requireClean: options['--require-clean'] ?? false });
+  const selected = { proofPath: options['--proof'], clone: options['--clone'], purpose: options['--purpose'], requireClean: options['--require-clean'] ?? false };
+  const expectedSource = readFixedBrowserSourceProfile(selected);
+  const result = verifyInternalCiSourceClone({ ...selected, expectedSource });
   console.log(`internal_ci_source_clone_ok purpose=${result.purpose} source_sha=${result.sourceSha} tree_sha=${result.treeSha}`);
 }

@@ -137,3 +137,69 @@ test('materializer and clone CLIs refuse duplicate, unknown and missing options'
     for(const extra of [['--purpose','scan'],['--source-profile','untrusted.json'],['--unknown','x'],['--clone'],['--require-clean','--require-clean']]) assert.notEqual(spawnSync(process.execPath,[resolve(script,'../verify-internal-ci-source-clone.mjs'),...cloneArgs,...extra],{env:f.env}).status,0);
   }finally{rmSync(f.scratch,{recursive:true,force:true});}
 });
+
+
+// Exercise the real fixed-record reader and source verifier with synthetic
+// filesystem metadata; no root ownership or fixed /var path is fabricated.
+test('fixed browser CLI supplies only a protected owner profile to the real source verifier', async () => {
+  const { runInNewContext } = await import('node:vm');
+  const { constants } = await import('node:fs');
+  const { dirname, resolve } = await import('node:path');
+  const { verifyInternalCiSourceSelection, verifyInternalCiSourceProof, verifyInternalCiSourceContextIdentity } = await import('../../scripts/internal-ci-source-context.mjs');
+  const source = readFileSync(new URL('../../scripts/fixed-browser-source-profile.mjs', import.meta.url), 'utf8');
+  const executable = source.replace(/^import .*;\n/gm, '').replace('export function ', 'function ') + '\nreadFixedBrowserSourceProfile';
+  const run = '20261008T051347Z-lunchlineup-11111111-123456';
+  const profile = { version: 2, sourcePurpose: 'disposable-development', repository: 'tuckerplee/LunchLineup', sourceRef: 'refs/heads/codex/disposable-fixed-test', sourceSha: '1'.repeat(40), treeSha: '2'.repeat(40), baselineRef: 'refs/heads/main', baselineSha: '3'.repeat(40), baselineTreeSha: '4'.repeat(40), pipelinePath: '.ci/development-browser.pipeline.json', pipelineSha256: '5'.repeat(64) };
+  const record = { runId: run, sourceProfile: profile, materializerSha256: '6'.repeat(64) };
+  const workspace = `/var/lib/custom-ci/workspaces/${run}`, temporary = `/var/lib/custom-ci/runs/${run}/tmp/job-tmp`;
+  const env = { CI_RUN_ID: run, CI_COMMIT_SHA: profile.sourceSha, CI_REF: profile.sourceRef, CI_RUN_ATTEMPT: '1', CI_REPOSITORY: 'lunchlineup', LUNCHLINEUP_DEVELOPMENT_QA: '1', CI_WORKSPACE: workspace, RUNNER_TEMP: temporary };
+  const options = { proofPath: `${workspace}/.release/internal-ci/${profile.sourceSha}/source/source-proof.json`, clone: `${temporary}/lunchlineup-source-${run}/build`, purpose: 'build', requireClean: true };
+  const proof = { ...profile, remoteSourceSha: profile.sourceSha, kind: 'lunchlineup-internal-ci-source-proof', status: 'passed', runId: run, originalCheckoutClean: true, scanCloneVerified: true, buildCloneVerified: true, gitAlternatesRejected: true, verifiedAt: '2026-10-08T05:13:53.169Z' };
+  function reader(change = {}) {
+    const bytes = Buffer.from(JSON.stringify(change.record ?? record)); let reads = 0, stats = 0, closed = 0;
+    const info = { dev: 1, ino: 2, uid: 0, gid: 0, mode: 0o100444, nlink: 1, size: bytes.length, mtimeMs: 1, ctimeMs: 1, isFile: () => true, isSymbolicLink: () => false, ...change.file };
+    const parent = { uid: 0, mode: 0o40755, isDirectory: () => true, isSymbolicLink: () => false, ...change.parent };
+    const fs = {
+      constants,
+      lstatSync: path => { if (path.endsWith('/browser-source-profile.json')) { if (change.absent) throw Object.assign(new Error('absent'), { code: 'ENOENT' }); return { ...info, ...change.named }; } return parent; },
+      realpathSync: path => change.noncanonical ? `${path}/alias` : path,
+      openSync: (path, flags) => { assert.equal(path, `/var/lib/custom-ci/runs/${run}/browser-source-profile.json`); assert.equal(flags, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); if (change.openError) throw new Error('open refused'); return 9; },
+      fstatSync: () => ({ ...info, ...(stats++ ? change.after : {}) }),
+      readSync: (fd, buffer, offset, length) => { if (reads++) return 0; bytes.copy(buffer, offset, 0, Math.min(length, bytes.length)); return Math.min(length, bytes.length); },
+      closeSync: fd => { assert.equal(fd, 9); closed++; },
+    };
+    const read = runInNewContext(executable, { ...fs, dirname, resolve, Buffer, selectInternalCiSourceProfile, process: { env } });
+    return { read, closed: () => closed };
+  }
+  const valid = reader(), selected = valid.read(options, env);
+  assert.equal(valid.closed(), 1);
+  const contextOptions = { contextPath: `${temporary}/lunchlineup-source-${run}/source-context.json` };
+  assert.equal(reader().read(contextOptions, env).sourceSha, profile.sourceSha);
+  assert.throws(() => reader().read({ contextPath: '/wrong' }, env));
+  assert.throws(() => reader().read({ ...contextOptions, arbitrary: true }, env));
+  const context = { ...proof, kind: 'lunchlineup-internal-ci-source-context' };
+  assert.equal(verifyInternalCiSourceContextIdentity(context, { commitSha: profile.sourceSha, runId: run }, { expectedSource: selected }), context);
+  assert.throws(() => verifyInternalCiSourceContextIdentity(context, { commitSha: profile.sourceSha, runId: run }));
+  const writer = readFileSync(new URL('../../scripts/write-internal-beta-qualification-env.mjs', import.meta.url), 'utf8');
+  assert.match(writer, /readFixedBrowserSourceProfile\(\{contextPath:resolve\(sourceContext\)\}\)/);
+  assert.match(writer, /readInternalCiSourceContext\(resolve\(sourceContext\),\{expectedSource\}\)/);
+  assert.deepEqual({ ...selected }, profile);
+  assert.throws(() => verifyInternalCiSourceSelection(proof), /Source selection mismatch/);
+  assert.equal(verifyInternalCiSourceSelection(proof, selected).sourceSha, profile.sourceSha);
+  assert.equal(verifyInternalCiSourceProof(proof, proof, { expectedSource: selected }), proof);
+  for (const key of ['sourceSha', 'treeSha', 'baselineSha', 'baselineTreeSha', 'pipelineSha256', 'sourceRef']) assert.throws(() => verifyInternalCiSourceSelection({ ...proof, [key]: 'bad' }, selected), /Source selection mismatch/);
+  assert.equal(reader({ absent: true }).read(options, env), undefined);
+  assert.equal(reader().read(options, {}), undefined);
+  for (const change of [
+    { file: { uid: 999 } }, { file: { nlink: 2 } }, { file: { mode: 0o100644 } }, { file: { isFile: () => false } }, { file: { size: 8193 } },
+    { parent: { uid: 999 } }, { parent: { mode: 0o40775 } }, { parent: { isSymbolicLink: () => true } }, { noncanonical: true },
+    { openError: true }, { after: { ino: 3 } }, { named: { ino: 3 } }, { named: { isSymbolicLink: () => true } },
+    { record: { ...record, runId: 'other' } }, { record: { ...record, extra: true } }, { record: { ...record, sourceProfile: { ...profile, pipelinePath: '.ci/development-qa.pipeline.json' } } },
+  ]) assert.throws(() => reader(change).read(options, env));
+  for (const key of Object.keys(env)) assert.throws(() => reader().read(options, { ...env, [key]: 'wrong' }));
+  for (const key of Object.keys(options)) assert.throws(() => reader().read({ ...options, [key]: key === 'requireClean' ? false : '/wrong' }, env));
+  const cli = readFileSync(new URL('../../scripts/verify-internal-ci-source-clone.mjs', import.meta.url), 'utf8');
+  assert.match(cli, /const expectedSource = readFixedBrowserSourceProfile\(selected\);/);
+  assert.match(cli, /verifyInternalCiSourceClone\(\{ \.\.\.selected, expectedSource \}\)/);
+  for (const script of ['install-internal-ci-dependencies.sh', 'run-development-browser-qa.sh']) assert.match(readFileSync(new URL(`../../scripts/${script}`, import.meta.url), 'utf8'), /verify-internal-ci-source-clone\.mjs.*--purpose build --require-clean/);
+});
