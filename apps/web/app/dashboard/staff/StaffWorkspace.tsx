@@ -1119,15 +1119,15 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                     <div className="staff-role-layout">
                         <div style={{ display: 'grid', gap: '0.6rem' }}>
                             {roles.map((role) => (
-                                <div key={role.id} className="surface-muted" style={{ padding: '0.8rem', display: 'grid', gap: '0.45rem' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'space-between', gap: '0.6rem', alignItems: 'center' }}>
-                                        <div>
+                                <div key={role.id} className="surface-muted staff-role-card" style={{ padding: '0.8rem', display: 'grid', gap: '0.45rem' }}>
+                                    <div className="staff-role-card__header">
+                                        <div className="staff-role-card__identity">
                                             <div style={{ fontWeight: 800, color: 'var(--text-primary)' }}>{role.name}</div>
                                             <div style={{ fontSize: '0.76rem', color: 'var(--text-muted)' }}>
                                                 {role.userCount} assigned · {role.isSystem ? 'System role' : 'Custom role'}
                                             </div>
                                         </div>
-                                        <div style={{ display: 'flex', gap: '0.4rem' }}>
+                                        <div className="staff-role-card__actions">
                                             <Button
                                                 size="sm"
                                                 variant="outline"

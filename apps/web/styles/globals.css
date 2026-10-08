@@ -1605,6 +1605,40 @@ textarea.form-input {
   gap: 16px;
 }
 
+/* Role names and permission keys are tenant data, not fixed-width labels. */
+.staff-role-layout > *,
+.staff-role-card {
+  min-width: 0;
+}
+
+.staff-role-card { overflow-wrap: anywhere; }
+
+.staff-role-card__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.staff-role-card__identity {
+  min-width: 0;
+  flex: 1 1 10rem;
+}
+
+.staff-role-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  max-width: 100%;
+}
+
+.staff-role-card__actions > button {
+  min-height: 44px;
+  height: auto;
+  white-space: normal;
+}
+
 .staff-scheduling-window {
   grid-template-columns: minmax(110px, 0.8fr) minmax(130px, 1fr) minmax(105px, 0.7fr) minmax(105px, 0.7fr) 34px;
 }
