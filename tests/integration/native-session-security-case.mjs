@@ -2961,3 +2961,257 @@ export async function runNativeTimeCardRefusals(context){
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native time-card refusal scenario or owned cleanup failed; preserve first attempt.');
 }
 
+
+/** Three native HTTP payroll-boundary refusals with actual MFA-authorized setup. */
+export async function runNativeTimeCardPayrollBoundaries(context){
+  const {createHmac}=await import('node:crypto');
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-clock-payroll-${nonce}`,`native-clock-payroll-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex');
+  const locations=[];
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',RESEND_API_KEY:'',STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map(Object.keys(configuration).map(key=>[key,process.env[key]]));
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=3);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['POST /v2/auth/password/verify','POST /v2/auth/pin/verify','GET /v2/auth/me','GET /v2/settings',
+    'PUT /v2/users/me/pin','GET /v2/auth/mfa/enrollment','POST /v2/auth/mfa/enrollment','PUT /v2/auth/mfa/enrollment',
+    'POST /v2/auth/mfa/verify','POST /v2/auth/refresh','POST /v2/auth/logout','POST /v2/admin/retention/purge-expired']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload,extraHeaders={})=>{
+    assert.ok(allowed.has(`${method} ${path}`)||(path==='/v2/payroll/policy'&&method==='PUT')||(path==='/v2/payroll/periods'&&method==='POST')||(/^\/v2\/payroll\/periods\/[0-9a-f-]{36}\/(review|decisions|lock)$/.test(path)&&method==='POST')||(/^\/v2\/time-cards\/active(?:\?.*)?$/.test(path)&&method==='GET')||(/^\/v2\/time-cards\/[0-9a-f-]{36}\/clock-out$/.test(path)&&method==='POST')||(path==='/v2/time-cards/clock-in'&&method==='POST'));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    Object.assign(headers,extraHeaders);
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const totp=base32=>{
+    let value=0,bits=0;const bytes=[];for(const letter of base32){const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(letter);assert.ok(n>=0);value=(value<<5)|n;bits+=5;if(bits>=8){bits-=8;bytes.push((value>>>bits)&255);}}
+    const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+    const digest=createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=digest[digest.length-1]&15;
+    return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
+  };
+  try{
+    Object.assign(process.env,configuration);
+    assert.equal(await owner.tenant.count(),0,'Exclusive retention fixture requires no existing tenant or unrelated global sweep work');
+
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController],providers:[
+      {provide:ConfigService,useValue:configService},{provide:TenantPrismaService,useValue:tenantDb},
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+
+    const password=`Clock-${randomBytes(18).toString('hex')}!`,passwordHash=await bcrypt.hash(password,4);
+    for(const [index,id]of tenantIds.entries())await owner.tenant.create({data:{id,slug:id,name:'Clock fixture',status:'ACTIVE',planTier:'GROWTH',stripeSubscriptionId:`sub_clock_${nonce}_${index}`,stripeSubscriptionCurrentPeriodEnd:new Date(Date.now()+86400000),usageCredits:4,creditDebt:0}});
+    for(const id of tenantIds)await owner.creditTransaction.create({data:{tenantId:id,amount:4,debtAmount:0,balanceAfter:4,debtAfter:0,reason:'Owned clock fixture grant'}});
+    const permissionSets=[['auth:login_password','time_cards:read','time_cards:write'],['auth:login_password','time_cards:write','users:read','shifts:read','payroll:policy_write','payroll:lock','time_cards:approve'],['auth:login_password','time_cards:read','time_cards:write'],['auth:login_password','time_cards:read','time_cards:write']];
+    for(let i=0;i<4;i++){
+      const tenantId=i===3?tenantIds[1]:tenantIds[0];const user=await owner.user.create({data:{tenantId,username:`clock${nonce.replaceAll('-','').slice(0,14)}${i}`,name:'Clock fixture',role:i===1?'ADMIN':'STAFF',passwordHash,mfaEnabled:false,mfaBackupCodes:[]}});users.push(user);
+      const role=await owner.role.create({data:{tenantId,name:`Clock role ${i}`,slug:`clock-role-${i}`,legacyRole:i===1?'ADMIN':'STAFF'}});roles.push(role);
+      const permissions=await owner.permission.findMany({where:{key:{in:permissionSets[i]}}});assert.deepEqual(permissions.map(row=>row.key).sort(),[...permissionSets[i]].sort());
+      for(const permission of permissions)await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});
+      await owner.roleAssignment.create({data:{tenantId,userId:user.id,roleId:role.id}});
+    }
+    for(const tenantId of tenantIds)locations.push(await owner.location.create({data:{tenantId,name:'Clock UTC',timezone:'UTC'}}));
+    const foreignCard=await owner.timeCard.create({data:{tenantId:tenantIds[1],userId:users[3].id,locationId:locations[1].id,status:'OPEN',clockInAt:new Date(Date.now()-60000),workTimeZone:'UTC'}});
+    const actors=[];for(const user of users)actors.push(await login(user,'password',password));
+    assert.equal(actors[1].response.body.requiresMfa,true);
+    const enrollment=await request('POST','/v2/auth/mfa/enrollment',actors[1].cookies);ok(enrollment);
+    assert.equal(typeof enrollment.body.secret==='string'&&/^[A-Z2-7]{32}$/.test(enrollment.body.secret),true);
+    const confirmed=await request('PUT','/v2/auth/mfa/enrollment',actors[1].cookies,{code:totp(enrollment.body.secret)});ok(confirmed);assert.equal(confirmed.body.mfaVerified,true);
+    assert.equal(await redis.get(`session_mfa:${actors[1].sessionId}`),'1');
+    const factor=await owner.user.findUniqueOrThrow({where:{id:users[1].id}});assert.equal(factor.mfaEnabled,true);assert.equal(typeof factor.mfaSecret==='string'&&/^enc:v[12]:/.test(factor.mfaSecret),true);
+    const models=['timeCard','timeCardBreak','creditTransaction','auditLog','payrollPolicyVersion','payrollPeriod','payrollTimeCardApproval','payrollLockedEntry','payrollOperation','payrollAmendment','payrollAmendmentDecision','location'];
+    const state=async()=>{const value={};for(const model of models)value[model]=await owner[model].findMany({where:{tenantId:{in:tenantIds}},orderBy:model==='payrollOperation'?{operationId:'asc'}:{id:'asc'}});value.wallets=await owner.tenant.findMany({where:{id:{in:tenantIds}},select:{id:true,status:true,planTier:true,stripeSubscriptionId:true,stripeSubscriptionCurrentPeriodEnd:true,usageCredits:true,creditDebt:true},orderBy:{id:'asc'}});return value;};
+    const mutate=async(method,path,body,key)=>{const response=await request(method,path,actors[1].cookies,body,{'Idempotency-Key':`${key}-${nonce}`});assert.equal(response.status,200);return response.body;};
+    const clock=async(i,body,key)=>request('POST','/v2/time-cards/clock-in',actors[i].cookies,body,{'Idempotency-Key':`${key}-${nonce}`});
+    const deny=async(fn,code)=>{const before=await state(),response=await fn();assert.equal(response.status,409);assert.equal(response.body.code,code);assert.deepEqual(await state(),before);};
+    const policy=await mutate('PUT','/v2/payroll/policy',{timeZone:'UTC',cadence:'WEEKLY',anchorDate:'2020-01-06',effectiveFrom:'2020-01-06'},'policy');
+    const savedPolicy=await owner.payrollPolicyVersion.findUniqueOrThrow({where:{publicId:policy.id}});assert.equal(savedPolicy.tenantId,tenantIds[0]);assert.equal(savedPolicy.timeZone,'UTC');assert.equal(savedPolicy.cadence,'WEEKLY');assert.equal(savedPolicy.effectiveFrom.toISOString().slice(0,10),'2020-01-06');
+    assert.equal(await owner.payrollPeriod.count({where:{tenantId:tenantIds[0]}}),0);
+    await deny(()=>clock(0,{locationId:locations[0].publicId},'missing-period'),'no_open_payroll_period');
+    checkpoint('effective-policy-without-current-open-period-refuses-clock-in-without-effects');
+    const period=await mutate('POST','/v2/payroll/periods',{localStartDate:'2020-01-06'},'locked-period');assert.equal(period.status,'OPEN');
+    const opened=await clock(1,{userId:users[0].publicId,locationId:locations[0].publicId,clockInAt:'2020-01-06T09:00:00.000Z'},'historical-locked-card');assert.equal(opened.status,201);assert.equal(opened.body.reused,false);
+    const card=await owner.timeCard.findUniqueOrThrow({where:{publicId:opened.body.data.id}}),savedPeriod=await owner.payrollPeriod.findUniqueOrThrow({where:{publicId:period.id}});
+    assert.equal(card.payrollPeriodId,savedPeriod.id);assert.equal(card.userId,users[0].id);assert.equal(card.workTimeZone,'UTC');assert.equal(card.clockInAt.toISOString(),'2020-01-06T09:00:00.000Z');assert.ok(savedPeriod.endsAt<new Date());
+    const close=await request('POST',`/v2/time-cards/${card.publicId}/clock-out`,actors[1].cookies,{clockOutAt:'2020-01-06T10:00:00.000Z',breakMinutes:0});assert.equal(close.status,200);
+    const closedCard=await owner.timeCard.findUniqueOrThrow({where:{id:card.id}});assert.equal(closedCard.status,'CLOSED');assert.equal(closedCard.clockOutAt.toISOString(),'2020-01-06T10:00:00.000Z');assert.equal(closedCard.revision,card.revision+1);
+    const review=await mutate('POST',`/v2/payroll/periods/${period.id}/review`,{expectedRevision:period.revision},'review');assert.equal(review.status,'REVIEW');
+    assert.notEqual(users[1].id,closedCard.userId);
+    await mutate('POST',`/v2/payroll/periods/${period.id}/decisions`,{decisions:[{timeCardId:card.publicId,expectedRevision:closedCard.revision,decision:'APPROVED',reason:'Independent owned boundary fixture approval.'}]},'approve');
+    const approval=await owner.payrollTimeCardApproval.findFirstOrThrow({where:{tenantId:tenantIds[0],timeCardId:card.id,periodId:savedPeriod.id}});assert.equal(approval.decidedByUserId,users[1].id);assert.equal(approval.timeCardRevision,closedCard.revision);assert.equal(approval.decision,'APPROVED');
+    const currentPeriod=await owner.payrollPeriod.findUniqueOrThrow({where:{id:savedPeriod.id}});assert.equal(currentPeriod.status,'REVIEW');
+    const locked=await mutate('POST',`/v2/payroll/periods/${period.id}/lock`,{expectedRevision:currentPeriod.revision},'lock');assert.equal(locked.status,'LOCKED');
+    const lockedRow=await owner.payrollPeriod.findUniqueOrThrow({where:{id:savedPeriod.id}}),entries=await owner.payrollLockedEntry.findMany({where:{tenantId:tenantIds[0],periodId:savedPeriod.id}});
+    assert.equal(lockedRow.status,'LOCKED');assert.equal(lockedRow.lockedEntryCount,1);assert.equal(entries.length,1);assert.equal(lockedRow.totalPayableMinutes,60);assert.equal(entries[0].sourceId,card.id);assert.equal(entries[0].sourceRevision,closedCard.revision);assert.equal(entries[0].employeeId,users[0].id);assert.equal(entries[0].locationId,locations[0].id);assert.equal(entries[0].approvedByUserId,users[1].id);assert.equal(entries[0].payableMinutes,60);assert.equal(entries[0].breakMinutes,0);assert.equal(entries[0].clockInAt.toISOString(),closedCard.clockInAt.toISOString());assert.equal(entries[0].clockOutAt.toISOString(),closedCard.clockOutAt.toISOString());assert.equal(typeof lockedRow.lockedEntrySha256==='string'&&lockedRow.lockedEntrySha256.length>0,true);
+    await deny(()=>request('POST',`/v2/time-cards/${card.publicId}/clock-out`,actors[0].cookies,{breakMinutes:0}),'payroll_period_locked');
+    checkpoint('native-locked-historical-period-refuses-owner-clock-out-preserving-immutable-evidence');
+    // Create cutoff fixture only after the first period was legitimately locked.
+    const cutoff=await mutate('POST','/v2/payroll/periods',{localStartDate:'2020-01-13'},'cutoff-period');assert.equal(cutoff.status,'OPEN');
+    const cutoffOpen=await clock(1,{userId:users[2].publicId,locationId:locations[0].publicId,clockInAt:'2020-01-13T09:00:00.000Z'},'cutoff-card');assert.equal(cutoffOpen.status,201);assert.equal(cutoffOpen.body.reused,false);
+    const cutoffCard=await owner.timeCard.findUniqueOrThrow({where:{publicId:cutoffOpen.body.data.id}}),cutoffRow=await owner.payrollPeriod.findUniqueOrThrow({where:{publicId:cutoff.id}});assert.equal(cutoffCard.payrollPeriodId,cutoffRow.id);assert.equal(cutoffCard.status,'OPEN');assert.equal(cutoffCard.userId,users[2].id);assert.equal(cutoffCard.clockOutAt,null);assert.ok(cutoffRow.startsAt<=cutoffCard.clockInAt&&cutoffCard.clockInAt<cutoffRow.endsAt&&cutoffRow.endsAt<new Date());
+    const debit=await owner.creditTransaction.findUniqueOrThrow({where:{id:`feature-usage-${cutoffCard.clockInOperationId}`}});assert.equal(debit.amount,-1);assert.equal(debit.debtAmount,0);assert.equal(debit.tenantId,tenantIds[0]);
+    await deny(()=>request('POST',`/v2/time-cards/${cutoffCard.publicId}/clock-out`,actors[2].cookies,{breakMinutes:0}),'payroll_period_cutoff');
+    assert.deepEqual(await owner.timeCard.findUniqueOrThrow({where:{id:cutoffCard.id}}),cutoffCard);assert.deepEqual(await owner.timeCard.findUniqueOrThrow({where:{id:foreignCard.id}}),foreignCard);
+    checkpoint('server-clock-out-after-historical-open-period-cutoff-preserves-card-and-debit');
+    assert.equal(checks.length,3);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    await attempt(async()=>{if(app)await bounded(app.close(),'Credential native close',15000);});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Credential retained close',15000);});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Credential native Redis close');});
+    await attempt(async()=>{
+      // destroy() initiates closure; ownership settles only after every close event.
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{
+        socket.once('close',done);socket.destroy();
+      }))),'Credential owned socket close events',15000);
+    });
+    await attempt(async()=>{assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;});
+    await attempt(async()=>{
+      assert.equal(closed,true);if(redis.status==='ready')await snapshotKeys();
+      const allTenants=[...tenantIds],userIds=[...users.map(row=>row.id),],roleIds=roles.map(row=>row.id);
+      assert.equal(new Set(allTenants).size,allTenants.length);for(const id of allTenants)assert.ok(id.startsWith(`native-clock-payroll-${nonce}`)||tenantIds.includes(id));
+      const storedSessions=await owner.session.findMany({where:{userId:{in:userIds}},select:{id:true}}),sessionIds=[...new Set([...storedSessions.map(row=>row.id),...issuedSessions.map(row=>row.id)])];
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      assert.equal(await owner.tenantDeletionBillingReconciliation.count({where:{tenantId:{in:allTenants}}}),0);
+      assert.equal(await owner.tenantExportJob.count({where:{tenantId:{in:allTenants}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:allTenants}}}),0);
+      // Exact owned fixture teardown only, outside tested HTTP operations.
+      // Existing owner teardown is necessary for immutable ledger/audit/payroll rows.
+      await owner.$transaction(async tx=>{
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});
+        for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollOperation','payrollAmendmentDecision','payrollAmendment','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','shift','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])await tx[model].deleteMany({where:{tenantId:{in:allTenants}}});
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:allTenants}}});await tx.tenant.deleteMany({where:{id:{in:allTenants}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.tenant.count({where:{id:{in:allTenants}}}),0);assert.equal(await owner.user.count({where:{id:{in:userIds}}}),0);
+      for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollOperation','payrollAmendmentDecision','payrollAmendment','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','shift','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])assert.equal(await owner[model].count({where:{tenantId:{in:allTenants}}}),0);
+      databaseCleaned=true;if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact retention Redis cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Credential Redis disconnect');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Credential Prisma disconnect'));
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-clock-payroll-local-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',
+        expectedCheckpointCount:3,completedCheckpointCount:checks.length,checkpoints:checks,apiPort,retainedPort,
+        transport:'owned-loopback-native-v2-time-cards-with-real-retained-auth',credentialSource:'HTTP-issued cookies only; no synthetic session/JWT/MFA markers',
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        limitations:['Scoped real Nest auth composition, not full AppModule/production ingress','Local development cookie transport, not TLS secure-cookie proof','No browser/provider/backups/log erasure/scheduler operating evidence','Only missing-current-OPEN, associatedLOCKED and past-cutoff409; no equality/DST/policy paging/concurrent revision/commit fault proof','No browser/provider/device/full action acceptance; synthetic owner fixtures but actual HTTP-issued authentication','Trigger suppression only exact owned teardown transaction inherited from reviewed clock fixture; never in tested flow'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-clock-payroll-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Credential durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native time-card payroll boundary scenario or owned cleanup failed; preserve first attempt.');
+}
