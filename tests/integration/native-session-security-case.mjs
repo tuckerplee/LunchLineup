@@ -4233,3 +4233,228 @@ export async function runNativeCurrentSessionEnvelope(context){
   }
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native account lifecycle status scenario or owned cleanup failed; preserve first attempt.');
 }
+
+/** One genuine roleless current-session refusal with exact fixture isolation. */
+export async function runNativeRolelessCurrentSession(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const {createHmac}=await import('node:crypto');
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-roleless-session-${nonce}`,`native-roleless-session-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex');
+  const locations=[];
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',RESEND_API_KEY:'',STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map(Object.keys(configuration).map(key=>[key,process.env[key]]));
+  let rolelessMetadata=null,triggerMetadata=null;
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=1);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['GET /v2/auth/me','POST /v2/auth/password/verify']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload,extraHeaders={})=>{
+    assert.ok(allowed.has(`${method} ${path}`));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    Object.assign(headers,extraHeaders);
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const baseline=context.ownerBootstrapCounts;assert.ok(Array.isArray(baseline));assert.equal(baseline.length,52);assert.equal(new Set(baseline.map(x=>x.table)).size,52);
+  const countTables=async()=>{const rows=await owner.$queryRawUnsafe(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename`);assert.deepEqual(rows.map(x=>x.tablename),baseline.map(x=>x.table).sort());const counts=[];for(const row of rows){assert.match(row.tablename,/^[A-Za-z][A-Za-z0-9_]*$/);const [value]=await owner.$queryRawUnsafe(`SELECT count(*)::text AS rows FROM "${row.tablename}"`);counts.push({table:row.tablename,rows:value.rows});}return counts;};
+  const expectedCounts=[...baseline].sort((a,b)=>a.table<b.table?-1:a.table>b.table?1:0);
+  try{
+    Object.assign(process.env,configuration);
+    assert.equal(await owner.tenant.count(),0,'Exclusive retention fixture requires no existing tenant or unrelated global sweep work');
+
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    assert.deepEqual(await countTables(),expectedCounts);
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController],providers:[
+      {provide:ConfigService,useValue:configService},{provide:TenantPrismaService,useValue:tenantDb},
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+
+    const password=`Envelope-${randomBytes(18).toString('hex')}!`,passwordHash=await bcrypt.hash(password,4);
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'  Current workspace  ',status:'ACTIVE'}});
+    for(let i=0;i<2;i++){
+      const tenantId=tenantIds[i],user=await owner.user.create({data:{tenantId,username:`envelope${nonce.replaceAll('-','').slice(0,14)}${i}`,email:`envelope-${nonce}-${i}@example.invalid`,name:'Envelope person',role:'STAFF',passwordHash,pinResetRequired:false,mfaEnabled:false,mfaBackupCodes:[]}});users.push(user);
+      const role=await owner.role.create({data:{tenantId,name:'  Current   custom role  ',slug:`envelope-role-${i}`,legacyRole:'STAFF'}});roles.push(role);
+      const keys=['auth:login_password'];const permissions=await owner.permission.findMany({where:{key:{in:keys}}});assert.deepEqual(permissions.map(x=>x.key).sort(),keys);for(const permission of permissions)await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await owner.roleAssignment.create({data:{tenantId,userId:user.id,roleId:role.id}});
+    }
+    assert.equal(await owner.tenantSetting.count({where:{tenantId:{in:tenantIds},key:'workspace_settings'}}),0);
+    // Both sessions are genuinely issued while the default policy is in effect.
+    const actors=[];for(const user of users){const actor=await login(user,'password',password);assert.equal(actor.response.body.requiresMfa===true,false);actors.push(actor);}
+    const expectedTriggers=[{"nspname":"public","relname":"Session","tgname":"tr_block_deleted_user_session_auth","tgenabled":"O","definition":"CREATE TRIGGER tr_block_deleted_user_session_auth BEFORE INSERT OR UPDATE ON \"Session\" FOR EACH ROW EXECUTE FUNCTION block_deleted_user_session_auth()"},{"nspname":"public","relname":"Session","tgname":"tr_block_suspended_user_session_auth","tgenabled":"O","definition":"CREATE TRIGGER tr_block_suspended_user_session_auth BEFORE INSERT OR UPDATE ON \"Session\" FOR EACH ROW EXECUTE FUNCTION block_suspended_user_session_auth()"},{"nspname":"public","relname":"Session","tgname":"tr_fence_session_mfa_enrollment","tgenabled":"O","definition":"CREATE TRIGGER tr_fence_session_mfa_enrollment BEFORE INSERT OR UPDATE ON \"Session\" FOR EACH ROW EXECUTE FUNCTION fence_session_mfa_enrollment()"},{"nspname":"public","relname":"User","tgname":"User_cancel_staff_invitation_outbox","tgenabled":"O","definition":"CREATE TRIGGER \"User_cancel_staff_invitation_outbox\" AFTER UPDATE OF email, \"suspendedAt\", \"deletedAt\" ON \"User\" FOR EACH ROW EXECUTE FUNCTION cancel_user_staff_invitation_outbox()"},{"nspname":"public","relname":"User","tgname":"User_deleted_email_delivery_state_erasure","tgenabled":"O","definition":"CREATE TRIGGER \"User_deleted_email_delivery_state_erasure\" BEFORE INSERT OR UPDATE OF \"deletedAt\", email, \"emailDeliverySuppressedAt\", \"emailDeliverySuppressionReason\", \"emailDeliveryLastEventAt\" ON \"User\" FOR EACH ROW EXECUTE FUNCTION scrub_user_email_delivery_state()"},{"nspname":"public","relname":"User","tgname":"tr_block_user_deletion_with_live_availability_imports","tgenabled":"O","definition":"CREATE TRIGGER tr_block_user_deletion_with_live_availability_imports BEFORE UPDATE OF \"deletedAt\" ON \"User\" FOR EACH ROW EXECUTE FUNCTION block_user_deletion_with_live_availability_imports()"},{"nspname":"public","relname":"User","tgname":"tr_cleanup_deleted_user_notification_outbox","tgenabled":"O","definition":"CREATE TRIGGER tr_cleanup_deleted_user_notification_outbox AFTER INSERT OR UPDATE OF \"deletedAt\" ON \"User\" FOR EACH ROW EXECUTE FUNCTION cleanup_deleted_user_notification_outbox()"},{"nspname":"public","relname":"User","tgname":"tr_invalidate_deleted_user_auth_artifacts","tgenabled":"O","definition":"CREATE TRIGGER tr_invalidate_deleted_user_auth_artifacts AFTER INSERT OR UPDATE ON \"User\" FOR EACH ROW EXECUTE FUNCTION invalidate_deleted_user_auth_artifacts()"},{"nspname":"public","relname":"User","tgname":"tr_invalidate_user_mfa_enrollments","tgenabled":"O","definition":"CREATE TRIGGER tr_invalidate_user_mfa_enrollments AFTER UPDATE OF \"mfaEnabled\", \"mfaSecret\", \"tenantId\" ON \"User\" FOR EACH ROW EXECUTE FUNCTION invalidate_user_mfa_enrollments()"},{"nspname":"public","relname":"User","tgname":"tr_revoke_suspended_user_sessions","tgenabled":"O","definition":"CREATE TRIGGER tr_revoke_suspended_user_sessions AFTER INSERT OR UPDATE ON \"User\" FOR EACH ROW EXECUTE FUNCTION revoke_suspended_user_sessions()"},{"nspname":"public","relname":"User","tgname":"tr_scrub_deleted_user_row","tgenabled":"O","definition":"CREATE TRIGGER tr_scrub_deleted_user_row BEFORE INSERT OR UPDATE ON \"User\" FOR EACH ROW EXECUTE FUNCTION scrub_deleted_user_row()"}],expectedFunctions=[{"signature":"block_deleted_user_session_auth()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"cda1179813ceed66082bc47679715406"},{"signature":"block_suspended_user_session_auth()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"fcc9ecd56d82d4901a383f1019a14a76"},{"signature":"block_user_deletion_with_live_availability_imports()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"9eee0a394277b0d35b6c299826c2d3c8"},{"signature":"cancel_user_staff_invitation_outbox()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"e563a836582876a67612be5d4b70e769"},{"signature":"cleanup_deleted_user_notification_outbox()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"a42ae0ffc8f9f4885fa9f2bf93c82763"},{"signature":"fence_session_mfa_enrollment()","prosecdef":false,"proconfig":null,"definition_hash":"dca5679f89892aef6dbbdb9a040816f5"},{"signature":"invalidate_deleted_user_auth_artifacts()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"e83ef2cc803256bb7d01f28dd9e78474"},{"signature":"invalidate_user_mfa_enrollments()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"c6fe3ac7ea448d7b8727eb2a6758d6ca"},{"signature":"revoke_suspended_user_sessions()","prosecdef":true,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"70c065c1fc88c8d38ce9e58e026fe9ba"},{"signature":"scrub_deleted_user_row()","prosecdef":false,"proconfig":null,"definition_hash":"7dcd3699ae9f7bdc4da3f58ddf0223a8"},{"signature":"scrub_user_email_delivery_state()","prosecdef":false,"proconfig":["search_path=pg_catalog, public"],"definition_hash":"c415a54007288949ca3975a2d8fcd977"}];
+    const installedTriggers=await owner.$queryRawUnsafe(`SELECT n.nspname,c.relname,t.tgname,t.tgenabled::text AS tgenabled,pg_get_triggerdef(t.oid,true) AS definition FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND NOT t.tgisinternal AND c.relname IN ('RoleAssignment','User','Role','Session') ORDER BY 1,2,3`);
+    const installedFunctions=await owner.$queryRawUnsafe(`SELECT p.oid::regprocedure::text AS signature,p.prosecdef,p.proconfig,md5(pg_get_functiondef(p.oid)) AS definition_hash FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname='public' AND p.prokind IN ('f','p') AND p.oid IN (SELECT tgfoid FROM pg_trigger WHERE NOT tgisinternal AND tgrelid IN ('"RoleAssignment"'::regclass,'"User"'::regclass,'"Role"'::regclass,'"Session"'::regclass)) ORDER BY 1`);
+    triggerMetadata={triggerCount:installedTriggers.length,functionCount:installedFunctions.length,triggersMatch:JSON.stringify(installedTriggers)===JSON.stringify(expectedTriggers),functionsMatch:JSON.stringify(installedFunctions)===JSON.stringify(expectedFunctions),inventorySha256:sha(Buffer.from(JSON.stringify({triggers:installedTriggers,functions:installedFunctions})))};assert.equal(triggerMetadata.triggersMatch,true);assert.equal(triggerMetadata.functionsMatch,true);
+    const state=async()=>({sessions:await owner.session.findMany({where:{userId:{in:users.map(x=>x.id)}},orderBy:{id:'asc'}}),users:await owner.user.findMany({where:{id:{in:users.map(x=>x.id)}},orderBy:{id:'asc'}}),tenants:await owner.tenant.findMany({where:{id:{in:tenantIds}},orderBy:{id:'asc'}}),settings:await owner.tenantSetting.findMany({where:{tenantId:{in:tenantIds}},orderBy:[{tenantId:'asc'},{key:'asc'}]}),assignments:await owner.roleAssignment.findMany({where:{tenantId:{in:tenantIds}},orderBy:[{userId:'asc'},{roleId:'asc'}]}),roles:await owner.role.findMany({where:{tenantId:{in:tenantIds}},orderBy:{id:'asc'}}),grants:await owner.rolePermission.findMany({where:{roleId:{in:roles.map(x=>x.id)}},orderBy:[{roleId:'asc'},{permissionId:'asc'}]}),audits:await owner.auditLog.findMany({where:{tenantId:{in:tenantIds}},orderBy:{id:'asc'}})});
+    const before=await state();assert.equal(before.sessions.length,2);assert.equal(before.assignments.length,2);
+    const primarySession=before.sessions.find(x=>x.id===actors[0].sessionId);assert.ok(primarySession);assert.equal(primarySession.revokedAt,null);assert.ok(primarySession.expiresAt.getTime()>Date.now());assert.ok(primarySession.createdAt.getTime()+480*60000>Date.now());
+    for(const user of before.users){assert.equal(user.deletedAt,null);assert.equal(user.suspendedAt,null);assert.equal(user.pinResetRequired,false);assert.equal(user.mfaEnabled,false);}for(const tenant of before.tenants){assert.equal(tenant.status,'ACTIVE');assert.equal(tenant.deletedAt,null);}for(const role of before.roles)assert.equal(role.deletedAt,null);
+    // Exact fixture mutation under the real restricted application's tenant context.
+    const removed=await database.withTenant(tenantIds[0],tx=>tx.roleAssignment.deleteMany({where:{tenantId:tenantIds[0],userId:users[0].id,roleId:roles[0].id}}));assert.equal(removed.count,1);
+    const postFixture=await state(),expectedAfter={...before,assignments:before.assignments.filter(x=>!(x.tenantId===tenantIds[0]&&x.userId===users[0].id&&x.roleId===roles[0].id))};
+    rolelessMetadata={exactFixtureOnly:sha(Buffer.from(JSON.stringify(postFixture)))===sha(Buffer.from(JSON.stringify(expectedAfter))),zeroPrimaryAssignments:postFixture.assignments.filter(x=>x.userId===users[0].id).length===0,foreignAssignmentPreserved:postFixture.assignments.filter(x=>x.userId===users[1].id).length===1,sessionActiveAfterFixture:false,refusalStatus:null,authenticationRequired:false,noCookie:false,noIdentity:false,requestStatePreserved:false,foreignGenuineReadSucceeded:false};
+    assert.equal(rolelessMetadata.exactFixtureOnly,true);assert.equal(rolelessMetadata.zeroPrimaryAssignments,true);assert.equal(rolelessMetadata.foreignAssignmentPreserved,true);
+    const live=postFixture.sessions.find(x=>x.id===actors[0].sessionId);rolelessMetadata.sessionActiveAfterFixture=live.revokedAt===null&&Math.min(live.expiresAt.getTime(),live.createdAt.getTime()+480*60000)>Date.now();assert.equal(rolelessMetadata.sessionActiveAfterFixture,true);
+    const refusedResponse=await request('GET','/v2/auth/me',actors[0].cookies);rolelessMetadata.refusalStatus=refusedResponse.status;rolelessMetadata.authenticationRequired=refusedResponse.body.code==='authentication_required';rolelessMetadata.noCookie=refusedResponse.headers['set-cookie']===undefined;rolelessMetadata.noIdentity=!Object.hasOwn(refusedResponse.body,'user')&&!Object.hasOwn(refusedResponse.body,'data');assert.equal(rolelessMetadata.refusalStatus,401);assert.equal(rolelessMetadata.authenticationRequired,true);assert.equal(rolelessMetadata.noCookie,true);assert.equal(rolelessMetadata.noIdentity,true);
+    const refusalText=JSON.stringify(refusedResponse.body);for(const value of [users[0].id,users[0].publicId,tenantIds[0],actors[0].sessionId,password,secret,live.refreshToken])assert.equal(refusalText.includes(value),false,'Roleless refusal exposed private identity or credential');
+    rolelessMetadata.requestStatePreserved=sha(Buffer.from(JSON.stringify(await state())))===sha(Buffer.from(JSON.stringify(postFixture)));assert.equal(rolelessMetadata.requestStatePreserved,true);
+    const foreign=await request('GET','/v2/auth/me',actors[1].cookies);rolelessMetadata.foreignGenuineReadSucceeded=foreign.status===200&&foreign.body.user?.publicUserId===users[1].publicId;assert.equal(rolelessMetadata.foreignGenuineReadSucceeded,true);assert.equal(sha(Buffer.from(JSON.stringify(await state())))===sha(Buffer.from(JSON.stringify(postFixture))),true,'Foreign read altered scoped durable records');
+    checkpoint('genuine-current-session-no-live-role-refusal-preserves-state');assert.equal(checks.length,1);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    await attempt(async()=>{if(app)await bounded(app.close(),'Credential native close',15000);});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Credential retained close',15000);});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Credential native Redis close');});
+    await attempt(async()=>{
+      // destroy() initiates closure; ownership settles only after every close event.
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{
+        socket.once('close',done);socket.destroy();
+      }))),'Credential owned socket close events',15000);
+    });
+    await attempt(async()=>{assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;});
+    await attempt(async()=>{
+      assert.equal(closed,true);if(redis.status==='ready')await snapshotKeys();
+      const allTenants=[...tenantIds],userIds=[...users.map(row=>row.id),],roleIds=roles.map(row=>row.id);
+      assert.equal(new Set(allTenants).size,allTenants.length);for(const id of allTenants)assert.ok(id.startsWith(`native-roleless-session-${nonce}`)||tenantIds.includes(id));
+      const storedSessions=await owner.session.findMany({where:{userId:{in:userIds}},select:{id:true}}),sessionIds=[...new Set([...storedSessions.map(row=>row.id),...issuedSessions.map(row=>row.id)])];
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      assert.equal(await owner.tenantDeletionBillingReconciliation.count({where:{tenantId:{in:allTenants}}}),0);
+      assert.equal(await owner.tenantExportJob.count({where:{tenantId:{in:allTenants}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:allTenants}}}),0);
+      // Exact owned fixture teardown only, outside tested HTTP operations.
+      // Existing owner teardown is necessary for immutable ledger/audit/payroll rows.
+      await owner.$transaction(async tx=>{
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});
+        for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])await tx[model].deleteMany({where:{tenantId:{in:allTenants}}});
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:allTenants}}});await tx.tenant.deleteMany({where:{id:{in:allTenants}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.tenant.count({where:{id:{in:allTenants}}}),0);assert.equal(await owner.user.count({where:{id:{in:userIds}}}),0);
+      for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])assert.equal(await owner[model].count({where:{tenantId:{in:allTenants}}}),0);
+      databaseCleaned=true;if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact retention Redis cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Credential Redis disconnect');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Credential Prisma disconnect'));
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-roleless-session-local-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',
+        expectedCheckpointCount:1,completedCheckpointCount:checks.length,checkpoints:checks,apiPort,retainedPort,rolelessMetadata,triggerMetadata,
+        transport:'owned-loopback-native-v2-current-session-with-real-retained-auth',credentialSource:'HTTP-issued cookies only; no synthetic session/JWT/MFA markers',
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        limitations:['Scoped real Nest auth composition, not full AppModule/production ingress','Local development cookie transport, not TLS secure-cookie proof','No browser/provider/backups/log erasure/scheduler operating evidence','One roleless native current-session refusal; tenant-context fixture deletion is not public role-writer proof; no authority wait, restart, browser or whole refusal-matrix proof'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-roleless-session-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Credential durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native account lifecycle status scenario or owned cleanup failed; preserve first attempt.');
+}
