@@ -3704,3 +3704,296 @@ export async function runNativeAccountLifecycleStatus(context){
   }
   if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native account lifecycle status scenario or owned cleanup failed; preserve first attempt.');
 }
+
+/** Two scoped status followups: provider outcome refusal and client-discard recovery. */
+export async function runNativeAccountLifecycleStatusFollowup(context){
+  const {redisUrl}=validateNativeSessionSecurityTarget();
+  assert.equal(context.executionTarget,'local');
+  assert.equal(context.exclusiveRedis,true,'Credential case requires an exclusively owned empty Redis database');
+  assert.match(context.runId??'',/^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$/);
+  assert.match(context.sourceSha??'',/^[a-f0-9]{40}$/);
+  assert.equal(resolve(context.workspace),context.workspace);
+  assert.equal(await realpath(context.workspace),context.workspace);
+  assert.ok(context.workspace.startsWith('/tmp/'));
+  assert.equal(context.redisUrl.toString(),redisUrl.toString());
+  assert.equal(context.targetReceiptSha256,undefined);
+  const {lstat,readdir}=await import('node:fs/promises');
+  const {createHmac}=await import('node:crypto');
+  const require=createRequire(import.meta.url);
+  require('reflect-metadata');
+  process.env.TS_NODE_PROJECT=resolve(root,'apps/api-v2/tsconfig.json');
+  require('ts-node').register({transpileOnly:true,experimentalResolver:true});
+  const {createPrisma,requireServiceUrl}=await import('./schedule-solve-harness.mjs');
+  const bcrypt=require('bcryptjs'),jwt=require('jsonwebtoken'),Redis=require('ioredis');
+  const {Module,VersioningType}=require('@nestjs/common'),{NestFactory,APP_GUARD}=require('@nestjs/core');
+  const {ConfigService}=require('@nestjs/config'),{ThrottlerModule}=require('@nestjs/throttler');
+  const express=require('express'),cookieParser=require('cookie-parser');
+  const {AdminController}=require('../../apps/api/src/admin/admin.controller.ts');
+  const {MetricsService}=require('../../apps/api/src/common/metrics.service.ts');
+  const {MeteringService}=require('../../apps/api/src/billing/metering.service.ts');
+  const {AuthController}=require('../../apps/api/src/auth/auth.controller.ts');
+  const {AuthService}=require('../../apps/api/src/auth/auth.service.ts');
+  const {JwtService}=require('../../apps/api/src/auth/jwt.service.ts');
+  const {OtpService}=require('../../apps/api/src/auth/otp.service.ts');
+  const {EmailService}=require('../../apps/api/src/auth/email.service.ts');
+  const {RbacService}=require('../../apps/api/src/auth/rbac.service.ts');
+  const {JwtAuthGuard}=require('../../apps/api/src/auth/jwt-auth.guard.ts');
+  const {RbacGuard}=require('../../apps/api/src/auth/rbac.guard.ts');
+  const {RateLimitsGuard}=require('../../apps/api/src/common/guards/rate-limits.guard.ts');
+  const {createRateLimitThrottlerOptions}=require('../../apps/api/src/common/redis-throttler.storage.ts');
+  const {TenantPrismaService}=require('../../apps/api/src/database/tenant-prisma.service.ts');
+  const {ProductionExceptionFilter}=require('../../apps/api/src/common/production-exception.filter.ts');
+  const {ZodValidationPipe}=require('../../apps/api/src/common/pipes/zod-validation.pipe.ts');
+  const {buildServer}=require('../../apps/api-v2/src/server.ts'),{loadConfig}=require('../../apps/api-v2/src/config.ts');
+  const {TenantDatabase}=require('../../apps/api-v2/src/platform/database.ts');
+  const {NativeIdentityAdapter,RedisMfaSessionStore}=require('../../apps/api-v2/src/platform/native-identity.ts');
+  const owner=createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const appClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const retainedClient=createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const redis=new Redis(redisUrl.toString(),{lazyConnect:true,enableOfflineQueue:false,maxRetriesPerRequest:0,retryStrategy:()=>null,connectTimeout:1000,commandTimeout:1000});
+  redis.on('error',()=>undefined);
+  const nonce=randomUUID(),startedAt=new Date().toISOString(),tenantIds=[`native-account-status-followup-${nonce}`,`native-account-status-followup-foreign-${nonce}`];
+  const users=[],roles=[],checks=[],cleanupFailures=[],jars=[],issuedSessions=[];
+  const ownedKeys=new Set(),secret=randomBytes(32).toString('hex');
+  const locations=[];
+  const configuration={NODE_ENV:'development',JWT_SECRET:secret,JWT_REFRESH_SECRET:randomBytes(32).toString('hex'),
+    REDIS_URL:redisUrl.toString(),MFA_SECRET_ENCRYPTION_KEY_CURRENT:randomBytes(32).toString('hex'),
+    OTP_HMAC_SECRET:randomBytes(32).toString('hex'),APP_ORIGIN:'http://127.0.0.1',COOKIE_SECURE:'false',TRUST_PROXY:'false',
+    AUTH_DEBUG:'false',OIDC_ENABLED:'false',RESEND_API_KEY:'',STAFF_INVITATION_OUTBOX_ENABLED:'false',
+    TENANT_EXPORT_ARTIFACT_DIRECTORY:context.exportDirectory,
+    PLATFORM_ADMIN_DB_CONTEXT_SECRET:process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET};
+  assert.ok(configuration.PLATFORM_ADMIN_DB_CONTEXT_SECRET,'Restricted platform context capability required');
+  const previousEnv=new Map(Object.keys(configuration).map(key=>[key,process.env[key]]));
+  let workerCustody=null,exportService,metrics,cookieMetadata=null,discardMetadata=null;
+  let app,retained,store,throttleOptions,apiPort,retainedPort,origin,primary,complete=false,closed=false,databaseCleaned=false,redisCleaned=false;
+  let appSockets=new Set(),retainedSockets=new Set();
+  const attempt=async fn=>{try{await fn();}catch(error){cleanupFailures.push(error);}};
+  const checkpoint=name=>{assert.ok(!checks.includes(name));checks.push(name);assert.ok(checks.length<=2);};
+  const jar=()=>{const value=new Map();jars.push(value);return value;};
+  const cloneJar=source=>{const value=jar();for(const [key,valueText]of source)value.set(key,valueText);return value;};
+  const allowed=new Set(['GET /v2/admin/account/status','POST /v2/auth/password/verify','POST /v2/auth/mfa/enrollment','PUT /v2/auth/mfa/enrollment']);
+  const snapshotKeys=async()=>{
+    let cursor='0';do{const result=await redis.scan(cursor,'COUNT',100);cursor=result[0];for(const key of result[1]){
+      assert.ok(key.startsWith('lunchlineup:rate-limit:v1:')||key.startsWith('session_mfa:'),'Unexpected key in exclusive credential Redis');
+      ownedKeys.add(key);assert.ok(ownedKeys.size<=512);
+    }}while(cursor!=='0');
+  };
+  const request=async(method,path,cookies,payload,extraHeaders={})=>{
+    assert.ok(allowed.has(`${method} ${path}`)||(method==='GET'&&path.startsWith('/v2/admin/account/status?')));
+    const bytes=payload===undefined?undefined:Buffer.from(JSON.stringify(payload));if(bytes)assert.ok(bytes.length<=cap);
+    const headers={Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...cookies].map(([k,v])=>`${k}=${v}`).join('; ')};
+    if(cookies.has('csrf_token'))headers['X-CSRF-Token']=decodeURIComponent(cookies.get('csrf_token'));
+    if(bytes){headers['Content-Type']='application/json';headers['Content-Length']=bytes.length;}
+    Object.assign(headers,extraHeaders);
+    const result=await new Promise((done,reject)=>{
+      const chunks=[];let size=0,ended=false;
+      const finish=(error,value)=>{if(ended)return;ended=true;clearTimeout(timer);error?reject(error):done(value);};
+      const req=http.request({hostname:'127.0.0.1',port:apiPort,path,method,headers,agent:false},res=>{
+        res.on('data',chunk=>{size+=chunk.length;if(size>cap){res.destroy();finish(new Error('Credential response exceeds bound'));}else chunks.push(chunk);});
+        res.once('error',()=>finish(new Error('Credential HTTP response failed')));
+        res.once('aborted',()=>finish(new Error('Credential HTTP response aborted')));
+        res.once('end',()=>{try{finish(null,{status:res.statusCode,headers:res.headers,body:JSON.parse(Buffer.concat(chunks).toString())});}catch{finish(new Error('Credential response is not bounded JSON'));}});
+      });
+      const timer=setTimeout(()=>{req.destroy();finish(new Error('Credential HTTP deadline exceeded'));},10000);
+      req.once('error',()=>finish(new Error('Credential HTTP request failed')));req.end(bytes);
+    });
+    for(const cookie of result.headers['set-cookie']??[]){const item=cookie.split(';',1)[0],split=item.indexOf('=');assert.ok(split>0);cookies.set(item.slice(0,split),item.slice(split+1));}
+    await snapshotKeys();
+    return result;
+  };
+  const ok=response=>assert.equal(response.status,200,'Expected successful native credential request');
+  const refused=response=>assert.ok([400,401,403].includes(response.status),'Expected explicit credential refusal, not unavailable/429');
+  const claims=cookies=>jwt.verify(decodeURIComponent(cookies.get('access_token')),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});
+  const login=async(user,kind,credential,cookies=jar())=>{
+    const response=await request('POST',`/v2/auth/${kind}/verify`,cookies,{identifier:user.username,tenantSlug:user.tenantId,[kind]:credential});ok(response);
+    for(const name of ['access_token','refresh_token','csrf_token'])assert.ok(cookies.get(name));
+    assert.equal('accessToken'in response.body,false);assert.equal('refreshToken'in response.body,false);
+    const payload=claims(cookies);assert.equal(payload.sub,user.id);assert.equal(payload.tenantId,user.tenantId);
+    const stored=await owner.session.findUniqueOrThrow({where:{id:payload.sessionId}});assert.equal(stored.userId,user.id);assert.equal(stored.revokedAt,null);
+    assert.match(stored.refreshToken,/^sha256:[a-f0-9]{64}$/);assert.ok(stored.selectorHash);
+    issuedSessions.push({id:stored.id,userId:user.id,loginMethod:kind==='password'?'USERNAME_PASSWORD':'USERNAME_PIN'});
+    return {cookies,response,sessionId:stored.id};
+  };
+  const totp=base32=>{
+    let value=0,bits=0;const bytes=[];for(const letter of base32){const n='ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.indexOf(letter);assert.ok(n>=0);value=(value<<5)|n;bits+=5;if(bits>=8){bits-=8;bytes.push((value>>>bits)&255);}}
+    const counter=Buffer.alloc(8);counter.writeBigUInt64BE(BigInt(Math.floor(Date.now()/30000)));
+    const digest=createHmac('sha1',Buffer.from(bytes)).update(counter).digest(),offset=digest[digest.length-1]&15;
+    return String((digest.readUInt32BE(offset)&0x7fffffff)%1000000).padStart(6,'0');
+  };
+  const baseline=context.ownerBootstrapCounts;assert.ok(Array.isArray(baseline));assert.equal(baseline.length,52);assert.equal(new Set(baseline.map(x=>x.table)).size,52);
+  const countTables=async()=>{const rows=await owner.$queryRawUnsafe(`SELECT tablename FROM pg_tables WHERE schemaname='public' ORDER BY tablename`);assert.deepEqual(rows.map(x=>x.tablename),baseline.map(x=>x.table).sort());const counts=[];for(const row of rows){assert.match(row.tablename,/^[A-Za-z][A-Za-z0-9_]*$/);const [value]=await owner.$queryRawUnsafe(`SELECT count(*)::text AS rows FROM "${row.tablename}"`);counts.push({table:row.tablename,rows:value.rows});}return counts;};
+  const expectedCounts=[...baseline].sort((a,b)=>a.table<b.table?-1:a.table>b.table?1:0);
+  const exportState=async()=>{const st=await lstat(context.exportDirectory);assert.equal(st.isSymbolicLink(),false);assert.equal(st.isDirectory(),true);assert.equal(st.mode&0o777,0o700);assert.equal(await realpath(context.exportDirectory),context.exportDirectory);return {jobs:await owner.tenantExportJob.count(),entries:(await readdir(context.exportDirectory)).sort()};};
+  assert.equal(context.exportDirectory,resolve(context.workspace,'tenant-exports'));
+  try{
+    Object.assign(process.env,configuration);
+    assert.equal(await owner.tenant.count(),0,'Exclusive retention fixture requires no existing tenant or unrelated global sweep work');
+
+    for(const client of [appClient,retainedClient]){
+      const [role]=await client.$queryRawUnsafe(`SELECT current_user AS name,current_database() AS database,rolsuper,rolbypassrls,rolcreaterole,rolcreatedb,rolreplication,rolinherit FROM pg_roles WHERE rolname=current_user`);
+      assert.equal(role.name,'lunchlineup_ci_app');assert.equal(role.database,'lunchlineup_test');
+      for(const flag of ['rolsuper','rolbypassrls','rolcreaterole','rolcreatedb','rolreplication','rolinherit'])assert.equal(role[flag],false);
+      const [{count}]=await client.$queryRawUnsafe('SELECT count(*)::int AS count FROM pg_auth_members WHERE member=(SELECT oid FROM pg_roles WHERE rolname=current_user)');assert.equal(count,0);
+    }
+    const tables=await appClient.$queryRawUnsafe(`SELECT relname,relrowsecurity,relforcerowsecurity FROM pg_class WHERE oid IN ('"User"'::regclass,'"Session"'::regclass,'"RefreshTokenReplay"'::regclass,'"Role"'::regclass,'"RoleAssignment"'::regclass,'"TenantSetting"'::regclass)`);
+    assert.equal(tables.length,6);for(const row of tables){assert.equal(row.relrowsecurity,true);assert.equal(row.relforcerowsecurity,true);}
+    await bounded(redis.connect(),'Credential Redis connect');assert.equal(await redis.dbsize(),0,'Exclusive owner must supply initially empty Redis');
+    assert.deepEqual(await countTables(),expectedCounts);assert.deepEqual(await exportState(),{jobs:0,entries:[]});
+    const configService=new ConfigService(configuration),tenantDb=new TenantPrismaService(retainedClient);
+    throttleOptions=createRateLimitThrottlerOptions(configService);
+    class CredentialAuthModule{}
+    Module({imports:[ThrottlerModule.forRoot(throttleOptions)],controllers:[AuthController,AdminController],providers:[MetricsService,{provide:MeteringService,useFactory:db=>new MeteringService(db),inject:[TenantPrismaService]},
+      {provide:ConfigService,useValue:configService},{provide:TenantPrismaService,useValue:tenantDb},
+      AuthService,JwtService,OtpService,EmailService,RbacService,
+      {provide:APP_GUARD,useClass:JwtAuthGuard},{provide:APP_GUARD,useClass:RbacGuard},{provide:APP_GUARD,useClass:RateLimitsGuard},
+    ]})(CredentialAuthModule);
+    retained=await bounded(NestFactory.create(CredentialAuthModule,{bodyParser:false,logger:false,abortOnError:false}),'Retained auth composition');
+    const controller=retained.get(AdminController);exportService=controller.tenantExport;metrics=retained.get(MetricsService);
+    await bounded(controller.onModuleDestroy(),'Stop and drain real export worker before fixtures',15000);
+    const stopDeadline=Date.now()+2000;while(exportService.workerActive&&Date.now()<stopDeadline)await new Promise(done=>setTimeout(done,10));
+    const metric=await metrics.tenantExportsTotal.get();
+    workerCustody={stopping:exportService.stopping,workerActive:exportService.workerActive,activeTasks:exportService.activeTasks.size,workerErrorCount:metric.values.filter(x=>x.labels.outcome==='worker_error').reduce((sum,x)=>sum+x.value,0),exportState:await exportState(),beforeFixtures:true};
+    assert.equal(workerCustody.stopping,true);assert.equal(workerCustody.workerActive,false);assert.equal(workerCustody.activeTasks,0);assert.equal(workerCustody.workerErrorCount,0);assert.deepEqual(workerCustody.exportState,{jobs:0,entries:[]});assert.deepEqual(await countTables(),expectedCounts);
+    const expressApp=retained.getHttpAdapter().getInstance();expressApp.disable('x-powered-by');expressApp.set('trust proxy',false);
+    retained.use(cookieParser());retained.use(express.json({limit:cap}));
+    retained.enableVersioning({type:VersioningType.URI,defaultVersion:'1'});
+    retained.useGlobalPipes(new ZodValidationPipe());retained.useGlobalFilters(new ProductionExceptionFilter());
+    retainedSockets=track(retained.getHttpServer());
+    await bounded(retained.listen(0,'127.0.0.1'),'Retained auth listen');retainedPort=retained.getHttpServer().address().port;
+    const config=loadConfig({NODE_ENV:'development',APP_ORIGIN:'http://127.0.0.1',LEGACY_API_BASE_URL:`http://127.0.0.1:${retainedPort}/v1`,
+      REDIS_URL:redisUrl.toString(),JWT_SECRET:secret,METRICS_TOKEN:randomBytes(32).toString('hex'),DEPLOY_RELEASE_SHA:context.sourceSha,
+      COOKIE_SECURE:'false',TRUST_PROXY:'false',AUTH_STATE_TIMEOUT_MS:'1000',STAFF_INVITATION_OUTBOX_ENABLED:'false',OIDC_ENABLED:'false',LOG_LEVEL:'silent'});
+    const database=new TenantDatabase(appClient);store=new RedisMfaSessionStore(config);
+    app=await bounded(buildServer(config,{database,identity:new NativeIdentityAdapter(config,database,store)}),'Native credential server');appSockets=track(app.server);
+    await bounded(app.listen({host:'127.0.0.1',port:0}),'Native credential listen');apiPort=app.server.address().port;
+    origin=`http://127.0.0.1:${apiPort}`;config.appOrigin=origin;config.allowedOrigins=new Set([origin]);configuration.APP_ORIGIN=origin;process.env.APP_ORIGIN=origin;configService.set('APP_ORIGIN',origin);
+
+    const password=`Status-${randomBytes(18).toString('hex')}!`,passwordHash=await bcrypt.hash(password,4),holdAt=new Date('2026-01-01T00:00:00Z');
+    for(const id of tenantIds)await owner.tenant.create({data:{id,slug:id,name:'Status fixture',status:'ACTIVE'}});
+    for(let i=0;i<3;i++){
+      const tenantId=i===2?tenantIds[1]:tenantIds[0],user=await owner.user.create({data:{tenantId,username:`status${nonce.replaceAll('-','').slice(0,14)}${i}`,name:'Status fixture',role:'STAFF',passwordHash,mfaEnabled:false,mfaBackupCodes:[]}});users.push(user);
+      const role=await owner.role.create({data:{tenantId,name:`Status role ${i}`,slug:`status-role-${i}`,legacyRole:'STAFF'}});roles.push(role);
+      const keys=i===1?['auth:login_password']:['auth:login_password','settings:write'];const permissions=await owner.permission.findMany({where:{key:{in:keys}}});assert.deepEqual(permissions.map(x=>x.key).sort(),[...keys].sort());for(const permission of permissions)await owner.rolePermission.create({data:{roleId:role.id,permissionId:permission.id}});await owner.roleAssignment.create({data:{tenantId,userId:user.id,roleId:role.id}});
+    }
+    // Fixture projection setup uses genuine transaction-local platform capability;
+    // all legal-hold triggers/checks remain enabled, including complete actor metadata.
+    await tenantDb.withPlatformAdmin(async tx=>{for(const [index,id]of tenantIds.entries()){
+      const actorId=index===0?users[0].id:users[2].id;
+      await tx.tenant.update({where:{id},data:{retentionLegalHoldAt:holdAt,retentionLegalHoldReason:'Private hold reason',retentionLegalHoldByUserId:actorId}});
+    }});
+    for(const [index,id]of tenantIds.entries()){const held=await owner.tenant.findUniqueOrThrow({where:{id}});assert.equal(held.status,'ACTIVE');assert.equal(held.retentionLegalHoldAt.toISOString(),holdAt.toISOString());assert.equal(held.retentionLegalHoldReason,'Private hold reason');assert.equal(held.retentionLegalHoldByUserId,index===0?users[0].id:users[2].id);}
+    const actors=[];for(const user of users){const actor=await login(user,'password',password);actors.push(actor);if(actor.response.body.requiresMfa){const enrollment=await request('POST','/v2/auth/mfa/enrollment',actor.cookies);ok(enrollment);assert.equal(typeof enrollment.body.secret==='string'&&/^[A-Z2-7]{32}$/.test(enrollment.body.secret),true);const proof=await request('PUT','/v2/auth/mfa/enrollment',actor.cookies,{code:totp(enrollment.body.secret)});ok(proof);assert.equal(proof.body.mfaVerified,true);assert.equal(await redis.get(`session_mfa:${actor.sessionId}`),'1');}}
+    const intentKey='internal:tenant-lifecycle-intent:customer_cancellation',prefix='internal:account-lifecycle-request:',effective='2026-12-31T00:00:00.000Z';
+    await owner.tenantSetting.create({data:{tenantId:tenantIds[0],key:intentKey,value:{tenantId:tenantIds[0],kind:'CUSTOMER_CANCELLATION',state:'PROVIDER_APPLIED',providerResult:{action:'scheduled',cancelAtPeriodEnd:true,currentPeriodEnd:effective}}}});
+    const state=async()=>({tenants:await owner.tenant.findMany({where:{id:{in:tenantIds}},orderBy:{id:'asc'}}),settings:await owner.tenantSetting.findMany({where:{tenantId:{in:tenantIds}},orderBy:[{tenantId:'asc'},{key:'asc'}]}),audits:await owner.auditLog.findMany({where:{tenantId:{in:tenantIds}},orderBy:{id:'asc'}}),billing:await owner.tenantDeletionBillingReconciliation.findMany({where:{tenantId:{in:tenantIds}},orderBy:{tenantId:'asc'}}),exports:await owner.tenantExportJob.findMany({where:{tenantId:{in:tenantIds}},orderBy:{id:'asc'}})});
+    const get=(i=0,suffix='')=>request('GET',`/v2/admin/account/status${suffix}`,actors[i].cookies);
+    const expectedClaims=claims(actors[0].cookies),refreshBefore=actors[0].cookies.get('refresh_token'),csrfBefore=actors[0].cookies.get('csrf_token'),sessionBefore=await owner.session.findUniqueOrThrow({where:{id:actors[0].sessionId}});
+    const firstGetAt=Date.now();
+    const headers=async(response,requestStartedAt=firstGetAt)=>{
+      const cookies=response.headers['set-cookie'];cookieMetadata={count:Array.isArray(cookies)?cookies.length:0,cookies:[],refreshUnchanged:actors[0].cookies.get('refresh_token')===refreshBefore,csrfUnchanged:actors[0].cookies.get('csrf_token')===csrfBefore};
+      assert.equal(Array.isArray(cookies),true);assert.equal(cookies.length,3);
+      for(const [index,raw]of cookies.entries()){
+        const parts=raw.split(';').map(x=>x.trim()),pair=parts.shift(),split=pair.indexOf('='),name=pair.slice(0,split),encoded=pair.slice(split+1),attributes=parts.map(x=>{const at=x.indexOf('=');return [at<0?x.toLowerCase():x.slice(0,at).toLowerCase(),at<0?'':x.slice(at+1)];});
+        const attrs=new Map(attributes),maxAge=Number(attrs.get('max-age')),expires=attrs.get('expires'),meta={nameIsAccess:name==='access_token',uniqueAttributes:attrs.size===attributes.length,httpOnly:attrs.has('httponly')&&attrs.get('httponly')==='',sameSiteStrict:attrs.get('samesite')==='Strict',rootPath:attrs.get('path')==='/',secureAbsent:!attrs.has('secure'),domainAbsent:!attrs.has('domain'),expectedAttributes:attributes.every(([key])=>['httponly','samesite','path','max-age',...(index<2?['expires']:[])].includes(key)),positiveBoundedMaxAge:Number.isInteger(maxAge)&&maxAge>0&&maxAge<=1800&&maxAge<=Math.ceil((sessionBefore.expiresAt.getTime()-requestStartedAt)/1000),expiryShape:index<2?typeof expires==='string'&&Number.isFinite(Date.parse(expires))&&Date.parse(expires)>requestStartedAt&&Math.abs(Date.parse(expires)-(requestStartedAt+maxAge*1000))<=10000:expires===undefined,validJwt:false,canonicalClaims:false,jarLastAccess:false};cookieMetadata.cookies.push(meta);
+        let decoded;try{decoded=jwt.verify(decodeURIComponent(encoded),secret,{algorithms:['HS256'],issuer:'lunchlineup',audience:'lunchlineup-api'});meta.validJwt=true;}catch{throw new Error('Status rotated cookie signature or standard claims invalid');}
+        meta.canonicalClaims=decoded.sub===users[0].id&&decoded.tenantId===tenantIds[0]&&decoded.sessionId===actors[0].sessionId&&['role','legacyRole','mfaVerified','pinResetRequired'].every(key=>decoded[key]===expectedClaims[key])&&Number.isInteger(decoded.iat)&&Number.isInteger(decoded.exp)&&decoded.exp>decoded.iat&&decoded.exp-decoded.iat<=1800&&Object.keys(decoded).every(key=>['sub','tenantId','sessionId','role','legacyRole','mfaVerified','pinResetRequired','iat','exp','iss','aud'].includes(key));
+        meta.jarLastAccess=index<2||actors[0].cookies.get('access_token')===encoded;
+        for(const [field,value]of Object.entries(meta))assert.equal(value,true,`Status cookie ${index} ${field} invalid`);
+      }
+      assert.equal(cookieMetadata.refreshUnchanged,true);assert.equal(cookieMetadata.csrfUnchanged,true);assert.equal(sha(Buffer.from(JSON.stringify(await owner.session.findUniqueOrThrow({where:{id:actors[0].sessionId}})))),sha(Buffer.from(JSON.stringify(sessionBefore))),'Status request altered saved session');
+      assert.equal(response.headers['x-lunchlineup-compatibility-owner'],'API-02');assert.equal(response.headers.location===undefined,true);assert.equal(response.headers['content-disposition']===undefined,true);assert.equal(response.headers['cache-control'],'private, no-store');assert.equal(/^application\/json\s*;\s*charset=utf-8$/i.test(response.headers['content-type']??''),true);
+    };
+    // Complete the independent provider-outcome gate with an otherwise accepted intent.
+    await owner.tenantSetting.update({where:{tenantId_key:{tenantId:tenantIds[0],key:intentKey}},data:{value:{tenantId:tenantIds[0],kind:'CUSTOMER_CANCELLATION',state:'PROVIDER_APPLIED',providerResult:{action:'UNKNOWN',cancelAtPeriodEnd:true,currentPeriodEnd:effective}}}});
+    const unknownBefore=await state(),unknown=await get();ok(unknown);await headers(unknown);assert.equal(unknown.body.id,tenantIds[0]);assert.equal(unknown.body.lifecycleStatus,'OPEN');assert.equal(unknown.body.cancellationEffectiveAt,null);assert.equal(unknown.body.deletionRequestedAt,null);assert.equal(unknown.body.retention,null);assert.deepEqual(unknown.body.legalHold,{placedAt:holdAt.toISOString()});assert.deepEqual(await state(),unknownBefore);
+    checkpoint('valid-lifecycle-unknown-provider-outcome-refuses-completion-without-state-change');
+    await owner.tenantSetting.update({where:{tenantId_key:{tenantId:tenantIds[0],key:intentKey}},data:{value:{tenantId:tenantIds[0],kind:'CUSTOMER_CANCELLATION',state:'PROVIDER_APPLIED',providerResult:{action:'scheduled',cancelAtPeriodEnd:true,currentPeriodEnd:effective}}}});
+    const recoveryBefore=await state();
+    discardMetadata={responseReceived:false,status:null,bodyParserAttached:false,bodyParsed:false,applicationResultDelivered:false,deliberateDestroy:false,requestClosed:false,responseClosed:false,socketClosed:false,unexpectedError:false,serverRequestObserved:false,serverRequestClosed:false,serverResponseFinished:false,serverResponseClosed:false,serverSocketClosed:false,serverCorrelationUnique:true,passiveListenersRemoved:false};
+    const discardMarker=randomUUID(),passiveRemovers=[];
+    const passive=(target,event,listener)=>{target.on(event,listener);passiveRemovers.push(()=>target.removeListener(event,listener));};
+    try{await new Promise((done,reject)=>{
+      let req,res,socket,settled=false;const finish=error=>{if(settled)return;settled=true;clearTimeout(timer);error?reject(error):done();};
+      const complete=()=>{if(discardMetadata.requestClosed&&discardMetadata.responseClosed&&discardMetadata.socketClosed&&discardMetadata.serverRequestObserved&&discardMetadata.serverRequestClosed&&discardMetadata.serverResponseClosed&&discardMetadata.serverSocketClosed)finish(discardMetadata.unexpectedError?new Error('Status discard had unexpected transport failure'):undefined);};
+      const fail=()=>{discardMetadata.unexpectedError=true;req?.destroy();res?.destroy();socket?.destroy();};
+      const timer=setTimeout(()=>{fail();finish(new Error('Status discarded response did not settle within deadline'));},10000);
+      const observeServer=(incoming,outgoing)=>{
+        if(incoming.headers['x-qa-discard-marker']!==discardMarker)return;
+        if(discardMetadata.serverRequestObserved||incoming.method!=='GET'||incoming.url!=='/v2/admin/account/status'){discardMetadata.serverCorrelationUnique=false;fail();return;}
+        discardMetadata.serverRequestObserved=true;
+        passive(incoming,'close',()=>{discardMetadata.serverRequestClosed=true;complete();});
+        passive(outgoing,'finish',()=>{discardMetadata.serverResponseFinished=true;});
+        passive(outgoing,'close',()=>{discardMetadata.serverResponseClosed=true;complete();});
+        passive(incoming.socket,'close',()=>{discardMetadata.serverSocketClosed=true;complete();});
+      };
+      // Observe before the native handler without replacing it or consuming request/response data.
+      app.server.prependListener('request',observeServer);passiveRemovers.push(()=>app.server.removeListener('request',observeServer));
+      req=http.request({hostname:'127.0.0.1',port:apiPort,path:'/v2/admin/account/status',method:'GET',agent:false,headers:{'X-QA-Discard-Marker':discardMarker,Origin:origin,Host:`127.0.0.1:${apiPort}`,Cookie:[...actors[0].cookies].map(([key,value])=>`${key}=${value}`).join('; ')}},response=>{
+        res=response;discardMetadata.responseReceived=true;discardMetadata.status=res.statusCode;
+        res.once('close',()=>{discardMetadata.responseClosed=true;complete();});res.once('error',()=>{if(!discardMetadata.deliberateDestroy)fail();});
+        // No data/end collector, JSON parser or consumer receives this body.
+        discardMetadata.headerContract={compatibilityOwner:res.headers['x-lunchlineup-compatibility-owner']==='API-02',jsonContentType:/^application\/json\s*;\s*charset=utf-8$/i.test(res.headers['content-type']??''),privateNoStore:res.headers['cache-control']==='private, no-store',locationAbsent:res.headers.location===undefined,dispositionAbsent:res.headers['content-disposition']===undefined,threeCookies:Array.isArray(res.headers['set-cookie'])&&res.headers['set-cookie'].length===3};
+        if(res.statusCode!==200||!Object.values(discardMetadata.headerContract).every(Boolean)){fail();return;}
+        discardMetadata.deliberateDestroy=true;res.destroy();req.destroy();socket?.destroy();
+      });
+      req.once('socket',value=>{socket=value;socket.once('close',()=>{discardMetadata.socketClosed=true;complete();});});
+      req.once('close',()=>{discardMetadata.requestClosed=true;complete();});req.once('error',()=>{if(!discardMetadata.deliberateDestroy)fail();});req.end();
+    });}finally{for(const remove of passiveRemovers)remove();discardMetadata.passiveListenersRemoved=true;}
+    assert.equal(discardMetadata.status,200);assert.equal(Object.values(discardMetadata.headerContract).every(Boolean),true);for(const field of ['responseReceived','deliberateDestroy','requestClosed','responseClosed','socketClosed','serverRequestObserved','serverRequestClosed','serverResponseClosed','serverSocketClosed','serverCorrelationUnique','passiveListenersRemoved'])assert.equal(discardMetadata[field],true);for(const field of ['bodyParserAttached','bodyParsed','applicationResultDelivered','unexpectedError'])assert.equal(discardMetadata[field],false);
+    await snapshotKeys();assert.deepEqual(await state(),recoveryBefore);
+    const recoveryGetAt=Date.now(),recovered=await get();ok(recovered);assert.equal(recovered.body.id,tenantIds[0]);assert.equal(recovered.body.slug,tenantIds[0]);assert.equal(recovered.body.status,'ACTIVE');assert.equal(recovered.body.lifecycleStatus,'CANCELLATION_SCHEDULED');assert.equal(recovered.body.cancellationEffectiveAt,effective);assert.deepEqual(recovered.body.legalHold,{placedAt:holdAt.toISOString()});assert.equal(recovered.body.deletionRequestedAt,null);assert.equal(recovered.body.retention,null);assert.deepEqual(recovered.body.requests,[]);assert.deepEqual(recovered.body.retainedRecords,['billingEvents','stripeUsageEvents','creditTransactions','payrollRecords','auditLogs','databaseBackups','securityLogs']);await headers(recovered,recoveryGetAt);assert.deepEqual(await state(),recoveryBefore);
+    assert.deepEqual(await exportState(),{jobs:0,entries:[]});assert.equal(exportService.stopping,true);assert.equal(exportService.workerActive,false);assert.equal(exportService.activeTasks.size,0);const finalMetric=await metrics.tenantExportsTotal.get();workerCustody.finalWorkerErrorCount=finalMetric.values.filter(x=>x.labels.outcome==='worker_error').reduce((sum,x)=>sum+x.value,0);assert.equal(workerCustody.finalWorkerErrorCount,0);
+    checkpoint('account-status-discarded-response-body-independent-readback-and-fresh-recovery');
+    assert.equal(checks.length,2);complete=true;
+  }catch(error){primary=error;}
+  finally{
+    await attempt(async()=>{if(app)await bounded(app.close(),'Credential native close',15000);});
+    await attempt(async()=>{if(retained)await bounded(retained.close(),'Credential retained close',15000);});
+    await attempt(async()=>{throttleOptions?.storage?.onApplicationShutdown?.();if(store)await bounded(store.close(),'Credential native Redis close');});
+    await attempt(async()=>{
+      // destroy() initiates closure; ownership settles only after every close event.
+      const sockets=[...appSockets,...retainedSockets];
+      await bounded(Promise.all(sockets.map(socket=>new Promise(done=>{
+        socket.once('close',done);socket.destroy();
+      }))),'Credential owned socket close events',15000);
+    });
+    await attempt(async()=>{assert.equal(Boolean(app?.server.listening),false);assert.equal(Boolean(retained?.getHttpServer().listening),false);assert.equal(appSockets.size,0);assert.equal(retainedSockets.size,0);closed=true;});
+    await attempt(async()=>{
+      assert.equal(closed,true);if(redis.status==='ready')await snapshotKeys();
+      const allTenants=[...tenantIds],userIds=[...users.map(row=>row.id),],roleIds=roles.map(row=>row.id);
+      assert.equal(new Set(allTenants).size,allTenants.length);for(const id of allTenants)assert.ok(id.startsWith(`native-account-status-followup-${nonce}`)||tenantIds.includes(id));
+      const storedSessions=await owner.session.findMany({where:{userId:{in:userIds}},select:{id:true}}),sessionIds=[...new Set([...storedSessions.map(row=>row.id),...issuedSessions.map(row=>row.id)])];
+      for(const key of ownedKeys)if(key.startsWith('session_mfa:'))assert.ok(sessionIds.includes(key.slice('session_mfa:'.length)));
+      assert.equal(await owner.tenantDeletionBillingReconciliation.count({where:{tenantId:{in:allTenants}}}),0);
+      assert.equal(await owner.tenantExportJob.count({where:{tenantId:{in:allTenants}}}),0);assert.equal(await owner.passwordResetEmailOutbox.count({where:{tenantId:{in:allTenants}}}),0);
+      // Exact owned fixture teardown only, outside tested HTTP operations.
+      // Existing owner teardown is necessary for immutable ledger/audit/payroll rows.
+      await owner.$transaction(async tx=>{
+        await tx.$executeRawUnsafe('SET LOCAL session_replication_role = replica');
+        await tx.refreshTokenReplay.deleteMany({where:{sessionId:{in:sessionIds}}});await tx.session.deleteMany({where:{id:{in:sessionIds},userId:{in:userIds}}});
+        await tx.rolePermission.deleteMany({where:{roleId:{in:roleIds}}});
+        for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])await tx[model].deleteMany({where:{tenantId:{in:allTenants}}});
+        await tx.user.deleteMany({where:{id:{in:userIds},tenantId:{in:allTenants}}});await tx.tenant.deleteMany({where:{id:{in:allTenants}}});
+      },{maxWait:5000,timeout:20000});
+      assert.equal(await owner.tenant.count({where:{id:{in:allTenants}}}),0);assert.equal(await owner.user.count({where:{id:{in:userIds}}}),0);
+      for(const model of ['auditLog','billingEvent','stripeUsageEvent','creditTransaction','payrollTimeCardApproval','payrollLockedEntry','timeCardBreak','timeCard','location','payrollPeriod','payrollPolicyVersion','mfaTotpClaim','passwordResetToken','staffInvitationOutbox','roleAssignment','role','tenantSetting'])assert.equal(await owner[model].count({where:{tenantId:{in:allTenants}}}),0);
+      databaseCleaned=true;if(ownedKeys.size)await bounded(redis.del(...ownedKeys),'Exact retention Redis cleanup');assert.equal(await redis.dbsize(),0);redisCleaned=true;
+    });
+    await attempt(async()=>{assert.deepEqual(await exportState(),{jobs:0,entries:[]});if(exportService){assert.equal(exportService.stopping,true);assert.equal(exportService.workerActive,false);assert.equal(exportService.activeTasks.size,0);}});
+    await attempt(async()=>{if(redis.status==='ready')await bounded(redis.quit(),'Credential Redis disconnect');});redis.disconnect(false);
+    for(const client of [appClient,retainedClient,owner])await attempt(()=>bounded(client.$disconnect(),'Credential Prisma disconnect'));
+    for(const cookies of jars)cookies.clear();for(const [key,value]of previousEnv)value===undefined?delete process.env[key]:process.env[key]=value;
+    await attempt(async()=>{
+      const receipt={version:1,kind:'native-account-status-followup-local-integration',releaseQualified:false,runId:context.runId,sourceSha:context.sourceSha,
+        startedAt,finishedAt:new Date().toISOString(),status:complete&&!primary&&!cleanupFailures.length?'passed':'failed',
+        expectedCheckpointCount:2,completedCheckpointCount:checks.length,checkpoints:checks,apiPort,retainedPort,workerCustody,cookieMetadata,discardMetadata,exportDirectory:context.exportDirectory,
+        transport:'owned-loopback-native-v2-account-status-with-real-retained-auth',credentialSource:'HTTP-issued cookies only; no synthetic session/JWT/MFA markers',
+        databaseCleaned,redisCleaned,ownedAppsClosed:closed,fixturePreserved:!databaseCleaned,
+        limitations:['Scoped real Nest auth composition, not full AppModule/production ingress','Local development cookie transport, not TLS secure-cookie proof','No browser/provider/backups/log erasure/scheduler operating evidence','Client-discarded response body and fresh uncached HTTP reload, not guaranteed serverwrite loss or processrestart; fixture projection only/no provider/PURGED/browser'],
+        failures:[...(primary?[primary]:[]),...cleanupFailures].map(error=>({name:error?.name??'Error',messageSha256:sha(Buffer.from(String(error?.message??error)))}))};
+      const bytes=Buffer.from(JSON.stringify(receipt,null,2)+'\n');assert.ok(bytes.length<=cap);
+      await bounded(writeFile(`${context.workspace}/.release/internal-ci/${context.sourceSha}/integration/native-account-status-followup-${nonce}.json`,bytes,{flag:'wx',mode:0o600}),'Credential durable receipt');
+    });
+  }
+  if(primary||cleanupFailures.length)throw new AggregateError([...(primary?[primary]:[]),...cleanupFailures],'Native account lifecycle status scenario or owned cleanup failed; preserve first attempt.');
+}
