@@ -40,7 +40,7 @@ async function beginReset() {
   return pending;
 }
 async function settle(pending: ReturnType<typeof deferred<Response>>) {
-  pending.resolve(response({ temporaryPin: '765432', username: 'alpha-reset' }));
+  pending.resolve(response({ id: staff[0].id, temporaryPin: '765432', username: 'alpha-reset', pinResetRequired: true }));
   await h.until(tree => !text(tree).includes('Resetting...'));
   expect(m.fetch).toHaveBeenCalledTimes(2);
   expect(text(row(staff[0].id))).toContain('PIN reset required');
