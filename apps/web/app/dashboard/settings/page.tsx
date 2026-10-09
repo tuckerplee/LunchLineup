@@ -6,6 +6,7 @@ export default async function SettingsPage() {
 
     return (
         <SettingsWorkspace
+            key={JSON.stringify([user.workspaceScope, user.publicUserId, user.sessionScope])}
             canWriteSettings={canPermission(user, 'settings:write')}
             canReadBilling={canPermission(user, 'billing:read')}
             canManageBilling={canPermission(user, 'billing:write')}

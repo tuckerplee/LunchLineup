@@ -42,6 +42,8 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const [breakMinutes, setBreakMinutes] = useState('30');
     const [notes, setNotes] = useState('');
     const [isReferenceLoading, setIsReferenceLoading] = useState(true);
+    const [referenceError, setReferenceError] = useState<string | null>(null);
+    const [referenceLoadAttempt, setReferenceLoadAttempt] = useState(0);
     const [isCardsLoading, setIsCardsLoading] = useState(true);
     const [loadedTargetKey, setLoadedTargetKey] = useState<string | null>(null);
     const [canStartNewTimeCard, setCanStartNewTimeCard] = useState(false);
@@ -93,7 +95,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
     const teamClockOutTargetIsExplicit = !isTeamTime
         || Boolean(canReadLocations && selectedLocationId && activeLocationId && selectedLocationId === activeLocationId);
 
-    const loadReferenceData = useCallback(async () => {
+    const loadReferenceData = useCallback(async (isCurrent: () => boolean) => {
         const [staffRows, locationPage] = await Promise.all([
             canManageTeam ? fetchStaffRoster() : Promise.resolve(null),
             canReadLocations ? fetchLocationPage() : Promise.resolve(null),
@@ -102,10 +104,12 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             .slice()
             .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
         const nextLocations = Array.isArray(locationPage?.data) ? locationPage.data : [];
+        const nextCursor = locationPage ? locationContinuation(locationPage) : null;
 
+        if (!isCurrent()) return;
         setStaff(nextStaff);
         setLocations(nextLocations);
-        setNextLocationCursor(locationPage ? locationContinuation(locationPage) : null);
+        setNextLocationCursor(nextCursor);
     }, [canManageTeam, canReadLocations]);
 
     const loadMoreLocations = useCallback(async () => {
@@ -160,7 +164,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             publish(setActiveCard, targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
             publish(setLoadedTargetKey, targetKey);
 
-            if (snapshot.historyResponse.ok) {
+            if (snapshot.historyResponse?.ok) {
                 const page = (await snapshot.historyResponse.json()) as TimeCardPage;
                 if (!isCurrent()) return;
                 if (!Array.isArray(page.data)) throw new Error('Time card history could not be verified.');
@@ -215,11 +219,11 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
         async function load() {
             setIsReferenceLoading(true);
-            setError(null);
+            setReferenceError(null);
             try {
-                await loadReferenceData();
+                await loadReferenceData(() => !cancelled);
             } catch (err) {
-                if (!cancelled) setError(err instanceof Error ? err.message : 'Unable to load time cards.');
+                if (!cancelled) setReferenceError(err instanceof Error ? err.message : 'Unable to load people and locations.');
             } finally {
                 if (!cancelled) setIsReferenceLoading(false);
             }
@@ -229,7 +233,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
         return () => {
             cancelled = true;
         };
-    }, [loadReferenceData]);
+    }, [loadReferenceData, referenceLoadAttempt]);
 
     useEffect(() => {
         if (!selectedUserId) {
@@ -566,6 +570,19 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                     </label>
                 </div>
 
+                {referenceError ? (
+                    <div role="alert" style={{ display: 'grid', gap: '0.5rem', justifyItems: 'start', fontSize: '0.83rem', color: '#cb3653' }}>
+                        <span>{referenceError} Retry loading people and locations to complete your selection.</span>
+                        <button
+                            type="button"
+                            className="btn btn-secondary"
+                            disabled={isReferenceLoading || isSaving || isCorrectionOpen}
+                            onClick={() => setReferenceLoadAttempt((attempt) => attempt + 1)}
+                        >
+                            Retry people and locations
+                        </button>
+                    </div>
+                ) : null}
                 {error ? <div role="alert" style={{ fontSize: '0.83rem', color: '#cb3653' }}>{error}</div> : null}
                 {notice ? <div role="status" style={{ fontSize: '0.83rem', color: '#0f8c52' }}>{notice}</div> : null}
 
