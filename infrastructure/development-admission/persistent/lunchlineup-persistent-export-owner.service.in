@@ -1,0 +1,31 @@
+# SOURCE ONLY: install only with separately approved pins, policy, limits and recovery.
+[Unit]
+Description=Exact-job persistent export owner
+Before=lunchlineup-persistent-export-consumer.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=PINNED_APP_GROUP
+UMask=0077
+RuntimeDirectory=lunchlineup-persistent-export
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+ExecStart=PINNED_PYTHON -I /usr/local/libexec/lunchlineup/development-persistent-export.py owner
+ExecStopPost=PINNED_SYSTEMCTL --no-block start lunchlineup-persistent-export-recovery.service
+RuntimeMaxSec=PINNED_OWNER_LIFETIME
+TimeoutStopSec=PINNED_OWNER_STOP_BOUND
+KillMode=control-group
+Restart=no
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=PINNED_JOURNAL_DIRECTORY /run/lunchlineup-persistent-export
+MemoryMax=PINNED_OWNER_MEMORY
+TasksMax=PINNED_OWNER_PIDS
+CPUQuota=PINNED_OWNER_CPU
+LimitCORE=0
+StandardOutput=null
+StandardError=journal
+# No Install target, socket activation or automatic restart.

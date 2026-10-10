@@ -1,3 +1,4 @@
+import { consumePersistentExportPermit } from "./persistent-export-consumer";
 import {
   ConflictException,
   HttpException,
@@ -956,6 +957,7 @@ export class TenantExportService implements OnModuleDestroy {
   private readonly durability: TenantExportDurabilityOperations;
   private readonly timer?: NodeJS.Timeout;
   private workerActive = false;
+  private persistentOwnerActive = false;
   private stopping = false;
   // Deny-only pilot configuration is not activation authority. No reopen API exists.
   private generationAdmissionOpen = false;
@@ -1133,6 +1135,7 @@ export class TenantExportService implements OnModuleDestroy {
   start(actor: TenantLifecycleActor) {
     if (this.stopping) throw new ServiceUnavailableException("Tenant exports are shutting down.");
     this.assertGenerationAdmission();
+    if (this.persistentOwnerActive) throw new ServiceUnavailableException("Dedicated export consumer does not admit requests.");
     return this.trackTask(() => this.startAdmitted(actor));
   }
 
@@ -1285,14 +1288,33 @@ export class TenantExportService implements OnModuleDestroy {
     };
   }
 
+  /** Dedicated consumer only: one authenticated exact job; no timer/request/cleanup release. */
+  runPersistentOwnerExport(permit: object): Promise<boolean> {
+    const selected = consumePersistentExportPermit(this, permit);
+    this.assertPersistentOwnerReady();
+    this.persistentOwnerActive = true;
+    this.workerActive = true;
+    this.generationAdmissionOpen = true;
+    return this.trackTask(() => this.runAdmittedWorkerOnce(selected.jobId, selected.tenantId))
+      .finally(() => { this.generationAdmissionOpen = false; this.workerActive = false; this.persistentOwnerActive = false; });
+  }
+
+  assertPersistentOwnerReady(): void {
+    if (process.env.TENANT_EXPORT_PILOT_MODE !== "true" || this.options.startWorker
+      || this.stopping || this.aborted || this.admissionClosePromise || this.workerActive
+      || this.generationAdmissionOpen || this.cleanupAdmissionOpen) {
+      throw new ServiceUnavailableException("Persistent export instance is not closed and idle.");
+    }
+  }
+
   runWorkerOnce(): Promise<boolean> {
-    if (this.stopping || !this.generationAdmissionOpen) return Promise.resolve(false);
+    if (this.stopping || !this.generationAdmissionOpen || this.persistentOwnerActive) return Promise.resolve(false);
     return this.trackTask(() => this.runAdmittedWorkerOnce());
   }
 
-  private async runAdmittedWorkerOnce(): Promise<boolean> {
+  private async runAdmittedWorkerOnce(jobId?: string, tenantId?: string): Promise<boolean> {
     if (this.stopping || !this.generationAdmissionOpen) return false;
-    const job = await this.claimJob().catch((error) => {
+    const job = await this.claimJob(jobId, tenantId).catch((error) => {
       this.claimOutcomeUnknown = true;
       throw error;
     });
@@ -1382,7 +1404,7 @@ export class TenantExportService implements OnModuleDestroy {
     }
   }
 
-  private async claimJob(): Promise<ExportJob | null> {
+  private async claimJob(jobId?: string, tenantId?: string): Promise<ExportJob | null> {
     if (!this.generationAdmissionOpen || this.stopping) return null;
     const claimToken = randomUUID();
     const leaseUntil = new Date(Date.now() + this.options.leaseMs);
@@ -1393,6 +1415,9 @@ export class TenantExportService implements OnModuleDestroy {
                 SELECT *
                 FROM "TenantExportJob"
                 WHERE "expiresAt" > CURRENT_TIMESTAMP
+                  AND (${jobId ?? null}::TEXT IS NULL OR "id" = ${jobId ?? null})
+                  AND (${tenantId ?? null}::TEXT IS NULL OR "tenantId" = ${tenantId ?? null})
+                  AND (${jobId ?? null}::TEXT IS NULL OR ("state" = 'QUEUED' AND "attempts" = 0))
                   AND "artifactCleanupState" = 'NONE'
                   AND ("state" = 'QUEUED' OR ("state" = 'RUNNING' AND "claimExpiresAt" < CURRENT_TIMESTAMP))
                 ORDER BY "createdAt" ASC, "id" ASC
