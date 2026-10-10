@@ -21,6 +21,7 @@ model Tenant {
   stripeCustomerId                   String?
   stripeSubscriptionId               String?
   stripeSubscriptionCurrentPeriodEnd DateTime?
+  selectedBillingRevision            Int       @default(0)
   status                             TenantStatus @default(TRIAL)
   trialEndsAt                        DateTime?
   gracePeriodEndsAt                  DateTime?
@@ -1357,6 +1358,9 @@ model TenantSetting {
   selectedLifecycleProviderRequestId String? @db.VarChar(255)
   selectedLifecycleProviderReceipt Json?
   selectedLifecycleProviderCompletedAt DateTime?
+  selectedLifecycleProviderBillingRevision Int?
+  selectedLifecycleFinalizationIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleFinalizationReceipt Json?
   id        String   @id @default(uuid())
   tenantId  String
   key       String

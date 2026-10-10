@@ -509,6 +509,14 @@
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "Retain the pre-schema notification failure budget column, NULL-only historical backfill and default/nonNULL transition during rollback; isolated old-release proof must cover old outbox claims, retry/terminal/read-marker behavior and fresh/pre-schema ordering without resetting known counters before compatibility is accepted."
+    },
+    "packages/db/prisma/migrations/20261010_zzz_selected_cancellation_finalization.sql": {
+      "sha256": "7f1ab73446e752309b2b3c48fd8e001050915b76d00e69b223566b882260bc2b",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain database-owned billing revisions, atomic new-receipt capture and immutable local finalization. No historical receipt revision backfill, no counter reset, no restoration of earlier selected-request functions over finalized rows. Old writers remain fenced; fresh/upgrade order, callback/commit uncertainty, RLS and privacy retention require isolated King proof."
     }
   }
 }
