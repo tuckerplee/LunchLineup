@@ -245,9 +245,29 @@ export class NotificationOutboxProcessor {
                     }
                     const url = process.env.REDIS_URL;
                     if (!url) throw new Error('Explicit admitted Redis endpoint required.');
+                    // Never pass a URL to ioredis: URL query options precede explicit options there.
+                    const endpoint = new URL(url);
+                    const path = endpoint.pathname;
+                    const host = endpoint.hostname.startsWith('[')
+                        ? endpoint.hostname.slice(1, -1) : endpoint.hostname;
+                    const db = path === '' || path === '/' ? 0 : Number(path.slice(1));
+                    const port = endpoint.port === '' ? 6379 : Number(endpoint.port);
+                    if (!['redis:', 'rediss:'].includes(endpoint.protocol) || !host
+                        || url.includes('?') || url.includes('#')
+                        || (path !== '' && path !== '/' && !/^\/[0-9]+$/.test(path))
+                        || !Number.isSafeInteger(db) || db < 0 || db > 2147483647
+                        || !Number.isSafeInteger(port) || port < 1 || port > 65535
+                        || (!endpoint.hostname.startsWith('[') && !/^[A-Za-z0-9.-]+$/.test(host))) {
+                        throw new Error('Selected Redis endpoint must be a network URL without query options.');
+                    }
+                    const username = endpoint.username ? decodeURIComponent(endpoint.username) : undefined;
+                    const password = endpoint.password ? decodeURIComponent(endpoint.password) : undefined;
                     this.assertOwnerOpen(selected.expires);
-                    const redis = new Redis(url, {
+                    const redis = new Redis({
+                        host, port, db, username, password,
+                        tls: endpoint.protocol === 'rediss:' ? {} : undefined,
                         lazyConnect: true, enableOfflineQueue: false, enableReadyCheck: false,
+                        enableAutoPipelining: false, reconnectOnError: () => false,
                         maxRetriesPerRequest: 0, retryStrategy: () => null,
                         autoResendUnfulfilledCommands: false, autoResubscribe: false,
                     });
