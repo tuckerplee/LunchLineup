@@ -291,7 +291,14 @@ function fixture(action: Action) {
         if (action === 'updateRole') await pause('domain'); return where.key.in.map((key: string) => ({ id: 'permission:' + key, key })); }) },
       rolePermission: { deleteMany: vi.fn(async (args: Row) => { expect(args.where).toEqual({ roleId: ids.customRole });
         const d = effect('rolePermission', 'deleteMany', args); d.roles.find(row => row.id === ids.customRole)!.rolePermissions = []; return { count: 1 }; }) },
-      auditLog: { create: vi.fn(async (args: Row) => { expect(args.data).toMatchObject({ tenantId: ids.tenant, actorUserId: ids.actor, actorTenantId: ids.tenant });
+      auditLog: { findFirst: vi.fn(async ({ where, select }: Row) => {
+        const row = view().audits.find(candidate => matches(candidate, where));
+        if (!row) return null;
+        if (!select) return clone(row);
+        return Object.fromEntries(Object.entries(select)
+          .filter(([, included]) => included === true)
+          .map(([key]) => [key, clone(row[key])]));
+      }), create: vi.fn(async (args: Row) => { expect(args.data).toMatchObject({ tenantId: ids.tenant, actorUserId: ids.actor, actorTenantId: ids.tenant });
         effect('auditLog', 'create', args).audits.push(clone(args.data)); if (controls.failAudit) throw new Error('controlled audit failure'); return clone(args.data); }) },
       planDefinition: { findUnique: vi.fn(async () => ({ code: 'FREE', userLimit: 100 })) },
       location: { findMany: vi.fn(async () => []) },

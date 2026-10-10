@@ -5,6 +5,7 @@ import type { Prisma } from '@prisma/client';
 import { describe, expect, it, vi } from 'vitest';
 import { PeopleService } from './people.service';
 import { ScheduleBoardService } from '../scheduling/board.service';
+import { schedulingAuthority } from '../scheduling/scheduling-authority.fixture';
 import { authorizeMutation } from './access';
 
 vi.mock('./access', async importOriginal => ({
@@ -89,6 +90,16 @@ describe('reversible account state', () => {
   });
   it('keeps published assignments visible on the board after deactivation without listing inactive staff', async () => {
     const { service, user, identity } = fixture();
+    const boardIdentity: SessionIdentity = { ...identity,
+      permissions: ['locations:read', 'schedules:read', 'shifts:read'] };
+    const peopleAuthorize = vi.mocked(authorizeMutation).getMockImplementation();
+    if (!peopleAuthorize) throw new Error('Missing People authority fixture');
+    const actualAccess = await vi.importActual<typeof import('./access')>('./access');
+    vi.mocked(authorizeMutation).mockImplementation((tx, selected, permission, options) => (
+      permission === 'locations:read'
+        ? actualAccess.authorizeMutation(tx, selected, permission, options)
+        : peopleAuthorize(tx, selected, permission, options)
+    ));
     const location = { id: 'location-internal', publicId: 'location-public', name: 'Kitchen', timezone: 'UTC' };
     const schedule = { id: 'schedule-internal', publicId: 'schedule-public', locationId: location.id,
       startDate: new Date('2030-01-01T00:00:00Z'), endDate: new Date('2030-01-03T00:00:00Z'),
@@ -96,9 +107,7 @@ describe('reversible account state', () => {
     const shift = { id: 'shift-internal', publicId: 'shift-public', userId: user.id, user,
       locationId: location.id, scheduleId: schedule.id, role: 'STAFF', breaks: [],
       startTime: new Date('2030-01-01T22:00:00Z'), endTime: new Date('2030-01-02T06:00:00Z') };
-    const board = new ScheduleBoardService({ withTenant: async (tenant: string, work: (tx: unknown) => Promise<unknown>) => {
-      expect(tenant).toBe(identity.tenantId);
-      return work({
+    const boardTransaction = {
         location: { findMany: async () => [location] },
         schedule: { findMany: async () => [schedule] },
         user: { findMany: async ({ where }: { where: unknown }) => {
@@ -113,14 +122,21 @@ describe('reversible account state', () => {
           const assignee = where.OR.find(part => part.user)?.user?.is;
           return user.suspendedAt && assignee && Object.hasOwn(assignee, 'suspendedAt') ? [] : [shift];
         } },
-      });
-    } } as never);
+    };
+    const authority = schedulingAuthority(boardTransaction, boardIdentity);
+    const board = new ScheduleBoardService({ ...authority.database,
+      withTenant: async (...args: Parameters<typeof authority.database.withTenant>) => {
+        const [tenant] = args;
+        expect(tenant).toBe(identity.tenantId);
+        return authority.database.withTenant(...args);
+      },
+    } as never, authority.observer);
     const query = { date: '2030-01-01', view: 'day' as const };
-    const before = await board.get(identity, query);
+    const before = await board.get(boardIdentity, query);
     expect(before.data.staff.map(person => person.id)).toEqual([user.publicId]);
     expect(before.data.shifts).toHaveLength(1);
     await service.setSuspended(identity, user.publicId, { suspended: true, expectedSuspendedAt: null });
-    const after = await board.get(identity, query);
+    const after = await board.get(boardIdentity, query);
     expect(after.data.staff).toEqual([]);
     expect(after.data.shifts).toEqual(before.data.shifts);
     expect(after.data.schedules).toEqual(before.data.schedules);
