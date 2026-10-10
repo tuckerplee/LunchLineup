@@ -36,6 +36,7 @@ model Tenant {
   retentionLegalHoldByUserId         String?
 
   cancellationTerminalEvents    TenantCancellationTerminalEvent[]
+  cancellationObservations      TenantCancellationObservation[]
   users                         User[]
   locations                     Location[]
   shifts                        Shift[]
@@ -1394,6 +1395,30 @@ model BillingEvent {
   @@index([tenantId])
   @@index([type])
   @@index([createdAt])
+}
+
+model TenantCancellationObservation {
+  id                      String @id
+  tenantId                String
+  operationId             String
+  requestIntentSha256     String
+  providerIntentSha256    String
+  observationIntentSha256 String @unique
+  customerId              String
+  subscriptionId          String
+  priorReceiptSha256      String?
+  processFence            Json
+  original                Json
+  leaseOwner              String
+  leaseUntil              DateTime
+  attempts                Int
+  receipt                 Json?
+  billingRevision         Int?
+  createdAt               DateTime @default(now())
+  completedAt             DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  @@unique([tenantId, providerIntentSha256], map: "TenantCancellationObservation_provider_once")
 }
 
 model TenantCancellationTerminalEvent {

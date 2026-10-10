@@ -940,6 +940,8 @@ export const TENANT_EXPORT_COLLECTIONS: readonly ExportCollection[] = [
 ];
 
 export const TENANT_EXPORT_EXCLUDED_MODELS = {
+  TenantCancellationObservation:
+    "Internal provider recovery custody is excluded; it is privacy-purgeable and is not permanent privacy-case tracking.",
   TenantCancellationTerminalEvent:
     "Internal authenticated provider application evidence is excluded; customer lifecycle history remains separately projected.",
   MfaTotpClaim: "Authentication replay-prevention claims are never exported.",

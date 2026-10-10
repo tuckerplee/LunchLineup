@@ -525,6 +525,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "Retain immutable verified terminal application evidence, invalidation on parent event mutation, appended local convergence receipt and original request/provider/finalization fences. No historical authentication or chronology backfill; old writers remain fenced. Native RLS, retained-record purge, same-second chronology, replay and rollback proof required."
+    },
+    "packages/db/prisma/migrations/20261010_zzzzz_selected_cancellation_observation.sql": {
+      "sha256": "408a896e8c31474c3340eb50d866518555f9ba8986813dfc996756511b0f5168",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain separate consumed observation claims/results and original provider fences. Never clear a claim after GET uncertainty or restore an old DB snapshot as retry authority. Fresh independent admission must reconcile external custody after storage restore. Old-release retention purge must include this child or remain held; native RLS, concurrency, callback/commit uncertainty, rollback and privacy purge proof required."
     }
   }
 }
