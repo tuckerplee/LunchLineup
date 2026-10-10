@@ -1,0 +1,26 @@
+# Private-only overlay. Never use without exact admitted effective-config review.
+# Compose !override support required; ordinary empty-array merge is NOT equivalent.
+services:
+  proxy:
+    cap_add: !reset []
+    ports: !override
+      - target: 8080
+        published: "80"
+        host_ip: "10.231.10.108"
+        protocol: tcp
+    environment:
+      PRIVATE_APP_HOST: dev.lunchlineup.com
+      CADDY_SITE_ADDRESSES: http://dev.lunchlineup.com
+    volumes: !override
+      - type: bind
+        source: ./infrastructure/caddy/Caddyfile.private-pilot
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: caddy_data
+        target: /data
+      - type: volume
+        source: caddy_config
+        target: /config

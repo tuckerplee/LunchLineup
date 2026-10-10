@@ -2,6 +2,12 @@
 # Stage-oriented exact-image qualification on the Custom CI appliance. Never contacts VM107.
 set -euo pipefail
 umask 077
+# The build target contract is explicit; it is not the qualification fixture env.
+# Development QA retains its existing isolated loopback path.
+if [[ "${LUNCHLINEUP_DEVELOPMENT_QA:-}" != 1 ]]; then
+  : "${LUNCHLINEUP_PRIVATE_TARGET_PROFILE:?explicit private target profile required}"
+  export LUNCHLINEUP_PRIVATE_TARGET_PROFILE
+fi
 [[ "${1:-}" == --source-context && -n "${2:-}" && "${3:-}" == --stage && "${4:-}" =~ ^(release-image-build|production-image-inventory|release-stack-health|fullstack-playwright|interaction-proof|dast|load|sbom|trivy)$ && $# == 4 ]] || { echo 'Usage: run-internal-beta-release-qualification.sh --source-context <context.json> --stage <stage>' >&2; exit 64; }
 context=$2; stage=$4; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"; qualification_root="$RUNNER_TEMP/lunchlineup-beta-qualification-$CI_RUN_ID"; env_file="$qualification_root/runtime.env"; secrets_dir="$qualification_root/secrets"
 project_suffix=${CI_RUN_ID,,}; project_suffix=${project_suffix//[^a-z0-9]/}; test -n "$project_suffix"; project="lunchlineup-beta-$project_suffix"

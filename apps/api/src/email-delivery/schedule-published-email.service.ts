@@ -16,6 +16,7 @@ const SYSTEM_STAFF_EMAIL_SUFFIX = '@staff.lunchlineup.local';
 
 type SchedulePublishedEmailInput = {
     outboxId: string;
+    createdAt: Date | string;
     recipientEmail: string | null;
     title: string;
     body: string;
@@ -100,6 +101,16 @@ export class SchedulePublishedEmailService {
             this.logger.warn('Schedule publication email skipped reason=provider_feedback');
             return skip('suppressed');
         }
+        // Keep every automatic handoff inside the provider's 24h dedupe
+        // window, measured conservatively from durable intent creation.
+        const createdAt = input.createdAt instanceof Date ? input.createdAt.getTime() : Date.parse(input.createdAt);
+        const assertDeliveryWindow = () => {
+            const age = Date.now() - createdAt;
+            if (!Number.isFinite(createdAt) || age < 0 || age >= 23 * 60 * 60 * 1_000) {
+                throw new Error('Schedule email delivery window expired; provider outcome requires reconciliation');
+            }
+        };
+        assertDeliveryWindow();
         const payload = Object.freeze({
             from: this.from, to: recipient, subject: title,
             html: ['<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#172033">',
@@ -114,6 +125,7 @@ export class SchedulePublishedEmailService {
                 this.assertPreparedRecipient(boundRecipient, currentRecipient, window, selectedWindow);
                 try {
                     // No database or asynchronous preparation between the final guard and NEW provider handoff.
+                    assertDeliveryWindow();
                     const send = this.resend!.emails.send as unknown as AbortableEmailSend;
                     const response = await send.call(this.resend!.emails, payload, {
                         idempotencyKey: `schedule-published/${outboxId}`, signal: selectedWindow.signal,

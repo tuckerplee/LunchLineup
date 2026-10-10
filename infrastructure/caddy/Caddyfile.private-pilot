@@ -1,8 +1,13 @@
 {
+	http_port 8080
 	email {$ADMIN_EMAIL:admin@example.com}
 }
 
-{$CADDY_SITE_ADDRESSES:https://lunchlineup.example.com} {
+http://127.0.0.1:2015 {
+	respond /health 200
+}
+
+{$CADDY_SITE_ADDRESSES:http://localhost:80, http://127.0.0.1:80, http://proxy:80} {
 	encode zstd gzip
 	request_body {
 		max_size 10MB

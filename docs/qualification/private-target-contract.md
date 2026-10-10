@@ -1,0 +1,78 @@
+# Private-origin contract — source-only proposal v4
+
+Base: `9c0804636ace7863238822c89046e33dff29129d` (PR140 head reported remotely verified by King Push Test, receipt KPT-PRIVATE-REVIEW-EARLY-37). Worktree `/tmp/lunchlineup-private-origin-20261009`. No tests, syntax checks, builds, deployment scripts, browser/runtime sessions, provider calls or installations were executed. No test files were authored or changed. This proposal does not enable a deployment.
+
+## Required target input
+
+For the existing non-development qualification/manifest/receipt producer chain, `LUNCHLINEUP_PRIVATE_TARGET_PROFILE` must identify an absolute path to a regular JSON file, at most 16 KiB. The profile contains exactly these fields; there is deliberately no usable example or invented target:
+
+| Field | Contract |
+| --- | --- |
+| version | Number 1 |
+| kind | `lunchlineup-private-target` |
+| targetId | Stable owner-assigned lowercase letter followed by up to 62 lowercase letters/digits/hyphens |
+| origin | Canonical `https://` DNS hostname only; no credentials, port, path/trailing slash, query or fragment |
+| expectedHostname | Explicit lowercase short guest hostname |
+| machineId | Explicit 32 lowercase hexadecimal characters from the approved target |
+
+The exact known production hostnames `lunchlineup.com` and `beta.lunchlineup.com` are rejected. Other subdomains are not presumed production solely because they share a DNS suffix. Acceptance of syntax is not approval: the independently approved installed target and future estate guard must establish separate server, domain/route, credentials, volumes/backups and additional production exclusions. No target/domain or physical isolation is invented here.
+
+`profileSha256` is SHA-256 of UTF-8 `stableJson(profile)`: recursively sorted object keys, JSON indentation of two spaces, final newline, as implemented by existing `internal-ci-evidence.mjs`. It covers exactly the six immutable fields above, not raw file whitespace. No timestamps, quota measurements, hold state, fresh guard evidence or secrets are allowed. A changed machine/target contract requires new binding; routine storage/hold evidence refresh does not. The serialized binding is `{targetId, origin, profileSha256}`.
+
+## Propagation and independent verification
+
+The qualification env writer uses the profile's origin for compiled browser config and emits its binding in public-build-config.json. It still creates job-private disposable fixture credentials and loopback routing. Those files are NOT runtime credentials or the installed profile. The builder reads the deployment identity as metadata only; it does not compare its own machine ID with the eventual deployment machine.
+
+The existing qualification stage wrapper requires/exports the profile path for non-development runs. Existing pipeline commands inherit the explicitly supplied path; no source-selected target default is added. The approved CI configuration owner must make the immutable profile available in the existing job environment. The env writer's development-QA branch retains its existing loopback/no-provider behavior and does not require this profile. No production signature is introduced into that separate development path.
+
+Public-build verification compares actual compiled browser contract and existing config hash against the private origin. The release-manifest writer emits the binding and origin; the receipt producer checks the manifest binding and carries it into the existing signed receipt. Existing signature, policy/pipeline, gate inventory, source/tree, image/archive, compiled-config and interaction-proof checks remain. Hash formats for existing public values remain unchanged; changed origin naturally changes their hashes. The adjacent unused legacy productionHealthProof builder is untouched.
+
+The installed receipt verifier DOES NOT trust an environment-selected candidate profile. It reads `/etc/lunchlineup/trust/private-target.json` independently, requires root ownership, non-writability by others and canonical nonsymlink paths for that file and its LunchLineup parent directories. It requires the approved local policy's new `privateTarget` field, the candidate manifest binding and signed receipt binding to equal that installed profile. The existing policy checked into source has deliberately not been given a fictional approval/binding or refreshed digest. It fails this new check until the policy owner supplies approval.
+
+Install the reviewed verifier, `private-target-profile.mjs` and its relative dependency `internal-ci-evidence.mjs` together in `/usr/local/libexec/lunchlineup`, with root-owned non-writable directories/files and no symlink substitution. Do not resolve either helper from the candidate checkout. `internal-ci-evidence.mjs` imports only Node built-ins. Lifecycle checks both helper files before invoking the installed reader; secure installation custody remains a requirement for the standalone verifier too. No installer or trust-store mutation is included.
+
+## Lifecycle, Docker and Caddy boundary
+
+Lifecycle requires the explicit installed profile path; legacy BETA host/origin/hostname overrides are refused. It retains fixed app/runtime-env/project paths, exact candidate/artifact checks, bounded operations, no-build/no-pull and `/run/lock/lunchlineup-deploy.lock`. Under that lock it reads installed profile fields, compares hostname/machine ID, and refuses either existing VM107 launch hold or private launch hold.
+
+**All launch, verify and pause invocations then unconditionally fail before Docker/images/provider actions:** installed estate/storage/hold guard admission is not yet implemented or approved. There is no configuration bypass. This intentionally prevents a correctly formatted profile from becoming deployment authority. VM107's hypervisor hook and hold are untouched. No production changes are authorized by internal success.
+
+All lifecycle and backup Docker call sites (Compose, inspect, load, tag, ps, stop and cleanup) now specify `/usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker` through `env -i PATH=/usr/bin:/bin`. Ambient DOCKER_HOST/DOCKER_CONTEXT and Compose interpolation overrides cannot select another daemon or change runtime values through the inherited process environment. This fixed invocation is not itself proof of physical backing or project ownership. Those remain required guard checks before the unconditional refusal could ever be replaced.
+
+Runtime text checks require NEXT_PUBLIC_APP_URL and PRIVATE_APP_HOST to match the profile, while the single CADDY_SITE_ADDRESSES listener is http:// followed by that same host for the private proxy-to-guest hop. The proxy receives PRIVATE_APP_HOST through Compose; actual/template Caddy no-store/no-transform host matchers retain the existing beta.lunchlineup.com match alongside it, with localhost fallback only for generic local Compose compatibility. Private lifecycle has no such domain fallback. Rendered Compose/image/volume/secret bindings still require future reviewed admission before activation; no deployment can currently reach them.
+
+The backup helper is an independent database-mutating entry point. It now refuses immediately, before traps, Docker or scratch creation, for standalone AND child use. No caller-controlled authorization boolean or recursive flock was introduced. A future reviewed guard must provide real admission plus inherited-lock ownership without deadlocking the lifecycle child, retaining exact temporary-database cleanup. This is the isolated missing authority dependency, not a permissive stub.
+
+## Existing fixture impacts and remaining work
+
+Existing deploy fixtures that hardcode beta origin, omit a target binding, invoke a repository-local verifier with ad hoc trust inputs, or expect lifecycle/backup success now need owner assessment. Known affected files include internal-beta-lifecycle.test.mjs, internal-beta-receipt-enforcement.test.mjs, internal-ci-candidate-receipt.test.mjs, internal-ci-release-manifest.test.mjs, internal-ci-receipt-signature.test.mjs, internal-beta-qualification-env-isolation.test.mjs, and release-pipeline-hardening.test.mjs. These were located by source search, not executed or edited. No existing pass is claimed for this patch. Development network/source-inventory assertions may also notice the new helper/Compose key.
+
+Outside inputs still required: actual approved static profile and local policy binding; trusted helper installation; bounded estate/storage/hold and daemon/project/Compose admission; independently provisioned internal credentials; target-domain routing by its owner; explicit activation authorization. Existing hardcoded contact addresses in signed public-build expectations were not silently reapproved by this origin change; contact approval remains a separate open gate. Do not promote qualification fixture keys/contact examples to runtime.
+
+King Push Test owns overlap review, integration/commits/pushing, and any later authorized qualification. Frozen payroll P01-r2 artifacts remain unchanged. This source slice is ready for independent review, not activation.
+
+## V2 independent-review corrections
+
+V1 remains frozen as historical evidence and must not be integrated. V2 additionally propagates the private origin through `infrastructure/custom-ci/lunchlineup-sign-receipt.mjs`, the privileged signing implementation invoked by the unchanged fixed-path wrapper from `.ci/pipeline.json`. The signer imports ONLY the absolute installed `/usr/local/libexec/lunchlineup/private-target-profile.mjs`; it never imports a helper from the receipt tree or an environment-selected candidate checkout. That helper reads the independent root-owned installed profile, ignoring the build profile environment variable. The signer requires its externally approved policy, candidate receipt and hash-bound release manifest to match that target binding before signature creation, and uses the installed origin in BOTH public-config and compiled-image-contract comparisons. Original controller-run custody, source/pipeline/gate/validity checks, artifact/archive hashing and signing-key/output handling remain unchanged.
+
+The signing appliance now requires the same separately approved static target profile at `/etc/lunchlineup/trust/private-target.json` and reviewed root-owned helper plus `internal-ci-evidence.mjs` installed under `/usr/local/libexec/lunchlineup`. This is an installation/approval prerequisite, not an installation performed by this patch. The wrapper's fixed signer/policy/key paths are unchanged; production key policy is not relaxed. Existing signer fixtures that execute the repository copy without installed trusted dependencies will fail until the owner addresses the installation contract; no fixture edit or execution is authorized here.
+
+Caddy V2 preserves the legacy beta hostname's private/no-store/no-transform page headers even when PRIVATE_APP_HOST is absent or different. The matcher accepts that old hostname OR the configured private hostname, excluding /api/* and /health exactly as before. This is cache-header compatibility, not route creation or permission to deploy to the legacy hostname: profile validation and lifecycle's unconditional activation refusal still reject it as a target.
+
+## V3 private-route reconciliation (2026-10-09)
+
+Read-only CT940 configuration inspection through documented Proxmox1 private SSH found `/etc/nginx/proxmox1-routes.d/lunchlineup-dev.conf` SHA256 `fe550fdbb51e059be84b06df35a02ef7817db2b36c42fe20f3e889991d7f1461`: listen80/IPv6port80; server names dev.lunchlineup.com and lunchlineup-dev.proxmox1.lan; proxy_pass http://10.231.10.108:80; Host $host; X-Forwarded-Proto $scheme. This is current disk-config evidence, not a request probe, live-config reload proof or TLS certificate/delivery proof. No unrelated route contents or credentials were retained.
+
+The minimal lifecycle correction separates canonical browser origin from backend transport. The intended profile origin remains https://dev.lunchlineup.com, subject to actual HTTPS ingress readiness. Runtime guest CADDY_SITE_ADDRESSES is instead http://dev.lunchlineup.com, matching the observed private proxy HTTP hop and the existing loopback HTTP probes with the canonical Host header. PRIVATE_APP_HOST remains dev.lunchlineup.com for the cache matcher. It does not add the LAN alias as a browser origin or silently change a route. Other V2 target/hash/signing/hold/lock controls remain.
+
+Deliberate operator choice still required: provide and approve HTTPS termination for the canonical private browser origin, or separately design/approve an HTTP-only development mode. This source slice does NOT downgrade the signed browser origin, cookie security, MFA/auth safeguards or readiness checks. CT940's observed port80 route does not establish HTTPS termination elsewhere; its `$scheme` forwarding means an upstream TLS offload cannot simply be assumed to preserve the original HTTPS scheme. The route owner must establish the trusted forwarded scheme and exact ingress before activation. No TLS/proxy setting was changed here.
+
+The runtime operator must also bind VM107's published HTTP port on the approved private guest interface reachable from CT940; default loopback-only Docker publication does not satisfy the observed cross-host backend. Proposed target-specific runtime value is PROXY_HTTP_BIND=10.231.10.108 and PROXY_HTTP_PORT=80, subject to estate readback/approval and the existing guard block. This is not a live IP assignment or instruction to open a production interface. No generated runtime.env was installed or qualification fixtures promoted.
+
+Historical PRIVATE_APP_HOST and the shared Caddy legacy beta cache-header compatibility are retained. V2 stays frozen; V3 is a source/config successor. Readback required one approved network-sandbox escalation; the temporary0600 key copy was removed in finally and the repository key was unchanged. VM107/production endpoints were not contacted, started or modified.
+
+## V4 direct-readiness/private-bind correction
+
+V3 remains frozen. V4 changes only lifecycle source and this contract document relative to V3. The VM107 runtime contract now requires expectedHostname=lunchlineup-dev, canonical host=dev.lunchlineup.com, PROXY_HTTP_BIND=10.231.10.108 and PROXY_HTTP_PORT=80. Both direct health and HTML probes use the literal http://10.231.10.108:80 target after that runtime validation, with the same canonical Host header, timeouts, HTTP200/source/body checks and no redirect following. The separate HTTPS canonical-origin probes are unchanged. No new arbitrary URL input, wildcard publication or optional probe exists. This corrects the earlier V3 reference to loopback probing; binding only the private address cannot serve127.0.0.1. The source neither publishes a port nor proves admission: all actions still stop at the unchanged unconditional estate-guard refusal before Docker or probing.
+
+Trusted scheme forwarding remains unresolved across the ENTIRE ingress chain: observed CT940 sets X-Forwarded-Proto=$scheme on its HTTP hop, and Caddy's reverse_proxy has no newly configured trusted-proxy/scheme-preservation policy. Upstream TLS termination or an NGINX-only change cannot be presumed sufficient, and arbitrary client forwarding headers must not be trusted. No such routing or trust configuration is implemented here. The HTTPS browser origin and secure-cookie requirement are preserved; private backend HTTP does not authorize COOKIE_SECURE=false. Credential/cookie/CSRF/redirect behavior requires later specifically authorized qualification, not merely these readiness probes. No fixture changes or execution were performed.

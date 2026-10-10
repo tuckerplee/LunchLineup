@@ -1,0 +1,3628 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:lunchlineup:proposed-development-admission:v1",
+  "title": "Proposed request inputs; schema validity is not admission",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "version",
+    "kind",
+    "requestId",
+    "operation",
+    "target",
+    "selection",
+    "installedHelpers",
+    "authority",
+    "limits",
+    "operationPlan"
+  ],
+  "properties": {
+    "version": {
+      "const": 1
+    },
+    "kind": {
+      "const": "lunchlineup-development-admission-request"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "operation": {
+      "enum": [
+        "load",
+        "start",
+        "verify",
+        "pause",
+        "backup-proof",
+        "pitr-base-backup",
+        "pitr-restore",
+        "pitr-lifecycle-audit"
+      ]
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "estate",
+        "vmid",
+        "hostname",
+        "machineId",
+        "origin",
+        "dockerEndpoint",
+        "dockerConfig",
+        "profile"
+      ],
+      "properties": {
+        "estate": {
+          "const": "Proxmox1"
+        },
+        "vmid": {
+          "const": 107
+        },
+        "hostname": {
+          "const": "lunchlineup-dev"
+        },
+        "machineId": {
+          "const": "80a9dfd43bbc6a074cf9148daa5335c2"
+        },
+        "origin": {
+          "const": "https://dev.lunchlineup.com"
+        },
+        "dockerEndpoint": {
+          "const": "unix:///var/run/docker.sock"
+        },
+        "dockerConfig": {
+          "const": "/etc/lunchlineup/docker"
+        },
+        "profile": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "project",
+        "dataMode",
+        "dataDecisionRecordSha256",
+        "sourceSha",
+        "treeSha",
+        "checkout",
+        "runtimeEnv",
+        "runtimeEnvVersion",
+        "resolvedCompose",
+        "resolvedComposeSha256",
+        "artifactManifest",
+        "artifactManifestSha256",
+        "serviceSpecSha256",
+        "pathInventory",
+        "pathInventorySha256",
+        "secretVersionInventory",
+        "secretVersionInventorySha256"
+      ],
+      "properties": {
+        "project": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9_-]{0,62}$",
+          "not": {
+            "enum": [
+              "lunchlineup",
+              "lunchlineup-ux-20260907"
+            ]
+          }
+        },
+        "dataMode": {
+          "enum": [
+            "synthetic",
+            "authorized-copy"
+          ]
+        },
+        "dataDecisionRecordSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sourceSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "treeSha": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{40}$"
+        },
+        "checkout": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "runtimeEnv": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "runtimeEnvVersion": {
+          "type": "string",
+          "minLength": 1
+        },
+        "resolvedCompose": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "resolvedComposeSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "artifactManifest": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "artifactManifestSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "serviceSpecSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "pathInventory": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "pathInventorySha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "secretVersionInventory": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+        },
+        "secretVersionInventorySha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "installedHelpers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supervisor",
+        "lifecycle",
+        "backup",
+        "archivePreflight",
+        "privateTargetReader",
+        "privateTargetDependency"
+      ],
+      "properties": {
+        "supervisor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "backup": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "archivePreflight": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "privateTargetReader": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "privateTargetDependency": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "path",
+            "version",
+            "sha256"
+          ],
+          "properties": {
+            "path": {
+              "type": "string",
+              "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+            },
+            "version": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operatorDecisionSha256",
+        "installationReceiptSha256",
+        "activationDecisionSha256",
+        "freshEstateEvidenceSha256",
+        "exclusiveOwnerEvidenceSha256",
+        "custodyEvidenceSha256",
+        "httpsEvidenceSha256"
+      ],
+      "properties": {
+        "operatorDecisionSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "installationReceiptSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "activationDecisionSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "freshEstateEvidenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "exclusiveOwnerEvidenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "custodyEvidenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "httpsEvidenceSha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxSeconds",
+        "maxArchiveBytes",
+        "maxLoadedBytes",
+        "maxProofBytes"
+      ],
+      "properties": {
+        "maxSeconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1800
+        },
+        "maxArchiveBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxLoadedBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxProofBytes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "operationPlan": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "serviceClosure",
+            "closureSha256",
+            "action",
+            "resourceSelectionSha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "load"
+            },
+            "serviceClosure": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "proxy",
+                  "web",
+                  "api",
+                  "webhook-replay",
+                  "migrate",
+                  "engine",
+                  "pdf-parser",
+                  "worker",
+                  "pgbouncer",
+                  "pitr-wal-provider",
+                  "api-v2",
+                  "pitr-lifecycle-audit",
+                  "postgres",
+                  "redis",
+                  "rabbitmq",
+                  "control",
+                  "autoheal",
+                  "prometheus",
+                  "backup",
+                  "pitr-base-backup",
+                  "pitr-restore",
+                  "alertmanager",
+                  "node-exporter",
+                  "loki",
+                  "promtail",
+                  "otel-collector",
+                  "tempo",
+                  "grafana"
+                ]
+              }
+            },
+            "closureSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "const": "load-prebuilt-images"
+            },
+            "resourceSelectionSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "serviceClosure",
+            "closureSha256",
+            "action",
+            "resourceSelectionSha256",
+            "persistentOwner"
+          ],
+          "properties": {
+            "kind": {
+              "const": "start"
+            },
+            "serviceClosure": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "proxy",
+                  "web",
+                  "api",
+                  "webhook-replay",
+                  "migrate",
+                  "engine",
+                  "pdf-parser",
+                  "worker",
+                  "pgbouncer",
+                  "pitr-wal-provider",
+                  "api-v2",
+                  "pitr-lifecycle-audit",
+                  "postgres",
+                  "redis",
+                  "rabbitmq",
+                  "control",
+                  "autoheal",
+                  "prometheus",
+                  "backup",
+                  "pitr-base-backup",
+                  "pitr-restore",
+                  "alertmanager",
+                  "node-exporter",
+                  "loki",
+                  "promtail",
+                  "otel-collector",
+                  "tempo",
+                  "grafana"
+                ]
+              }
+            },
+            "closureSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "const": "start-admitted-closure"
+            },
+            "resourceSelectionSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "persistentOwner": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "ownerId",
+                "policySha256",
+                "workloadLeaseId",
+                "handoffGrantSha256",
+                "allowedDaemonWriters"
+              ],
+              "properties": {
+                "ownerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "policySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "workloadLeaseId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "handoffGrantSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "allowedDaemonWriters": {
+                  "type": "array",
+                  "minItems": 1,
+                  "uniqueItems": true,
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "serviceClosure",
+            "closureSha256",
+            "action",
+            "resourceSelectionSha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "verify"
+            },
+            "serviceClosure": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "proxy",
+                  "web",
+                  "api",
+                  "webhook-replay",
+                  "migrate",
+                  "engine",
+                  "pdf-parser",
+                  "worker",
+                  "pgbouncer",
+                  "pitr-wal-provider",
+                  "api-v2",
+                  "pitr-lifecycle-audit",
+                  "postgres",
+                  "redis",
+                  "rabbitmq",
+                  "control",
+                  "autoheal",
+                  "prometheus",
+                  "backup",
+                  "pitr-base-backup",
+                  "pitr-restore",
+                  "alertmanager",
+                  "node-exporter",
+                  "loki",
+                  "promtail",
+                  "otel-collector",
+                  "tempo",
+                  "grafana"
+                ]
+              }
+            },
+            "closureSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "const": "inspect-admitted-closure"
+            },
+            "resourceSelectionSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "serviceClosure",
+            "closureSha256",
+            "action",
+            "resourceSelectionSha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pause"
+            },
+            "serviceClosure": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "proxy",
+                  "web",
+                  "api",
+                  "webhook-replay",
+                  "migrate",
+                  "engine",
+                  "pdf-parser",
+                  "worker",
+                  "pgbouncer",
+                  "pitr-wal-provider",
+                  "api-v2",
+                  "pitr-lifecycle-audit",
+                  "postgres",
+                  "redis",
+                  "rabbitmq",
+                  "control",
+                  "autoheal",
+                  "prometheus",
+                  "backup",
+                  "pitr-base-backup",
+                  "pitr-restore",
+                  "alertmanager",
+                  "node-exporter",
+                  "loki",
+                  "promtail",
+                  "otel-collector",
+                  "tempo",
+                  "grafana"
+                ]
+              }
+            },
+            "closureSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            },
+            "action": {
+              "const": "stop-exact-owned-containers"
+            },
+            "resourceSelectionSha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source",
+            "restore",
+            "output",
+            "objectStore",
+            "limits",
+            "cleanup",
+            "outputReservation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "backup-proof"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "project",
+                "postgresContainerId",
+                "database",
+                "tenantSelectionSha256",
+                "systemIdentifier",
+                "volumeName",
+                "volumeMountIdentitySha256"
+              ],
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tenantSelectionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "restore": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "database",
+                "volumeName",
+                "volumeMountIdentitySha256",
+                "isolatedTargetDecisionSha256",
+                "separationEvidenceSha256",
+                "postgresContainerId"
+              ],
+              "properties": {
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "isolatedTargetDecisionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "separationEvidenceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "encryptionKeyVersion",
+                "custodyPolicySha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                },
+                "encryptionKeyVersion": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "custodyPolicySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "objectStore": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mode",
+                    "root",
+                    "custodyPolicySha256"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "local-only"
+                    },
+                    "root": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "custodyPolicySha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "endpoint",
+                    "bucket",
+                    "prefix",
+                    "credentialVersion",
+                    "allowedOperations",
+                    "authorizationRecordSha256",
+                    "mode"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "credentialVersion": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "allowedOperations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "read",
+                          "write",
+                          "list",
+                          "head"
+                        ]
+                      }
+                    },
+                    "authorizationRecordSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "mode": {
+                      "const": "object-store"
+                    }
+                  }
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxBytes",
+                "maxSeconds"
+              ],
+              "properties": {
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1800
+                }
+              }
+            },
+            "cleanup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorityRecordSha256",
+                "allowedDatabaseNames",
+                "allowedTemporaryPaths",
+                "allowVolumeDeletion",
+                "allowRetainedResourceMutation"
+              ],
+              "properties": {
+                "authorityRecordSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "allowedDatabaseNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "allowedTemporaryPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "uniqueItems": true
+                },
+                "allowVolumeDeletion": {
+                  "const": false
+                },
+                "allowRetainedResourceMutation": {
+                  "const": false
+                }
+              }
+            },
+            "outputReservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "objectKey",
+                "writeOnceReservationId",
+                "versionReceiptRequired"
+              ],
+              "properties": {
+                "objectKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "writeOnceReservationId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "versionReceiptRequired": {
+                  "const": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source",
+            "restore",
+            "output",
+            "objectStore",
+            "limits",
+            "cleanup",
+            "outputReservation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pitr-base-backup"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "project",
+                "postgresContainerId",
+                "database",
+                "tenantSelectionSha256",
+                "systemIdentifier",
+                "volumeName",
+                "volumeMountIdentitySha256"
+              ],
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tenantSelectionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "restore": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "database",
+                "volumeName",
+                "volumeMountIdentitySha256",
+                "isolatedTargetDecisionSha256",
+                "separationEvidenceSha256",
+                "postgresContainerId"
+              ],
+              "properties": {
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "isolatedTargetDecisionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "separationEvidenceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "encryptionKeyVersion",
+                "custodyPolicySha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                },
+                "encryptionKeyVersion": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "custodyPolicySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "objectStore": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mode",
+                    "root",
+                    "custodyPolicySha256"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "local-only"
+                    },
+                    "root": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "custodyPolicySha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "endpoint",
+                    "bucket",
+                    "prefix",
+                    "credentialVersion",
+                    "allowedOperations",
+                    "authorizationRecordSha256",
+                    "mode"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "credentialVersion": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "allowedOperations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "read",
+                          "write",
+                          "list",
+                          "head"
+                        ]
+                      }
+                    },
+                    "authorizationRecordSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "mode": {
+                      "const": "object-store"
+                    }
+                  }
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxBytes",
+                "maxSeconds"
+              ],
+              "properties": {
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1800
+                }
+              }
+            },
+            "cleanup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorityRecordSha256",
+                "allowedDatabaseNames",
+                "allowedTemporaryPaths",
+                "allowVolumeDeletion",
+                "allowRetainedResourceMutation"
+              ],
+              "properties": {
+                "authorityRecordSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "allowedDatabaseNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "allowedTemporaryPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "uniqueItems": true
+                },
+                "allowVolumeDeletion": {
+                  "const": false
+                },
+                "allowRetainedResourceMutation": {
+                  "const": false
+                }
+              }
+            },
+            "outputReservation": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "objectKey",
+                "writeOnceReservationId",
+                "versionReceiptRequired"
+              ],
+              "properties": {
+                "objectKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "writeOnceReservationId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "versionReceiptRequired": {
+                  "const": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source",
+            "restore",
+            "output",
+            "objectStore",
+            "limits",
+            "cleanup",
+            "backup",
+            "recoveryTarget"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pitr-restore"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "project",
+                "postgresContainerId",
+                "database",
+                "tenantSelectionSha256",
+                "systemIdentifier",
+                "volumeName",
+                "volumeMountIdentitySha256"
+              ],
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tenantSelectionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "restore": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "database",
+                "volumeName",
+                "volumeMountIdentitySha256",
+                "isolatedTargetDecisionSha256",
+                "separationEvidenceSha256",
+                "postgresContainerId"
+              ],
+              "properties": {
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "isolatedTargetDecisionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "separationEvidenceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "encryptionKeyVersion",
+                "custodyPolicySha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                },
+                "encryptionKeyVersion": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "custodyPolicySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "objectStore": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mode",
+                    "root",
+                    "custodyPolicySha256"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "local-only"
+                    },
+                    "root": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "custodyPolicySha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "endpoint",
+                    "bucket",
+                    "prefix",
+                    "credentialVersion",
+                    "allowedOperations",
+                    "authorizationRecordSha256",
+                    "mode"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "credentialVersion": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "allowedOperations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "read",
+                          "write",
+                          "list",
+                          "head"
+                        ]
+                      }
+                    },
+                    "authorizationRecordSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "mode": {
+                      "const": "object-store"
+                    }
+                  }
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxBytes",
+                "maxSeconds"
+              ],
+              "properties": {
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1800
+                }
+              }
+            },
+            "cleanup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorityRecordSha256",
+                "allowedDatabaseNames",
+                "allowedTemporaryPaths",
+                "allowVolumeDeletion",
+                "allowRetainedResourceMutation"
+              ],
+              "properties": {
+                "authorityRecordSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "allowedDatabaseNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "allowedTemporaryPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "uniqueItems": true
+                },
+                "allowVolumeDeletion": {
+                  "const": false
+                },
+                "allowRetainedResourceMutation": {
+                  "const": false
+                }
+              }
+            },
+            "backup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "objectKey",
+                "immutableVersionId",
+                "sha256",
+                "bytes",
+                "sourceSystemIdentifier",
+                "sourceTimeline"
+              ],
+              "properties": {
+                "objectKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "immutableVersionId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "sourceSystemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sourceTimeline": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "recoveryTarget": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "timeUtc",
+                "timeline",
+                "systemIdentifier",
+                "walManifestSha256",
+                "pauseAtTarget"
+              ],
+              "properties": {
+                "timeUtc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "timeline": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "walManifestSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "pauseAtTarget": {
+                  "const": true
+                }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source",
+            "restore",
+            "output",
+            "objectStore",
+            "limits",
+            "cleanup",
+            "backup",
+            "recoveryTarget"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pitr-lifecycle-audit"
+            },
+            "source": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "project",
+                "postgresContainerId",
+                "database",
+                "tenantSelectionSha256",
+                "systemIdentifier",
+                "volumeName",
+                "volumeMountIdentitySha256"
+              ],
+              "properties": {
+                "project": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "tenantSelectionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "restore": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "database",
+                "volumeName",
+                "volumeMountIdentitySha256",
+                "isolatedTargetDecisionSha256",
+                "separationEvidenceSha256",
+                "postgresContainerId"
+              ],
+              "properties": {
+                "database": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeName": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "volumeMountIdentitySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "isolatedTargetDecisionSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "separationEvidenceSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "postgresContainerId": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            },
+            "output": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "path",
+                "encryptionKeyVersion",
+                "custodyPolicySha256"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                },
+                "encryptionKeyVersion": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "custodyPolicySha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                }
+              }
+            },
+            "objectStore": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "mode",
+                    "root",
+                    "custodyPolicySha256"
+                  ],
+                  "properties": {
+                    "mode": {
+                      "const": "local-only"
+                    },
+                    "root": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "custodyPolicySha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "provider",
+                    "endpoint",
+                    "bucket",
+                    "prefix",
+                    "credentialVersion",
+                    "allowedOperations",
+                    "authorizationRecordSha256",
+                    "mode"
+                  ],
+                  "properties": {
+                    "provider": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "endpoint": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "bucket": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "prefix": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "credentialVersion": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "allowedOperations": {
+                      "type": "array",
+                      "minItems": 1,
+                      "uniqueItems": true,
+                      "items": {
+                        "enum": [
+                          "read",
+                          "write",
+                          "list",
+                          "head"
+                        ]
+                      }
+                    },
+                    "authorizationRecordSha256": {
+                      "type": "string",
+                      "pattern": "^[a-f0-9]{64}$"
+                    },
+                    "mode": {
+                      "const": "object-store"
+                    }
+                  }
+                }
+              ]
+            },
+            "limits": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "maxBytes",
+                "maxSeconds"
+              ],
+              "properties": {
+                "maxBytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "maxSeconds": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 1800
+                }
+              }
+            },
+            "cleanup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "authorityRecordSha256",
+                "allowedDatabaseNames",
+                "allowedTemporaryPaths",
+                "allowVolumeDeletion",
+                "allowRetainedResourceMutation"
+              ],
+              "properties": {
+                "authorityRecordSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "allowedDatabaseNames": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "uniqueItems": true
+                },
+                "allowedTemporaryPaths": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "uniqueItems": true
+                },
+                "allowVolumeDeletion": {
+                  "const": false
+                },
+                "allowRetainedResourceMutation": {
+                  "const": false
+                }
+              }
+            },
+            "backup": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "objectKey",
+                "immutableVersionId",
+                "sha256",
+                "bytes",
+                "sourceSystemIdentifier",
+                "sourceTimeline"
+              ],
+              "properties": {
+                "objectKey": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "immutableVersionId": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "bytes": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "sourceSystemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "sourceTimeline": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
+            "recoveryTarget": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "timeUtc",
+                "timeline",
+                "systemIdentifier",
+                "walManifestSha256",
+                "pauseAtTarget"
+              ],
+              "properties": {
+                "timeUtc": {
+                  "type": "string",
+                  "format": "date-time"
+                },
+                "timeline": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "systemIdentifier": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "walManifestSha256": {
+                  "type": "string",
+                  "pattern": "^[a-f0-9]{64}$"
+                },
+                "pauseAtTarget": {
+                  "const": true
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "load"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "serviceClosure",
+              "closureSha256",
+              "action",
+              "resourceSelectionSha256"
+            ],
+            "properties": {
+              "kind": {
+                "const": "load"
+              },
+              "serviceClosure": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "proxy",
+                    "web",
+                    "api",
+                    "webhook-replay",
+                    "migrate",
+                    "engine",
+                    "pdf-parser",
+                    "worker",
+                    "pgbouncer",
+                    "pitr-wal-provider",
+                    "api-v2",
+                    "pitr-lifecycle-audit",
+                    "postgres",
+                    "redis",
+                    "rabbitmq",
+                    "control",
+                    "autoheal",
+                    "prometheus",
+                    "backup",
+                    "pitr-base-backup",
+                    "pitr-restore",
+                    "alertmanager",
+                    "node-exporter",
+                    "loki",
+                    "promtail",
+                    "otel-collector",
+                    "tempo",
+                    "grafana"
+                  ]
+                }
+              },
+              "closureSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "action": {
+                "const": "load-prebuilt-images"
+              },
+              "resourceSelectionSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "start"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "serviceClosure",
+              "closureSha256",
+              "action",
+              "resourceSelectionSha256",
+              "persistentOwner"
+            ],
+            "properties": {
+              "kind": {
+                "const": "start"
+              },
+              "serviceClosure": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "proxy",
+                    "web",
+                    "api",
+                    "webhook-replay",
+                    "migrate",
+                    "engine",
+                    "pdf-parser",
+                    "worker",
+                    "pgbouncer",
+                    "pitr-wal-provider",
+                    "api-v2",
+                    "pitr-lifecycle-audit",
+                    "postgres",
+                    "redis",
+                    "rabbitmq",
+                    "control",
+                    "autoheal",
+                    "prometheus",
+                    "backup",
+                    "pitr-base-backup",
+                    "pitr-restore",
+                    "alertmanager",
+                    "node-exporter",
+                    "loki",
+                    "promtail",
+                    "otel-collector",
+                    "tempo",
+                    "grafana"
+                  ]
+                }
+              },
+              "closureSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "action": {
+                "const": "start-admitted-closure"
+              },
+              "resourceSelectionSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "persistentOwner": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ownerId",
+                  "policySha256",
+                  "workloadLeaseId",
+                  "handoffGrantSha256",
+                  "allowedDaemonWriters"
+                ],
+                "properties": {
+                  "ownerId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "policySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "workloadLeaseId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "handoffGrantSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "allowedDaemonWriters": {
+                    "type": "array",
+                    "minItems": 1,
+                    "uniqueItems": true,
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "verify"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "serviceClosure",
+              "closureSha256",
+              "action",
+              "resourceSelectionSha256"
+            ],
+            "properties": {
+              "kind": {
+                "const": "verify"
+              },
+              "serviceClosure": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "proxy",
+                    "web",
+                    "api",
+                    "webhook-replay",
+                    "migrate",
+                    "engine",
+                    "pdf-parser",
+                    "worker",
+                    "pgbouncer",
+                    "pitr-wal-provider",
+                    "api-v2",
+                    "pitr-lifecycle-audit",
+                    "postgres",
+                    "redis",
+                    "rabbitmq",
+                    "control",
+                    "autoheal",
+                    "prometheus",
+                    "backup",
+                    "pitr-base-backup",
+                    "pitr-restore",
+                    "alertmanager",
+                    "node-exporter",
+                    "loki",
+                    "promtail",
+                    "otel-collector",
+                    "tempo",
+                    "grafana"
+                  ]
+                }
+              },
+              "closureSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "action": {
+                "const": "inspect-admitted-closure"
+              },
+              "resourceSelectionSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "pause"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "serviceClosure",
+              "closureSha256",
+              "action",
+              "resourceSelectionSha256"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pause"
+              },
+              "serviceClosure": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "enum": [
+                    "proxy",
+                    "web",
+                    "api",
+                    "webhook-replay",
+                    "migrate",
+                    "engine",
+                    "pdf-parser",
+                    "worker",
+                    "pgbouncer",
+                    "pitr-wal-provider",
+                    "api-v2",
+                    "pitr-lifecycle-audit",
+                    "postgres",
+                    "redis",
+                    "rabbitmq",
+                    "control",
+                    "autoheal",
+                    "prometheus",
+                    "backup",
+                    "pitr-base-backup",
+                    "pitr-restore",
+                    "alertmanager",
+                    "node-exporter",
+                    "loki",
+                    "promtail",
+                    "otel-collector",
+                    "tempo",
+                    "grafana"
+                  ]
+                }
+              },
+              "closureSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              },
+              "action": {
+                "const": "stop-exact-owned-containers"
+              },
+              "resourceSelectionSha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "backup-proof"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "source",
+              "restore",
+              "output",
+              "objectStore",
+              "limits",
+              "cleanup",
+              "outputReservation"
+            ],
+            "properties": {
+              "kind": {
+                "const": "backup-proof"
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project",
+                  "postgresContainerId",
+                  "database",
+                  "tenantSelectionSha256",
+                  "systemIdentifier",
+                  "volumeName",
+                  "volumeMountIdentitySha256"
+                ],
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tenantSelectionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "restore": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "database",
+                  "volumeName",
+                  "volumeMountIdentitySha256",
+                  "isolatedTargetDecisionSha256",
+                  "separationEvidenceSha256",
+                  "postgresContainerId"
+                ],
+                "properties": {
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "isolatedTargetDecisionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "separationEvidenceSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "encryptionKeyVersion",
+                  "custodyPolicySha256"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "encryptionKeyVersion": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "custodyPolicySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "objectStore": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode",
+                      "root",
+                      "custodyPolicySha256"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "const": "local-only"
+                      },
+                      "root": {
+                        "type": "string",
+                        "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                      },
+                      "custodyPolicySha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "endpoint",
+                      "bucket",
+                      "prefix",
+                      "credentialVersion",
+                      "allowedOperations",
+                      "authorizationRecordSha256",
+                      "mode"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "bucket": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "credentialVersion": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "allowedOperations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "read",
+                            "write",
+                            "list",
+                            "head"
+                          ]
+                        }
+                      },
+                      "authorizationRecordSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "mode": {
+                        "const": "object-store"
+                      }
+                    }
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maxBytes",
+                  "maxSeconds"
+                ],
+                "properties": {
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "maxSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              },
+              "cleanup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "authorityRecordSha256",
+                  "allowedDatabaseNames",
+                  "allowedTemporaryPaths",
+                  "allowVolumeDeletion",
+                  "allowRetainedResourceMutation"
+                ],
+                "properties": {
+                  "authorityRecordSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "allowedDatabaseNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowedTemporaryPaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowVolumeDeletion": {
+                    "const": false
+                  },
+                  "allowRetainedResourceMutation": {
+                    "const": false
+                  }
+                }
+              },
+              "outputReservation": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "objectKey",
+                  "writeOnceReservationId",
+                  "versionReceiptRequired"
+                ],
+                "properties": {
+                  "objectKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "writeOnceReservationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "versionReceiptRequired": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "pitr-base-backup"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "source",
+              "restore",
+              "output",
+              "objectStore",
+              "limits",
+              "cleanup",
+              "outputReservation"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pitr-base-backup"
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project",
+                  "postgresContainerId",
+                  "database",
+                  "tenantSelectionSha256",
+                  "systemIdentifier",
+                  "volumeName",
+                  "volumeMountIdentitySha256"
+                ],
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tenantSelectionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "restore": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "database",
+                  "volumeName",
+                  "volumeMountIdentitySha256",
+                  "isolatedTargetDecisionSha256",
+                  "separationEvidenceSha256",
+                  "postgresContainerId"
+                ],
+                "properties": {
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "isolatedTargetDecisionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "separationEvidenceSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "encryptionKeyVersion",
+                  "custodyPolicySha256"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "encryptionKeyVersion": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "custodyPolicySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "objectStore": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode",
+                      "root",
+                      "custodyPolicySha256"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "const": "local-only"
+                      },
+                      "root": {
+                        "type": "string",
+                        "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                      },
+                      "custodyPolicySha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "endpoint",
+                      "bucket",
+                      "prefix",
+                      "credentialVersion",
+                      "allowedOperations",
+                      "authorizationRecordSha256",
+                      "mode"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "bucket": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "credentialVersion": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "allowedOperations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "read",
+                            "write",
+                            "list",
+                            "head"
+                          ]
+                        }
+                      },
+                      "authorizationRecordSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "mode": {
+                        "const": "object-store"
+                      }
+                    }
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maxBytes",
+                  "maxSeconds"
+                ],
+                "properties": {
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "maxSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              },
+              "cleanup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "authorityRecordSha256",
+                  "allowedDatabaseNames",
+                  "allowedTemporaryPaths",
+                  "allowVolumeDeletion",
+                  "allowRetainedResourceMutation"
+                ],
+                "properties": {
+                  "authorityRecordSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "allowedDatabaseNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowedTemporaryPaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowVolumeDeletion": {
+                    "const": false
+                  },
+                  "allowRetainedResourceMutation": {
+                    "const": false
+                  }
+                }
+              },
+              "outputReservation": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "objectKey",
+                  "writeOnceReservationId",
+                  "versionReceiptRequired"
+                ],
+                "properties": {
+                  "objectKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "writeOnceReservationId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "versionReceiptRequired": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "pitr-restore"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "source",
+              "restore",
+              "output",
+              "objectStore",
+              "limits",
+              "cleanup",
+              "backup",
+              "recoveryTarget"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pitr-restore"
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project",
+                  "postgresContainerId",
+                  "database",
+                  "tenantSelectionSha256",
+                  "systemIdentifier",
+                  "volumeName",
+                  "volumeMountIdentitySha256"
+                ],
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tenantSelectionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "restore": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "database",
+                  "volumeName",
+                  "volumeMountIdentitySha256",
+                  "isolatedTargetDecisionSha256",
+                  "separationEvidenceSha256",
+                  "postgresContainerId"
+                ],
+                "properties": {
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "isolatedTargetDecisionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "separationEvidenceSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "encryptionKeyVersion",
+                  "custodyPolicySha256"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "encryptionKeyVersion": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "custodyPolicySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "objectStore": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode",
+                      "root",
+                      "custodyPolicySha256"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "const": "local-only"
+                      },
+                      "root": {
+                        "type": "string",
+                        "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                      },
+                      "custodyPolicySha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "endpoint",
+                      "bucket",
+                      "prefix",
+                      "credentialVersion",
+                      "allowedOperations",
+                      "authorizationRecordSha256",
+                      "mode"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "bucket": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "credentialVersion": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "allowedOperations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "read",
+                            "write",
+                            "list",
+                            "head"
+                          ]
+                        }
+                      },
+                      "authorizationRecordSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "mode": {
+                        "const": "object-store"
+                      }
+                    }
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maxBytes",
+                  "maxSeconds"
+                ],
+                "properties": {
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "maxSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              },
+              "cleanup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "authorityRecordSha256",
+                  "allowedDatabaseNames",
+                  "allowedTemporaryPaths",
+                  "allowVolumeDeletion",
+                  "allowRetainedResourceMutation"
+                ],
+                "properties": {
+                  "authorityRecordSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "allowedDatabaseNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowedTemporaryPaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowVolumeDeletion": {
+                    "const": false
+                  },
+                  "allowRetainedResourceMutation": {
+                    "const": false
+                  }
+                }
+              },
+              "backup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "objectKey",
+                  "immutableVersionId",
+                  "sha256",
+                  "bytes",
+                  "sourceSystemIdentifier",
+                  "sourceTimeline"
+                ],
+                "properties": {
+                  "objectKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "immutableVersionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "sourceSystemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceTimeline": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "recoveryTarget": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "timeUtc",
+                  "timeline",
+                  "systemIdentifier",
+                  "walManifestSha256",
+                  "pauseAtTarget"
+                ],
+                "properties": {
+                  "timeUtc": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "timeline": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "walManifestSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "pauseAtTarget": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "operation": {
+            "const": "pitr-lifecycle-audit"
+          }
+        },
+        "required": [
+          "operation"
+        ]
+      },
+      "then": {
+        "properties": {
+          "operationPlan": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "kind",
+              "source",
+              "restore",
+              "output",
+              "objectStore",
+              "limits",
+              "cleanup",
+              "backup",
+              "recoveryTarget"
+            ],
+            "properties": {
+              "kind": {
+                "const": "pitr-lifecycle-audit"
+              },
+              "source": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "project",
+                  "postgresContainerId",
+                  "database",
+                  "tenantSelectionSha256",
+                  "systemIdentifier",
+                  "volumeName",
+                  "volumeMountIdentitySha256"
+                ],
+                "properties": {
+                  "project": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tenantSelectionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "restore": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "database",
+                  "volumeName",
+                  "volumeMountIdentitySha256",
+                  "isolatedTargetDecisionSha256",
+                  "separationEvidenceSha256",
+                  "postgresContainerId"
+                ],
+                "properties": {
+                  "database": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "volumeMountIdentitySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "isolatedTargetDecisionSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "separationEvidenceSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "postgresContainerId": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "output": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "path",
+                  "encryptionKeyVersion",
+                  "custodyPolicySha256"
+                ],
+                "properties": {
+                  "path": {
+                    "type": "string",
+                    "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                  },
+                  "encryptionKeyVersion": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "custodyPolicySha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "objectStore": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "mode",
+                      "root",
+                      "custodyPolicySha256"
+                    ],
+                    "properties": {
+                      "mode": {
+                        "const": "local-only"
+                      },
+                      "root": {
+                        "type": "string",
+                        "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                      },
+                      "custodyPolicySha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "provider",
+                      "endpoint",
+                      "bucket",
+                      "prefix",
+                      "credentialVersion",
+                      "allowedOperations",
+                      "authorizationRecordSha256",
+                      "mode"
+                    ],
+                    "properties": {
+                      "provider": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "endpoint": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "bucket": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "prefix": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "credentialVersion": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "allowedOperations": {
+                        "type": "array",
+                        "minItems": 1,
+                        "uniqueItems": true,
+                        "items": {
+                          "enum": [
+                            "read",
+                            "write",
+                            "list",
+                            "head"
+                          ]
+                        }
+                      },
+                      "authorizationRecordSha256": {
+                        "type": "string",
+                        "pattern": "^[a-f0-9]{64}$"
+                      },
+                      "mode": {
+                        "const": "object-store"
+                      }
+                    }
+                  }
+                ]
+              },
+              "limits": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "maxBytes",
+                  "maxSeconds"
+                ],
+                "properties": {
+                  "maxBytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "maxSeconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1800
+                  }
+                }
+              },
+              "cleanup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "authorityRecordSha256",
+                  "allowedDatabaseNames",
+                  "allowedTemporaryPaths",
+                  "allowVolumeDeletion",
+                  "allowRetainedResourceMutation"
+                ],
+                "properties": {
+                  "authorityRecordSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "allowedDatabaseNames": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowedTemporaryPaths": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "pattern": "^/[^\\u0000\\n\\r]+(?![\\s\\S])"
+                    },
+                    "uniqueItems": true
+                  },
+                  "allowVolumeDeletion": {
+                    "const": false
+                  },
+                  "allowRetainedResourceMutation": {
+                    "const": false
+                  }
+                }
+              },
+              "backup": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "objectKey",
+                  "immutableVersionId",
+                  "sha256",
+                  "bytes",
+                  "sourceSystemIdentifier",
+                  "sourceTimeline"
+                ],
+                "properties": {
+                  "objectKey": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "immutableVersionId": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "sourceSystemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "sourceTimeline": {
+                    "type": "integer",
+                    "minimum": 1
+                  }
+                }
+              },
+              "recoveryTarget": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "timeUtc",
+                  "timeline",
+                  "systemIdentifier",
+                  "walManifestSha256",
+                  "pauseAtTarget"
+                ],
+                "properties": {
+                  "timeUtc": {
+                    "type": "string",
+                    "format": "date-time"
+                  },
+                  "timeline": {
+                    "type": "integer",
+                    "minimum": 1
+                  },
+                  "systemIdentifier": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "walManifestSha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  },
+                  "pauseAtTarget": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -957,6 +957,16 @@ export class TenantExportService implements OnModuleDestroy {
   private readonly timer?: NodeJS.Timeout;
   private workerActive = false;
   private stopping = false;
+  // Deny-only pilot configuration is not activation authority. No reopen API exists.
+  private generationAdmissionOpen = false;
+  private cleanupAdmissionOpen = false;
+  private admissionClosePromise?: Promise<void>;
+  // Conservative local accounting: absence of a confirmed terminal write is unresolved.
+  private readonly unresolvedClaims = new Set<string>();
+  private claimOutcomeUnknown = false;
+  private orphanCleanupOutcomeUnknown = false;
+  private readonly uncertainRequests: Array<{ jobId: string; outcome: "unknown" }> = [];
+  private uncertainRequestOverflow = false;
   private aborted = false;
   private shutdownPromise?: Promise<void>;
   private readonly activeTasks = new Set<Promise<unknown>>();
@@ -970,6 +980,12 @@ export class TenantExportService implements OnModuleDestroy {
     private readonly metrics?: Pick<MetricsService, "tenantExportsTotal">,
     options: TenantExportServiceOptions = {},
   ) {
+    const pilotMode = process.env.TENANT_EXPORT_PILOT_MODE ?? "false";
+    if (pilotMode !== "true" && pilotMode !== "false") {
+      throw new ServiceUnavailableException("TENANT_EXPORT_PILOT_MODE must be exactly true or false.");
+    }
+    this.generationAdmissionOpen = pilotMode === "false";
+    this.cleanupAdmissionOpen = pilotMode === "false";
     const configuredDirectory =
       options.artifactDirectory ?? process.env.TENANT_EXPORT_ARTIFACT_DIRECTORY;
     this.options = {
@@ -1044,7 +1060,7 @@ export class TenantExportService implements OnModuleDestroy {
     }
     this.assertStorageContract(Boolean(configuredDirectory));
     this.tenantDb.registerShutdownDrain(() => this.onModuleDestroy());
-    if (this.options.startWorker) {
+    if (this.options.startWorker && (this.generationAdmissionOpen || this.cleanupAdmissionOpen)) {
       this.timer = setInterval(
         () => void this.maintenance(),
         this.options.pollIntervalMs,
@@ -1053,18 +1069,39 @@ export class TenantExportService implements OnModuleDestroy {
     }
   }
 
+  /** Terminal, synchronous admission close; already-owned work may settle until the deadline. */
+  closeAdmission(): Promise<void> {
+    this.generationAdmissionOpen = false;
+    this.cleanupAdmissionOpen = false;
+    if (this.timer) clearInterval(this.timer);
+    this.admissionClosePromise ??= this.drainOwnedTasks();
+    return this.admissionClosePromise;
+  }
+
   onModuleDestroy(): Promise<void> {
     this.stopping = true;
-    if (this.timer) clearInterval(this.timer);
-    this.shutdownPromise ??= this.drainOwnedTasks();
+    this.shutdownPromise ??= this.closeAdmission();
     return this.shutdownPromise;
+  }
+
+  private assertGenerationAdmission(): void {
+    if (!this.generationAdmissionOpen || this.stopping) {
+      throw new ServiceUnavailableException("Tenant export generation admission is closed.");
+    }
   }
 
   private async drainOwnedTasks(): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([
-        Promise.allSettled([...this.activeTasks]),
+        Promise.allSettled([...this.activeTasks]).then((results) => {
+          if (results.some((result) => result.status === "rejected")
+            || this.claimOutcomeUnknown || this.orphanCleanupOutcomeUnknown
+            || this.uncertainRequests.length > 0 || this.uncertainRequestOverflow
+            || this.unresolvedClaims.size > 0) {
+            throw new Error("Tenant export admission closed with unresolved operations; durable recovery remains required.");
+          }
+        }),
         new Promise<never>((_resolve, reject) => {
           timer = setTimeout(() => {
             this.aborted = true;
@@ -1095,18 +1132,23 @@ export class TenantExportService implements OnModuleDestroy {
 
   start(actor: TenantLifecycleActor) {
     if (this.stopping) throw new ServiceUnavailableException("Tenant exports are shutting down.");
+    this.assertGenerationAdmission();
     return this.trackTask(() => this.startAdmitted(actor));
   }
 
   private async startAdmitted(actor: TenantLifecycleActor) {
+    this.assertGenerationAdmission();
     const requestedByUserId = this.requireUserId(actor.userId);
     const id = randomUUID();
     const createdAt = new Date();
     const expiresAt = new Date(createdAt.getTime() + this.options.expiresMs);
+    let requestWriteDispatched = false;
+    let requestCommitConfirmed = false;
     try {
       const job = await this.tenantDb.withTenant(
         actor.tenantId,
         async (tx) => {
+          this.assertGenerationAdmission();
           const delegate = (tx as any).tenantExportJob;
           const recent = await delegate.findFirst({
             where: {
@@ -1129,6 +1171,8 @@ export class TenantExportService implements OnModuleDestroy {
             select: { id: true, slug: true },
           });
           this.assertGenerationActive();
+          this.assertGenerationAdmission();
+          requestWriteDispatched = true;
           await tx.auditLog.create({
             data: {
               tenantId: actor.tenantId,
@@ -1141,6 +1185,7 @@ export class TenantExportService implements OnModuleDestroy {
             },
           });
           this.assertGenerationActive();
+          this.assertGenerationAdmission();
           const job = await delegate.create({
             data: {
               id,
@@ -1158,11 +1203,21 @@ export class TenantExportService implements OnModuleDestroy {
         },
         { maxWait: 2_000, timeout: 5_000 },
       );
+      requestCommitConfirmed = true;
       if (this.options.startWorker) this.kickQueueDrain();
       return this.serialize(job);
     } catch (error) {
+      // Preserve the conflict response separately: P2002 does not prove rollback settlement.
+      const uniqueConflict = (error as { code?: string })?.code === "P2002";
+      if (requestWriteDispatched && !requestCommitConfirmed) {
+        if (this.uncertainRequests.length < 32) {
+          this.uncertainRequests.push({ jobId: id, outcome: "unknown" });
+        } else {
+          this.uncertainRequestOverflow = true;
+        }
+      }
       if (error instanceof HttpException) throw error;
-      if ((error as { code?: string })?.code === "P2002") {
+      if (uniqueConflict) {
         throw new ConflictException(
           "A tenant export is already being generated.",
         );
@@ -1231,14 +1286,18 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   runWorkerOnce(): Promise<boolean> {
-    if (this.stopping) return Promise.resolve(false);
+    if (this.stopping || !this.generationAdmissionOpen) return Promise.resolve(false);
     return this.trackTask(() => this.runAdmittedWorkerOnce());
   }
 
   private async runAdmittedWorkerOnce(): Promise<boolean> {
-    if (this.stopping) return false;
-    const job = await this.claimJob();
+    if (this.stopping || !this.generationAdmissionOpen) return false;
+    const job = await this.claimJob().catch((error) => {
+      this.claimOutcomeUnknown = true;
+      throw error;
+    });
     if (!job) return false;
+    if (job.state !== "FAILED") this.unresolvedClaims.add(job.id);
     if (this.aborted) return false;
     if (job.state === "FAILED") {
       this.metrics?.tenantExportsTotal?.inc({ outcome: "failed" });
@@ -1249,18 +1308,26 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   cleanupExpired(): Promise<number> {
-    if (this.stopping) return Promise.resolve(0);
+    if (this.stopping || !this.cleanupAdmissionOpen) return Promise.resolve(0);
     return this.trackTask(() => this.cleanupAdmittedExpired());
   }
 
   private async cleanupAdmittedExpired(): Promise<number> {
-    const expired = await this.claimArtifactCleanupJobs();
+    if (this.stopping || !this.cleanupAdmissionOpen) return 0;
+    const expired = await this.claimArtifactCleanupJobs().catch((error) => {
+      this.claimOutcomeUnknown = true;
+      throw error;
+    });
+    for (const job of expired) this.unresolvedClaims.add(job.id);
     let completed = 0;
     let failed = false;
     for (const job of expired) {
       this.assertGenerationActive();
       try {
-        if (await this.completeArtifactCleanup(job)) completed += 1;
+        if (await this.completeArtifactCleanup(job)) {
+          this.unresolvedClaims.delete(job.id);
+          completed += 1;
+        }
       } catch {
         failed = true;
         await this.releaseArtifactCleanupClaim(job).catch(() => undefined);
@@ -1275,11 +1342,11 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async maintenance(): Promise<void> {
-    if (this.stopping || this.workerActive) return;
+    if (this.stopping || this.workerActive || (!this.generationAdmissionOpen && !this.cleanupAdmissionOpen)) return;
     this.workerActive = true;
     try {
       if (
-        Date.now() - this.lastExpirySweep >=
+        this.cleanupAdmissionOpen && Date.now() - this.lastExpirySweep >=
         Math.min(this.options.expiresMs, 60_000)
       ) {
         await this.cleanupExpired();
@@ -1294,7 +1361,7 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private kickQueueDrain(): void {
-    if (this.stopping) return;
+    if (this.stopping || !this.generationAdmissionOpen) return;
     void this.drainQueue().catch((error) => {
       this.recordBackgroundFailure(
         "Tenant export queue drain failed; queued jobs remain available for retry",
@@ -1304,10 +1371,10 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async drainQueue(): Promise<void> {
-    if (this.workerActive) return;
+    if (this.workerActive || !this.generationAdmissionOpen) return;
     this.workerActive = true;
     try {
-      while (!this.stopping && await this.runWorkerOnce()) {
+      while (!this.stopping && this.generationAdmissionOpen && await this.runWorkerOnce()) {
         // Drain one durable claim at a time per replica.
       }
     } finally {
@@ -1316,10 +1383,12 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async claimJob(): Promise<ExportJob | null> {
+    if (!this.generationAdmissionOpen || this.stopping) return null;
     const claimToken = randomUUID();
     const leaseUntil = new Date(Date.now() + this.options.leaseMs);
     return this.tenantDb.withPlatformAdmin(async (tx) => {
       await this.lockArtifactQuota(tx);
+      if (!this.generationAdmissionOpen || this.stopping) return null;
       const candidates = await tx.$queryRaw<ExportJob[]>(Prisma.sql`
                 SELECT *
                 FROM "TenantExportJob"
@@ -1350,6 +1419,7 @@ export class TenantExportService implements OnModuleDestroy {
         BigInt(usage.globalBytes) + reservationBytes <= BigInt(this.options.globalQuotaBytes)
         && BigInt(usage.tenantBytes) + reservationBytes <= BigInt(this.options.perTenantQuotaBytes);
 
+      if (!this.generationAdmissionOpen || this.stopping) return null;
       if (!quotaAvailable) {
         const failed = await tx.$queryRaw<ExportJob[]>(Prisma.sql`
               UPDATE "TenantExportJob"
@@ -1545,6 +1615,7 @@ export class TenantExportService implements OnModuleDestroy {
         throw new Error("Tenant export lease was lost before finalization.");
       }
       artifactFinalized = true;
+      this.unresolvedClaims.delete(job.id);
       this.metrics?.tenantExportsTotal?.inc({ outcome: "ready" });
     } catch {
       await this.destroyWriter(writer);
@@ -1741,12 +1812,14 @@ export class TenantExportService implements OnModuleDestroy {
   private async claimArtifactCleanupJobs(
     onlyJobId?: string,
   ): Promise<ExportJob[]> {
+    if (!this.cleanupAdmissionOpen || this.stopping) return [];
     const cleanupOwner = randomUUID();
     const cleanupLeaseExpiresAt = new Date(
       Date.now() + this.options.cleanupLeaseMs,
     );
     return this.tenantDb.withPlatformAdmin(async (tx) => {
       await this.lockArtifactQuota(tx);
+      if (!this.cleanupAdmissionOpen || this.stopping) return [];
       const candidates = await tx.$queryRaw<ExportJob[]>(Prisma.sql`
           SELECT *
           FROM "TenantExportJob"
@@ -1771,6 +1844,7 @@ export class TenantExportService implements OnModuleDestroy {
       const claimed: ExportJob[] = [];
       for (const candidate of candidates) {
         if (!(await this.tryLockArtifactJob(tx, candidate.id))) continue;
+        if (!this.cleanupAdmissionOpen || this.stopping) break;
         const rows = await tx.$queryRaw<ExportJob[]>(Prisma.sql`
             UPDATE "TenantExportJob"
             SET "state" = CASE
@@ -1819,10 +1893,17 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async cleanupArtifactJob(id: string): Promise<boolean> {
-    const jobs = await this.claimArtifactCleanupJobs(id);
+    if (!this.cleanupAdmissionOpen || this.stopping) return false;
+    const jobs = await this.claimArtifactCleanupJobs(id).catch((error) => {
+      this.claimOutcomeUnknown = true;
+      throw error;
+    });
     if (!jobs[0]) return false;
+    this.unresolvedClaims.add(jobs[0].id);
     try {
-      return await this.completeArtifactCleanup(jobs[0]);
+      const completed = await this.completeArtifactCleanup(jobs[0]);
+      if (completed) this.unresolvedClaims.delete(jobs[0].id);
+      return completed;
     } catch (error) {
       await this.releaseArtifactCleanupClaim(jobs[0]).catch(() => undefined);
       throw error;
@@ -1935,6 +2016,7 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async removeArtifactDurably(path: string): Promise<void> {
+    this.assertGenerationActive();
     await this.options.deleteArtifact(path);
     const remaining = await stat(path).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null;
@@ -2172,6 +2254,7 @@ export class TenantExportService implements OnModuleDestroy {
   }
 
   private async cleanupOrphanPartials(): Promise<void> {
+    if (!this.cleanupAdmissionOpen || this.stopping || this.aborted) return;
     const activeArtifacts = await this.tenantDb.withPlatformAdmin((tx) =>
       tx.$queryRaw<ActiveExportArtifact[]>(Prisma.sql`
             SELECT "id", "state", "artifactKey", "claimToken", "bytes", "artifactCleanupState"
@@ -2198,14 +2281,25 @@ export class TenantExportService implements OnModuleDestroy {
     );
     const cutoff =
       Date.now() - Math.max(this.options.leaseMs, this.options.expiresMs);
-    await Promise.all(
+    const outcomes = await Promise.allSettled(
       entries.map(async (entry) => {
         if (!/^[0-9a-f-]+\.ndjson(?:\.[0-9a-f-]+\.part)?$/i.test(entry)) return;
         if (protectedEntries.has(entry)) return;
         const path = join(this.options.artifactDirectory, entry);
-        const file = await stat(path).catch(() => null);
-        if (file && file.mtimeMs <= cutoff) await rm(path, { force: true });
+        const file = await stat(path).catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (file && file.mtimeMs <= cutoff && this.cleanupAdmissionOpen && !this.stopping && !this.aborted) {
+          await rm(path, { force: true });
+        }
       }),
     );
+    // Retain the enclosing tracked task until every launched stat/rm has settled.
+    // Failure remains sticky even if this task finishes before closeAdmission().
+    if (outcomes.some((outcome) => outcome.status === "rejected")) {
+      this.orphanCleanupOutcomeUnknown = true;
+      throw new Error("Tenant export orphan cleanup failed; filesystem reconciliation remains required.");
+    }
   }
 }

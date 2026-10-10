@@ -1,0 +1,36 @@
+# SOURCE TEMPLATE ONLY. Owner substitutes admitted immutable pins/finite backing controls.
+[Unit]
+Description=LunchLineup fixed native containerd custody
+ConditionPathExists=/etc/lunchlineup/trust/development-engines.json
+BindsTo=lunchlineup-development-engines.service
+After=lunchlineup-development-engines.service
+JoinsNamespaceOf=lunchlineup-development-engines.service
+
+[Service]
+Type=exec
+NotifyAccess=none
+User=root
+Group=root
+AppArmorProfile=lunchlineup-development-engine-launcher
+ExecStart=PINNED_PYTHON -I /usr/local/libexec/lunchlineup/development-engine-starter containerd
+WatchdogSec=0
+RuntimeMaxSec=180s
+TimeoutStartSec=10s
+TimeoutStopSec=5s
+KillMode=control-group
+Delegate=no
+Restart=no
+PrivateNetwork=yes
+NoNewPrivileges=yes
+UMask=0077
+LimitCORE=0
+LimitNOFILE=512
+TasksMax=PINNED_FINITE_PIDS
+MemoryMax=PINNED_FINITE_MEMORY
+CPUQuota=PINNED_FINITE_CPU
+IOReadBandwidthMax=PINNED_BACKING_DEVICE PINNED_READ_BPS
+IOWriteBandwidthMax=PINNED_BACKING_DEVICE PINNED_WRITE_BPS
+StandardInput=null
+StandardOutput=null
+StandardError=null
+# No RuntimeDirectory removal, socket activation, restart, source building, or install target.

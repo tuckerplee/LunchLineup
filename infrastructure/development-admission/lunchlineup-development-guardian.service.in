@@ -1,0 +1,34 @@
+# SOURCE TEMPLATE ONLY. Installer must replace PINNED_PYTHON after independent
+# admission; placeholders intentionally prevent treating this as install-ready.
+[Unit]
+Description=LunchLineup VM107 fixed development custody guardian
+ConditionPathExists=/etc/lunchlineup/trust/development-guardian.json
+After=lunchlineup-development-engines.service
+BindsTo=lunchlineup-development-engines.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=root
+Group=root
+AppArmorProfile=lunchlineup-development-guardian
+ExecStart=PINNED_PYTHON -I /usr/local/libexec/lunchlineup/development-guardian-starter
+ExecStopPost=PINNED_PYTHON -I /usr/local/libexec/lunchlineup/development-guardian-finalizer
+WatchdogSec=10s
+RuntimeMaxSec=30min
+TimeoutStartSec=10s
+TimeoutStopSec=10s
+KillMode=control-group
+Delegate=no
+Restart=no
+UMask=0077
+LimitCORE=0
+LimitNOFILE=256
+TasksMax=64
+MemoryMax=768M
+StandardInput=null
+StandardOutput=null
+StandardError=journal
+# Finite CPU/IO/storage controls and enforcing LSM policy require owner-approved
+# installed values and actual parent/backing checks. No unbounded default is
+# provided, and this template does not install or attest those controls.

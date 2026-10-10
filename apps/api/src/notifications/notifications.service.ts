@@ -51,6 +51,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
             externalTimeoutMs: schedulePublishedEmail.deliveryTimeoutMs,
             prepareExternal: (intent, recipientEmail, window) => schedulePublishedEmail.prepare({
                 outboxId: intent.id,
+                createdAt: intent.createdAt,
                 recipientEmail,
                 title: intent.title,
                 body: intent.body,

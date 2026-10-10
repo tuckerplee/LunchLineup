@@ -170,7 +170,7 @@ export class InvitationOutbox {
     const row = existing
       ? await transaction.staffInvitationOutbox.update({
         where: { id: existing.id },
-        data: { ...(outboxId === existing.id ? {} : { id: outboxId }), ...data },
+        data: { ...(outboxId === existing.id ? {} : { id: outboxId, createdAt: new Date() }), ...data },
       })
       : await transaction.staffInvitationOutbox.create({
         data: { id: outboxId, tenantId: input.tenantId, userId: input.userId, ...data },
@@ -263,6 +263,21 @@ export class InvitationOutbox {
       }
       return deliveryResponse(replay, this.config.staffInvitationMaxAttempts);
     }
+    // The unique current row can have been replaced by a later action. Retain
+    // the legacy API's historical receipt boundary before creating a new one.
+    const priorAction = await transaction.auditLog.findFirst({
+      where: {
+        tenantId: input.tenantId,
+        action: 'USER_INVITATION_DELIVERY_REISSUED',
+        resource: 'StaffInvitationOutbox',
+        resourceId: outboxId,
+      },
+      select: { id: true },
+    });
+    assertCurrent();
+    if (priorAction) {
+      throw conflict('This invitation reissue key already completed; use a new Idempotency-Key');
+    }
     const user = await transaction.user.findFirst({
       where: { id: input.userId, tenantId: input.tenantId, deletedAt: null, suspendedAt: null },
       select: { id: true, email: true },
@@ -287,7 +302,7 @@ export class InvitationOutbox {
         purpose: PURPOSE,
         status: 'DEAD_LETTERED',
       },
-      data: { id: outboxId, ...data },
+      data: { id: outboxId, ...data, createdAt: new Date() },
     });
     if (replaced.count !== 1) {
       const changed = await transaction.staffInvitationOutbox.findUnique({ where: { id: outboxId } }) as InvitationRow | null;

@@ -124,7 +124,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
             const row = await tx.staffInvitationOutbox.update({
                 where: { id: existing.id },
                 data: {
-                    ...(outboxId !== existing.id ? { id: outboxId } : {}),
+                    ...(outboxId !== existing.id ? { id: outboxId, createdAt: new Date() } : {}),
                     ...data,
                 },
             }) as InvitationOutboxRow;
@@ -309,7 +309,7 @@ export class StaffInvitationOutboxService implements OnModuleInit {
                 purpose: PURPOSE,
                 status: 'DEAD_LETTERED',
             },
-            data: { id: outboxId, ...data },
+            data: { id: outboxId, ...data, createdAt: new Date() },
         });
         if (replaced.count !== 1) {
             const replay = await this.findInvitationById(tx, outboxId);

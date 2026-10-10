@@ -107,6 +107,7 @@ class PostgresInvitationStore:
             self._dead_letter_suppressed(cursor, now)
             self._terminalize_exhausted_due(cursor, now)
             self._terminalize_expired_final_attempts(cursor, now)
+            self._terminalize_expired_delivery_windows(cursor, now)
             cursor.execute(f'''
                 WITH due AS (
                     SELECT outbox."id"
@@ -117,6 +118,8 @@ class PostgresInvitationStore:
                      AND recipient."id" = outbox."userId"
                     WHERE {self._due_predicate("outbox")}
                       AND outbox."attempts" < %s
+                      AND outbox."createdAt" > clock_timestamp() - INTERVAL '23 hours'
+                      AND outbox."createdAt" <= clock_timestamp()
                       AND outbox."encryptedPayload" IS NOT NULL
                       AND recipient."deletedAt" IS NULL
                       AND recipient."suspendedAt" IS NULL
@@ -219,6 +222,30 @@ class PostgresInvitationStore:
             WHERE outbox."id" = expired."id"
         ''', (self.max_attempts, now, now, now))
 
+    def _terminalize_expired_delivery_windows(self, cursor, now: datetime) -> None:
+        # Resend retains idempotency keys for 24h. Creation precedes every
+        # possible handoff; a 23h deadline leaves transport/clock headroom.
+        # An old ambiguous delivery must be reconciled, never blindly resent.
+        cursor.execute('''
+            WITH expired AS (
+                SELECT "id"
+                FROM "StaffInvitationOutbox"
+                WHERE "createdAt" <= clock_timestamp() - INTERVAL '23 hours'
+                  AND ("status" IN ('PENDING', 'FAILED')
+                    OR ("status" = 'SENDING' AND "leaseExpiresAt" <= clock_timestamp()))
+                ORDER BY "createdAt", "id"
+                FOR UPDATE SKIP LOCKED
+                LIMIT 100
+            )
+            UPDATE "StaffInvitationOutbox" AS outbox
+            SET "status" = 'DEAD_LETTERED',
+                "deadLetteredAt" = %s,
+                "lastErrorCode" = 'DELIVERY_WINDOW_EXPIRED_OUTCOME_UNKNOWN',
+                "updatedAt" = %s
+            FROM expired
+            WHERE outbox."id" = expired."id"
+        ''', (now, now))
+
     def _terminalize_exhausted_due(self, cursor, now: datetime) -> None:
         cursor.execute('''
             WITH exhausted AS (
@@ -292,17 +319,22 @@ class PostgresInvitationStore:
                 return "suppressed"
 
             cursor.execute('''
-                SELECT 1
+                SELECT "createdAt" > clock_timestamp() - INTERVAL '23 hours'
+                   AND "createdAt" <= clock_timestamp()
                 FROM "StaffInvitationOutbox"
                 WHERE "id" = %s
                   AND "status" = 'SENDING'
                   AND "attempts" = %s
                   AND "leaseOwner" = %s
-                  AND "leaseExpiresAt" > %s
+                  AND "leaseExpiresAt" > clock_timestamp()
                 FOR UPDATE
-            ''', (item.id, item.attempts, item.lease_owner, now))
-            if not cursor.fetchone():
+            ''', (item.id, item.attempts, item.lease_owner))
+            delivery_window = cursor.fetchone()
+            if not delivery_window:
                 raise InvitationLeaseLostError("staff invitation lease was lost before provider handoff")
+            if not delivery_window[0]:
+                self._terminalize_owned(cursor, item, "DEAD_LETTERED", "DELIVERY_WINDOW_EXPIRED_OUTCOME_UNKNOWN", self._now())
+                return "dead_lettered"
 
             provider_message_id = deliver()
             cursor.execute('''
