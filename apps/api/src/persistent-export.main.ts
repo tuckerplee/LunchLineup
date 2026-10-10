@@ -1,3 +1,6 @@
+import { ConfigService } from '@nestjs/config';
+import { EmailDeliveryFeedbackService } from './email-delivery/email-delivery-feedback.service';
+import { SchedulePublishedEmailService } from './email-delivery/schedule-published-email.service';
 import { NotificationOutboxProcessor } from './notifications/notification-outbox.processor';
 import { AvailabilityImportPublisher } from './availability-imports/availability-imports.publisher';
 import { TenantPrismaService } from './database/tenant-prisma.service';
@@ -12,13 +15,17 @@ async function main(): Promise<void> {
     const database = new TenantPrismaService();
     // No Nest/AppModule, routes, other outboxes, timer or cleanup producer starts here.
     const effect = selectedPersistentProducer();
+    const config = new ConfigService();
+    const persistentEmail = effect === 'deliver-exact-notification-email'
+        ? new SchedulePublishedEmailService(config, new EmailDeliveryFeedbackService(config, database))
+        : undefined;
     const service = effect === 'generate-exact-export'
         ? new TenantExportService(database, undefined, { startWorker: false })
         : effect === 'publish-exact-schedule'
             ? new ScheduleSolveOutboxPublisher(database)
             : effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance'
                 ? new AvailabilityImportPublisher(database)
-                : new NotificationOutboxProcessor(database);
+                : new NotificationOutboxProcessor(database, { persistentEmail });
     try { await runPersistentExportConsumer(service); }
     finally { await database.onModuleDestroy(); }
 }

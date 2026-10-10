@@ -1,3 +1,4 @@
+import { SchedulePublishedEmailService } from '../email-delivery/schedule-published-email.service';
 import { NotificationOutboxProcessor } from '../notifications/notification-outbox.processor';
 import { AvailabilityImportPublisher } from '../availability-imports/availability-imports.publisher';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
@@ -9,8 +10,9 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification';
-const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string }>();
+const providerPermits = new WeakMap<object, { service: object; owner: NotificationOutboxProcessor; jobId: string; recipientEmailSha256: string; expires: number }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
 export function consumePersistentExportPermit(service: object, permit: object) {
@@ -44,10 +46,19 @@ export function consumePersistentNotificationPermit(service: object, permit: obj
     const value = permits.get(permit);
     permits.delete(permit);
     if (!value || value.service !== service
-        || (value.effect !== 'persist-exact-notification' && value.effect !== 'fanout-exact-notification')
+        || (value.effect !== 'persist-exact-notification' && value.effect !== 'fanout-exact-notification' && value.effect !== 'deliver-exact-notification-email')
         || typeof value.recipientId !== 'string' || !/^[\x20-\x7e]{1,128}$/.test(value.recipientId)
         || performance.now() >= value.expires) throw new Error('Persistent notification permit is absent, consumed or expired.');
-    return { jobId: value.jobId, tenantId: value.tenantId, recipientId: value.recipientId, expires: value.expires, effect: value.effect };
+    return { jobId: value.jobId, tenantId: value.tenantId, recipientId: value.recipientId, expires: value.expires, effect: value.effect, recipientEmailSha256: value.recipientEmailSha256, intentSha256: value.intentSha256 };
+}
+
+export function consumePersistentEmailPermit(service: object, permit: object) {
+    const value = providerPermits.get(permit);
+    providerPermits.delete(permit);
+    if (!value || value.service !== service || performance.now() >= value.expires) {
+        throw new Error('Fixed email provider permit is absent, consumed or expired.');
+    }
+    return { jobId: value.jobId, recipientEmailSha256: value.recipientEmailSha256, expires: value.expires, owner: value.owner };
 }
 
 // Inspection selects only one fixed implementation. It does not mint authority.
@@ -58,7 +69,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -102,16 +113,25 @@ export async function runPersistentExportConsumer(service: TenantExportService |
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     closed(config, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'keyHex', 'operationMs', 'lossMs',
         ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : []),
-        ...(['persist-exact-notification', 'fanout-exact-notification'].includes(config.effect) ? ['recipientId'] : [])]);
+        ...(['persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'].includes(config.effect) ? ['recipientId'] : []),
+        ...(config.effect === 'deliver-exact-notification-email' ? ['recipientEmailSha256'] : [])]);
     config.effect ??= 'generate-exact-export';
     requireValue((config.effect === 'generate-exact-export' && service instanceof TenantExportService)
         || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
         || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
             && service instanceof AvailabilityImportPublisher)
-        || ((config.effect === 'persist-exact-notification' || config.effect === 'fanout-exact-notification')
+        || ((config.effect === 'persist-exact-notification' || config.effect === 'fanout-exact-notification' || config.effect === 'deliver-exact-notification-email')
             && service instanceof NotificationOutboxProcessor), 'Fixed producer implementation differs.');
-    const recipientFields = ['persist-exact-notification', 'fanout-exact-notification'].includes(config.effect) ? ['recipientId'] : [];
+    const recipientFields = ['persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'].includes(config.effect) ? ['recipientId'] : [];
+    if (config.effect === 'deliver-exact-notification-email') {
+        requireValue(typeof config.recipientEmailSha256 === 'string' && /^[a-f0-9]{64}$/.test(config.recipientEmailSha256), 'Exact email recipient digest required.');
+        recipientFields.push('recipientEmailSha256');
+    }
     for (const name of recipientFields) requireValue(typeof config[name] === 'string' && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact notification recipient required.');
+    const fixedEmail = config.effect === 'deliver-exact-notification-email' && service instanceof NotificationOutboxProcessor
+        ? service.persistentOwnerEmailService() : undefined;
+    if (config.effect === 'deliver-exact-notification-email') requireValue(fixedEmail instanceof SchedulePublishedEmailService
+        && process.env.SCHEDULE_PUBLISHED_EMAIL_ENABLED === 'true', 'Fixed enabled email provider required.');
     if (config.effect === 'fanout-exact-notification') requireValue(process.env.REDIS_URL, 'Explicit admitted Redis endpoint required.');
     for (const name of ['jobId', 'tenantId']) requireValue(typeof config[name] === 'string'
         && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact selected operation/tenant required.');
@@ -130,6 +150,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
     const socket = connect(SOCKET);
     let buffer = ''; let session = ''; let incoming = 0; let generated = false; let stopped = false;
     let resultSent = false; let complete = false; let intentSha256 = ''; let settled = false; let owned: Promise<void> | undefined;
+    let currentPermit: object | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let operationTimer: ReturnType<typeof setTimeout> | undefined;
     let resolveDone!: () => void;
@@ -138,6 +159,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
     const close = (reason: string) => {
         if (stopped) return;
         stopped = true;
+        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); }
         clearTimeout(timer); if (operationTimer) clearTimeout(operationTimer);
         // Invoke synchronously before socket teardown or awaiting task settlement.
         const draining = service.closeAdmission();
@@ -179,7 +201,12 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                 requireValue(!generated && incoming === 1 && /^[a-f0-9]{64}$/.test(value.body.intentSha256), 'One durable intent required.');
                 generated = true; intentSha256 = value.body.intentSha256;
                 const permit = Object.freeze({ nonce: randomUUID() });
-                permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId, recipientId: config.recipientId, expires: performance.now() + config.operationMs });
+                currentPermit = permit;
+                const expires = performance.now() + config.operationMs;
+                permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId,
+                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires });
+                if (fixedEmail && service instanceof NotificationOutboxProcessor) providerPermits.set(permit, { service: fixedEmail, owner: service, jobId: config.jobId,
+                    recipientEmailSha256: config.recipientEmailSha256, expires });
                 operationTimer = setTimeout(() => close('Original producer operation deadline exceeded.'), config.operationMs);
                 owned = (async () => {
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
@@ -228,6 +255,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         clearTimeout(timer); if (operationTimer) clearTimeout(operationTimer);
         process.removeListener('SIGTERM', signal); process.removeListener('SIGINT', signal);
         socket.destroy(); key.fill(0);
+        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); }
         await service.closeAdmission();
     }
 }

@@ -1494,6 +1494,12 @@ model NotificationOutbox {
   status           NotificationOutboxStatus @default(PENDING)
   attempts         Int                      @default(0)
   failureCount     Int                      @default(0)
+  providerIntentSha256    String? @db.VarChar(64)
+  providerRecipientSha256 String? @db.VarChar(64)
+  providerPayloadSha256   String? @db.VarChar(64)
+  providerMessageId       String? @db.VarChar(255)
+  providerOutcome         String? @db.VarChar(32)
+  providerCompletedAt     DateTime?
   nextAttemptAt    DateTime?                @default(now())
   leaseUntil       DateTime?
   deliveredAt      DateTime?

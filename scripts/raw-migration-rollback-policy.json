@@ -358,6 +358,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "Retain the private owner-only legacy import receipt catalog, immutable mappings, generation and admission/count guards during rollback; isolated old-release proof must cover public application writes, lifecycle purge and owner/ACL isolation while old code ignores private receipts, whose destructive removal waits until after the rollback window."
     },
+    "packages/db/prisma/migrations/20261010_notification_provider_receipts.sql": {
+      "sha256": "ca63612c97f931daf2fbe2a49948d88e5759df89a43a29ac946cd97fd840776e",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain selected-provider identity, generation/retry fences and accepted/skipped receipts across rollback. Hold all senders through schema expansion and atomic post-migration ledger receipt. Drain old owners; the database rejects old reclaim/failure transitions on selected rows, which can fail an entire legacy claim batch. Old-release compatibility, terminal erasure, deletion/cascades, tenant RLS, initial claims, uncertain outcomes and exact receipt transitions require isolated proof before admission. Never drop fences or reset counters to make an old worker run; unknown outcomes are not retry permission."
+    },
     "packages/db/prisma/migrations/20261004_notification_outbox_failure_budget.sql": {
       "sha256": "04b20ca630b199328170b168b221eb2441a1f560d68507dc9cb2c3524f6802e0",
       "phase": "expand-contract",

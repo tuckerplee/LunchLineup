@@ -110,10 +110,15 @@ def duration_seconds(value):
 
 
 def recipient_fields(q):
-    if q.get('effect') in ('persist-exact-notification', 'fanout-exact-notification'):
+    if q.get('effect') in ('persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'):
         value = q.get('recipientId')
         require(type(value) is str and re.fullmatch(r'[ -~]{1,128}', value), 'exact selected notification recipient')
-        return {'recipientId': value}
+        result = {'recipientId': value}
+        if q.get('effect') == 'deliver-exact-notification-email':
+            digest = q.get('recipientEmailSha256')
+            require(type(digest) is str and re.fullmatch('[a-f0-9]{64}', digest), 'exact selected email recipient digest')
+            result['recipientEmailSha256'] = digest
+        return result
     return {}
 
 
@@ -124,7 +129,7 @@ def policy():
         'appUid', 'appGid', 'appExeSha256', 'appCmdline', 'ownerExeSha256', 'journalDirectory',
         'history', 'protocol', 'ownerPrivateKey', 'ownerPublicKey', 'recoveryPrivateKey',
         'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []) + list(recipient_fields(q)))
-    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance', 'persist-exact-notification', 'fanout-exact-notification'), 'fixed producer effect')
+    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance', 'persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'), 'fixed producer effect')
     require(q['entry']['path'] == '/usr/local/libexec/lunchlineup/development-persistent-export.py', 'fixed persistent entry')
     pinned(q['entry'], False)
     require(Path(__file__).resolve() == Path(q['entry']['path']), 'installed entry required')
@@ -193,12 +198,17 @@ def app_incarnation(q, pid):
     identity = incarnation(pid, q['appUid'], q['appGid'], q['appExeSha256'], APP, q['appCmdline'])
     expected = parse(pinned(q['appEnvironment']))
     fields = ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE']
-    fields += (['REDIS_URL'] if q.get('effect') == 'fanout-exact-notification' else [] if q.get('effect') in ('reconcile-exact-import-acceptance', 'persist-exact-notification') else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
+    fields += (['RESEND_API_KEY', 'EMAIL_FROM', 'APP_ORIGIN', 'SCHEDULE_PUBLISHED_EMAIL_ENABLED', 'SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS'] if q.get('effect') == 'deliver-exact-notification-email' else ['REDIS_URL'] if q.get('effect') == 'fanout-exact-notification' else [] if q.get('effect') in ('reconcile-exact-import-acceptance', 'persist-exact-notification') else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
         ['TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
          'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
     closed(expected, fields)
     require(expected['TENANT_EXPORT_PILOT_MODE'] == 'true' and
             all(type(value) is str and value for value in expected.values()), 'explicit closed consumer environment')
+    if q.get('effect') == 'deliver-exact-notification-email':
+        require(expected['SCHEDULE_PUBLISHED_EMAIL_ENABLED'] == 'true', 'selected email delivery must be enabled')
+        timeout = expected['SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS']
+        require(re.fullmatch('[0-9]+', timeout) and 1000 <= int(timeout) <= 30000
+                and q['operationMs'] > int(timeout) + 8000, 'provider and bookkeeping fit original owner budget')
     with open('/proc/' + str(pid) + '/environ', 'rb') as stream:
         raw = stream.read(1048577)
     require(len(raw) <= 1048576, 'consumer environment bound')
