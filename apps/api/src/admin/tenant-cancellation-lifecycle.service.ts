@@ -1,4 +1,5 @@
-import { consumePersistentCancellationRequestPermit } from './persistent-export-consumer';
+import type { PersistentCancellationProvider } from '../billing/persistent-cancellation-provider';
+import { consumePersistentCancellationRequestPermit, consumePersistentCancellationOperationPermit } from './persistent-export-consumer';
 import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
@@ -84,6 +85,12 @@ const TENANT_LIFECYCLE_INTENT_SETTING_KEYS = [
     `${TENANT_LIFECYCLE_INTENT_SETTING_PREFIX}customer_cancellation`,
     `${TENANT_LIFECYCLE_INTENT_SETTING_PREFIX}platform_archive`,
 ] as const;
+type SelectedCancellationProviderClaim = Readonly<{
+    tenantId: string; operationId: string; customerId: string | null; subscriptionId: string | null;
+    requestIntentSha256: string; providerIntentSha256: string; providerLeaseOwner: string;
+    providerLeaseUntil: string; expires: number; providerExpires: number;
+}>;
+
 const DEFAULT_PROVIDER_LEASE_MS = 2 * 60 * 1000;
 const MAX_RECOVERY_BATCH_SIZE = 100;
 
@@ -138,6 +145,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         private readonly now: () => Date = () => new Date(),
         private readonly rbac?: RbacService,
         private readonly mfaObserver?: MfaSessionObserver,
+        private readonly persistentProvider?: PersistentCancellationProvider,
     ) {}
 
     private readonly pilotClosed = pilotProducersClosed();
@@ -151,6 +159,8 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     private ownerMfaConnect?: Promise<void>;
     private ownerMfaRead?: Promise<unknown>;
     private ownerMfaUsed = false;
+    private readonly ownerProviderAbort = new AbortController();
+    private ownerProviderClaim?: SelectedCancellationProviderClaim;
 
     assertPersistentOwnerReady(): void {
         if (!this.pilotClosed || this.ownerUsed || this.ownerClosed) throw new Error('Cancellation request owner is not closed and unused.');
@@ -158,6 +168,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
 
     closeAdmission(): Promise<void> {
         this.ownerClosed = true;
+        this.ownerProviderAbort.abort(new Error('Selected cancellation owner closed.'));
         this.ownerMfaRedis?.disconnect(false);
         if (this.ownerClose) return this.ownerClose;
         this.ownerClose = (async () => {
@@ -260,6 +271,181 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             }
         });
         return this.ownerOperation;
+    }
+
+    persistentOwnerCancellationProvider(): PersistentCancellationProvider | undefined { return this.persistentProvider; }
+
+    persistentCancellationProviderSelection(): SelectedCancellationProviderClaim {
+        const claim = this.ownerProviderClaim;
+        if (!claim) throw new Error('Committed selected cancellation claim required.');
+        this.assertPersistentCancellationProviderOpen(claim);
+        return claim;
+    }
+
+    persistentCancellationProviderSignal(): AbortSignal { return this.ownerProviderAbort.signal; }
+
+    assertPersistentCancellationProviderOpen(claim: SelectedCancellationProviderClaim): void {
+        this.assertCancellationOwnerOpen(claim.expires);
+        if (claim !== this.ownerProviderClaim || this.ownerProviderAbort.signal.aborted
+            || performance.now() >= claim.providerExpires) throw new Error('Original selected cancellation handoff window closed.');
+    }
+
+    private assertCancellationOwnerOpen(expires: number): void {
+        if (!this.pilotClosed || !this.ownerUsed || this.ownerClosed || performance.now() >= expires) {
+            throw new Error('Original selected cancellation owner closed.');
+        }
+    }
+
+    runPersistentOwnerCancellationProvider(permit: object): Promise<boolean> {
+        const selected = consumePersistentCancellationOperationPermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        this.ownerOperation = Promise.resolve().then(() => this.applySelectedCancellationProvider(selected, permit))
+            .catch(error => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    private async applySelectedCancellationProvider(
+        selected: ReturnType<typeof consumePersistentCancellationOperationPermit>, permit: object,
+    ): Promise<boolean> {
+        this.assertCancellationOwnerOpen(selected.expires);
+        const provider = this.persistentProvider;
+        if (!provider) throw new Error('Fixed selected cancellation provider required.');
+        const started = performance.now();
+        if (selected.expires - started <= provider.timeoutMs + 8000) throw new Error('Original provider/bookkeeping budget is insufficient.');
+        const providerExpires = Math.min(selected.expires - 8000, started + provider.timeoutMs);
+        const leaseUntil = new Date(Date.now() + Math.ceil(selected.expires - started));
+        const leaseOwner = randomUUID();
+        const timer = setTimeout(() => this.ownerProviderAbort.abort(new Error('Selected cancellation provider deadline exceeded.')),
+            Math.max(0, Math.ceil(providerExpires - performance.now())));
+        type Setting = { value: Prisma.JsonValue; selectedLifecycleIntentSha256: string | null;
+            selectedLifecycleOperationId: string | null; selectedLifecycleProviderIntentSha256: string | null;
+            selectedLifecycleProviderLeaseUntil: Date | null; selectedLifecycleProviderCustomerId: string | null; selectedLifecycleProviderReceipt: Prisma.JsonValue | null };
+        type Tenant = TenantCancellationSubject & { stripeCustomerId: string | null };
+        const readLocked = async (tx: TenantPrismaTransaction) => {
+            this.assertCancellationOwnerOpen(selected.expires);
+            await this.lockTenantLifecycle(tx, selected.tenantId);
+            this.assertCancellationOwnerOpen(selected.expires);
+            const tenants = await tx.$queryRaw<Tenant[]>`
+                SELECT "id", "slug", "status", "deletedAt", "retentionLegalHoldAt", "stripeSubscriptionId", "stripeCustomerId"
+                FROM "Tenant" WHERE "id" = ${selected.tenantId} FOR UPDATE NOWAIT
+            `;
+            this.assertCancellationOwnerOpen(selected.expires);
+            const rows = await tx.$queryRaw<Setting[]>`
+                SELECT "value", "selectedLifecycleIntentSha256", "selectedLifecycleOperationId",
+                    "selectedLifecycleProviderIntentSha256", "selectedLifecycleProviderLeaseUntil", "selectedLifecycleProviderCustomerId", "selectedLifecycleProviderReceipt"
+                FROM "TenantSetting" WHERE "tenantId" = ${selected.tenantId}
+                    AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation' FOR UPDATE NOWAIT
+            `;
+            this.assertCancellationOwnerOpen(selected.expires);
+            const tenant = tenants[0]; const row = rows[0];
+            if (tenants.length !== 1 || !tenant || tenant.id !== selected.tenantId || tenant.deletedAt !== null
+                || tenant.status === 'PURGED' || tenant.status === 'SUSPENDED'
+                || tenant.stripeCustomerId !== selected.customerId || tenant.stripeSubscriptionId !== selected.subscriptionId
+                || rows.length !== 1 || !row || row.selectedLifecycleIntentSha256 !== selected.predecessorIntentSha256
+                || row.selectedLifecycleOperationId !== selected.jobId) throw new Error('Exact recorded cancellation predecessor differs.');
+            const intent = parseIntentSetting(row.value);
+            if (intent.tenantId !== selected.tenantId || intent.operationId !== selected.jobId || intent.kind !== 'CUSTOMER_CANCELLATION'
+                || intent.state !== 'PENDING_PROVIDER' || intent.providerResult !== null
+                || intent.providerSubscriptionId !== selected.subscriptionId
+                || intent.subscriptionFingerprint !== this.subscriptionFingerprint(tenant.id, tenant.stripeSubscriptionId)) {
+                throw new Error('Recorded cancellation identity/resource binding changed.');
+            }
+            return { tenant, row, intent };
+        };
+        const custody: { claim?: Promise<void>; delivery?: Promise<boolean> } = {};
+        try {
+            await this.tenantDb.withTenant(selected.tenantId, tx => {
+                const callback = Promise.resolve().then(async () => {
+                    const { row, intent } = await readLocked(tx);
+                    this.assertCancellationOwnerOpen(selected.expires);
+                    if (intent.providerAttempts !== 0 || intent.providerLeaseOwner !== null || intent.providerLeaseExpiresAt !== null
+                        || row.selectedLifecycleProviderIntentSha256 !== null || row.selectedLifecycleProviderLeaseUntil !== null
+                        || row.selectedLifecycleProviderCustomerId !== null || row.selectedLifecycleProviderReceipt !== null) throw new Error('Selected cancellation predecessor is already consumed.');
+                    const changed = await tx.$executeRaw`
+                        UPDATE "TenantSetting" SET "value" = "value" || jsonb_build_object(
+                            'providerAttempts', 1, 'providerLeaseOwner', ${leaseOwner},
+                            'providerLeaseExpiresAt', ${leaseUntil.toISOString()}),
+                            "selectedLifecycleProviderIntentSha256" = ${selected.intentSha256},
+                            "selectedLifecycleProviderCustomerId" = ${selected.customerId},
+                            "selectedLifecycleProviderLeaseUntil" = ${leaseUntil}, "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "tenantId" = ${selected.tenantId} AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                            AND "selectedLifecycleIntentSha256" = ${selected.predecessorIntentSha256}
+                            AND "selectedLifecycleOperationId" = ${selected.jobId} AND "value"->>'operationId' = ${selected.jobId}
+                            AND "value"->>'state' = 'PENDING_PROVIDER' AND "value"->>'providerAttempts' = '0'
+                            AND "value"->>'providerLeaseOwner' IS NULL AND "value"->>'providerLeaseExpiresAt' IS NULL
+                            AND "selectedLifecycleProviderIntentSha256" IS NULL
+                            AND "selectedLifecycleProviderLeaseUntil" IS NULL AND "selectedLifecycleProviderReceipt" IS NULL
+                    `;
+                    this.assertCancellationOwnerOpen(selected.expires);
+                    if (changed !== 1) throw new Error('Exact cancellation provider claim acknowledgement lost ownership.');
+                });
+                custody.claim = callback;
+                return callback;
+            }, { maxWait: 5000, timeout: 60000 });
+            this.assertCancellationOwnerOpen(selected.expires);
+            this.ownerProviderClaim = Object.freeze({ tenantId: selected.tenantId, operationId: selected.jobId,
+                customerId: selected.customerId, subscriptionId: selected.subscriptionId,
+                requestIntentSha256: selected.predecessorIntentSha256, providerIntentSha256: selected.intentSha256,
+                providerLeaseOwner: leaseOwner, providerLeaseUntil: leaseUntil.toISOString(), expires: selected.expires, providerExpires });
+            this.assertPersistentCancellationProviderOpen(this.ownerProviderClaim);
+            const result = await this.tenantDb.withTenant(selected.tenantId, tx => {
+                const callback = Promise.resolve().then(async () => {
+                    const { row, intent } = await readLocked(tx);
+                    this.assertCancellationOwnerOpen(selected.expires);
+                    if (intent.providerAttempts !== 1 || intent.providerLeaseOwner !== leaseOwner
+                        || intent.providerLeaseExpiresAt?.getTime() !== leaseUntil.getTime()
+                        || row.selectedLifecycleProviderIntentSha256 !== selected.intentSha256
+                        || row.selectedLifecycleProviderLeaseUntil?.getTime() !== leaseUntil.getTime()
+                        || row.selectedLifecycleProviderCustomerId !== selected.customerId
+                        || row.selectedLifecycleProviderReceipt !== null) throw new Error('Original cancellation provider generation differs.');
+                    const live = await tx.$queryRaw<Array<{ live: boolean }>>`
+                        SELECT ("selectedLifecycleProviderLeaseUntil" > clock_timestamp()) AS "live" FROM "TenantSetting"
+                        WHERE "tenantId" = ${selected.tenantId} AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                            AND "selectedLifecycleProviderIntentSha256" = ${selected.intentSha256}
+                    `;
+                    this.assertPersistentCancellationProviderOpen(this.ownerProviderClaim!);
+                    if (live.length !== 1 || live[0].live !== true) throw new Error('Original selected cancellation lease expired.');
+                    const receipt = await provider.apply(permit);
+                    // Provider evidence only; no paid-through synchronization or lifecycle finalization here.
+                    this.assertCancellationOwnerOpen(selected.expires);
+                    const changed = await tx.$executeRaw`
+                        UPDATE "TenantSetting" SET "selectedLifecycleProviderReceipt" = CAST(${JSON.stringify(receipt)} AS jsonb),
+                            "selectedLifecycleProviderRequestId" = ${receipt.providerRequestId},
+                            "selectedLifecycleProviderCompletedAt" = clock_timestamp(), "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "tenantId" = ${selected.tenantId} AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                            AND "selectedLifecycleIntentSha256" = ${selected.predecessorIntentSha256}
+                            AND "selectedLifecycleOperationId" = ${selected.jobId}
+                            AND "selectedLifecycleProviderIntentSha256" = ${selected.intentSha256}
+                            AND "selectedLifecycleProviderLeaseUntil" = ${leaseUntil}
+                            AND "selectedLifecycleProviderLeaseUntil" > clock_timestamp()
+                            AND "value"->>'operationId' = ${selected.jobId} AND "value"->>'providerAttempts' = '1'
+                            AND "value"->>'providerLeaseOwner' = ${leaseOwner}
+                            AND "value"->>'providerLeaseExpiresAt' = ${leaseUntil.toISOString()}
+                            AND "selectedLifecycleProviderReceipt" IS NULL
+                            AND "selectedLifecycleProviderRequestId" IS NULL AND "selectedLifecycleProviderCompletedAt" IS NULL
+                    `;
+                    this.assertCancellationOwnerOpen(selected.expires);
+                    if (changed !== 1) throw new Error('Exact provider receipt acknowledgement lost ownership.');
+                    return true;
+                });
+                custody.delivery = callback;
+                return callback;
+            }, { maxWait: 5000, timeout: 60000 });
+            this.assertCancellationOwnerOpen(selected.expires);
+            return result;
+        } catch (error) {
+            this.ownerClosed = true;
+            this.ownerUnknown = true;
+            this.ownerProviderAbort.abort(error);
+            throw error;
+        } finally {
+            try { if (custody.claim) await custody.claim; }
+            finally {
+                try { if (custody.delivery) await custody.delivery; }
+                finally { clearTimeout(timer); this.ownerProviderAbort.abort(new Error('Selected cancellation provider phase finished.')); }
+            }
+        }
     }
 
     private async observeSelectedMfa(

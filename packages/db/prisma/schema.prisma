@@ -1351,6 +1351,12 @@ model PlatformConfig {
 model TenantSetting {
   selectedLifecycleIntentSha256 String? @db.VarChar(64)
   selectedLifecycleOperationId String? @db.VarChar(128)
+  selectedLifecycleProviderIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleProviderCustomerId String? @db.VarChar(255)
+  selectedLifecycleProviderLeaseUntil DateTime?
+  selectedLifecycleProviderRequestId String? @db.VarChar(255)
+  selectedLifecycleProviderReceipt Json?
+  selectedLifecycleProviderCompletedAt DateTime?
   id        String   @id @default(uuid())
   tenantId  String
   key       String

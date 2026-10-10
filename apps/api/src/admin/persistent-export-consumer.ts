@@ -1,3 +1,4 @@
+import { PersistentCancellationProvider } from '../billing/persistent-cancellation-provider';
 import { PrismaTenantCancellationIntentStore } from './tenant-cancellation-lifecycle.service';
 import { SchedulePublishedEmailService } from '../email-delivery/schedule-published-email.service';
 import { NotificationOutboxProcessor } from '../notifications/notification-outbox.processor';
@@ -11,9 +12,11 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email' | 'record-exact-cancellation-request';
-const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string; cancellationRequest?: Readonly<{ userId: string; sessionId: string; confirmation: string; reason: string | null }> }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email' | 'record-exact-cancellation-request' | 'apply-exact-customer-cancellation';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string; predecessorIntentSha256?: string; customerId?: string | null; subscriptionId?: string | null; cancellationRequest?: Readonly<{ userId: string; sessionId: string; confirmation: string; reason: string | null }> }>();
 const providerPermits = new WeakMap<object, { service: object; owner: NotificationOutboxProcessor; jobId: string; recipientEmailSha256: string; expires: number }>();
+
+const cancellationProviderPermits = new WeakMap<object, { service: PersistentCancellationProvider; owner: PrismaTenantCancellationIntentStore; jobId: string; tenantId: string; expires: number }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
 export function consumePersistentExportPermit(service: object, permit: object) {
@@ -73,6 +76,29 @@ export function consumePersistentCancellationRequestPermit(service: object, perm
         intentSha256: value.intentSha256, request: value.cancellationRequest };
 }
 
+export function consumePersistentCancellationOperationPermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service || value.effect !== 'apply-exact-customer-cancellation'
+        || typeof value.predecessorIntentSha256 !== 'string' || !/^[a-f0-9]{64}$/.test(value.predecessorIntentSha256)
+        || (value.customerId !== null && (typeof value.customerId !== 'string' || !/^cus_[A-Za-z0-9]+$/.test(value.customerId)))
+        || (value.subscriptionId !== null && (typeof value.subscriptionId !== 'string' || !/^sub_[A-Za-z0-9]+$/.test(value.subscriptionId)))
+        || (value.subscriptionId !== null && value.customerId === null) || performance.now() >= value.expires) {
+        throw new Error('Exact one-shot cancellation provider operation permit required.');
+    }
+    return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires, intentSha256: value.intentSha256,
+        predecessorIntentSha256: value.predecessorIntentSha256, customerId: value.customerId, subscriptionId: value.subscriptionId };
+}
+
+export function consumePersistentCancellationProviderPermit(service: object, permit: object) {
+    const value = cancellationProviderPermits.get(permit);
+    cancellationProviderPermits.delete(permit);
+    if (!value || value.service !== service || performance.now() >= value.expires) {
+        throw new Error('Fixed selected cancellation provider permit required.');
+    }
+    return { owner: value.owner, jobId: value.jobId, tenantId: value.tenantId };
+}
+
 function selectedCancellationRequest(digest: string) {
     const path = '/etc/lunchlineup/trust/persistent-cancellation-request.json';
     protectedPath(path);
@@ -101,7 +127,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email' || effect === 'record-exact-cancellation-request', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email' || effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -147,9 +173,10 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : []),
         ...(['persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'].includes(config.effect) ? ['recipientId'] : []),
         ...(config.effect === 'deliver-exact-notification-email' ? ['recipientEmailSha256'] : []),
-        ...(config.effect === 'record-exact-cancellation-request' ? ['cancellationRequestSha256'] : [])]);
+        ...(config.effect === 'record-exact-cancellation-request' ? ['cancellationRequestSha256'] : []),
+        ...(config.effect === 'apply-exact-customer-cancellation' ? ['predecessorIntentSha256', 'customerId', 'subscriptionId'] : [])]);
     config.effect ??= 'generate-exact-export';
-    requireValue((config.effect === 'record-exact-cancellation-request' && service instanceof PrismaTenantCancellationIntentStore)
+    requireValue(((config.effect === 'record-exact-cancellation-request' || config.effect === 'apply-exact-customer-cancellation') && service instanceof PrismaTenantCancellationIntentStore)
         || (config.effect === 'generate-exact-export' && service instanceof TenantExportService)
         || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
         || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
@@ -169,6 +196,18 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         cancellationRequest = selectedCancellationRequest(config.cancellationRequestSha256);
     }
     for (const name of recipientFields) requireValue(typeof config[name] === 'string' && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact notification recipient required.');
+    const cancellationProviderFields = config.effect === 'apply-exact-customer-cancellation'
+        ? ['predecessorIntentSha256', 'customerId', 'subscriptionId'] : [];
+    if (config.effect === 'apply-exact-customer-cancellation') {
+        requireValue(typeof config.predecessorIntentSha256 === 'string' && /^[a-f0-9]{64}$/.test(config.predecessorIntentSha256), 'Exact recorded request intent required.');
+        requireValue(config.customerId === null || (typeof config.customerId === 'string' && /^cus_[A-Za-z0-9]{1,251}$/.test(config.customerId)), 'Exact selected customer required.');
+        requireValue(config.subscriptionId === null || (typeof config.subscriptionId === 'string' && /^sub_[A-Za-z0-9]{1,251}$/.test(config.subscriptionId)), 'Exact selected subscription required.');
+        requireValue(config.subscriptionId === null || config.customerId !== null, 'Selected subscription requires a bound customer.');
+    }
+    const fixedCancellationProvider = config.effect === 'apply-exact-customer-cancellation' && service instanceof PrismaTenantCancellationIntentStore
+        ? service.persistentOwnerCancellationProvider() : undefined;
+    if (config.effect === 'apply-exact-customer-cancellation') requireValue(fixedCancellationProvider instanceof PersistentCancellationProvider,
+        'Fixed selected sandbox cancellation provider required.');
     const fixedEmail = config.effect === 'deliver-exact-notification-email' && service instanceof NotificationOutboxProcessor
         ? service.persistentOwnerEmailService() : undefined;
     if (config.effect === 'deliver-exact-notification-email') requireValue(fixedEmail instanceof SchedulePublishedEmailService
@@ -201,7 +240,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
     const close = (reason: string) => {
         if (stopped) return;
         stopped = true;
-        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); }
+        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); cancellationProviderPermits.delete(currentPermit); }
         clearTimeout(timer); if (operationTimer) clearTimeout(operationTimer);
         // Invoke synchronously before socket teardown or awaiting task settlement.
         const draining = service.closeAdmission();
@@ -231,7 +270,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
             && value.sequence === incoming && /^[a-f0-9]{64}$/.test(value.session), 'Owner authentication/sequence failed.');
         if (incoming === 0) {
             requireValue(value.kind === 'HELLO', 'Owner hello required.');
-            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs', 'effect', ...recipientFields]);
+            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs', 'effect', ...recipientFields, ...cancellationProviderFields]);
             for (const name of Object.keys(value.body)) requireValue(value.body[name] === config[name], 'Owner selected scope differs.');
             service.assertPersistentOwnerReady();
             session = value.session;
@@ -246,15 +285,19 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                 currentPermit = permit;
                 const expires = performance.now() + config.operationMs;
                 permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId,
-                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires, cancellationRequest });
+                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires, cancellationRequest, predecessorIntentSha256: config.predecessorIntentSha256, customerId: config.customerId, subscriptionId: config.subscriptionId });
                 if (fixedEmail && service instanceof NotificationOutboxProcessor) providerPermits.set(permit, { service: fixedEmail, owner: service, jobId: config.jobId,
                     recipientEmailSha256: config.recipientEmailSha256, expires });
+                if (fixedCancellationProvider && service instanceof PrismaTenantCancellationIntentStore) cancellationProviderPermits.set(permit, {
+                    service: fixedCancellationProvider, owner: service, jobId: config.jobId, tenantId: config.tenantId, expires });
                 operationTimer = setTimeout(() => close('Original producer operation deadline exceeded.'), config.operationMs);
                 owned = (async () => {
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
                     try {
                         processed = service instanceof PrismaTenantCancellationIntentStore
-                            ? await service.runPersistentOwnerCancellationRequest(permit)
+                            ? config.effect === 'apply-exact-customer-cancellation'
+                                ? await service.runPersistentOwnerCancellationProvider(permit)
+                                : await service.runPersistentOwnerCancellationRequest(permit)
                             : service instanceof TenantExportService
                             ? await service.runPersistentOwnerExport(permit)
                             : service instanceof ScheduleSolveOutboxPublisher
@@ -299,7 +342,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         clearTimeout(timer); if (operationTimer) clearTimeout(operationTimer);
         process.removeListener('SIGTERM', signal); process.removeListener('SIGINT', signal);
         socket.destroy(); key.fill(0);
-        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); }
+        if (currentPermit) { permits.delete(currentPermit); providerPermits.delete(currentPermit); cancellationProviderPermits.delete(currentPermit); }
         await service.closeAdmission();
     }
 }

@@ -1,3 +1,4 @@
+import { PersistentCancellationProvider } from './billing/persistent-cancellation-provider';
 import { PrismaTenantCancellationIntentStore } from './admin/tenant-cancellation-lifecycle.service';
 import { ConfigService } from '@nestjs/config';
 import { EmailDeliveryFeedbackService } from './email-delivery/email-delivery-feedback.service';
@@ -20,8 +21,9 @@ async function main(): Promise<void> {
     const persistentEmail = effect === 'deliver-exact-notification-email'
         ? new SchedulePublishedEmailService(config, new EmailDeliveryFeedbackService(config, database))
         : undefined;
-    const service = effect === 'record-exact-cancellation-request'
-        ? new PrismaTenantCancellationIntentStore(database)
+    const cancellationProvider = effect === 'apply-exact-customer-cancellation' ? new PersistentCancellationProvider(config) : undefined;
+    const service = effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation'
+        ? new PrismaTenantCancellationIntentStore(database, undefined, undefined, undefined, undefined, cancellationProvider)
         : effect === 'generate-exact-export'
         ? new TenantExportService(database, undefined, { startWorker: false })
         : effect === 'publish-exact-schedule'

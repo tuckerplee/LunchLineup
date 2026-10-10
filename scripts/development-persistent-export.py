@@ -110,6 +110,13 @@ def duration_seconds(value):
 
 
 def recipient_fields(q):
+    if q.get('effect') == 'apply-exact-customer-cancellation':
+        digest, customer, subscription = q.get('predecessorIntentSha256'), q.get('customerId'), q.get('subscriptionId')
+        require(type(digest) is str and re.fullmatch('[a-f0-9]{64}', digest), 'exact recorded cancellation predecessor')
+        require('customerId' in q and (customer is None or (type(customer) is str and re.fullmatch(r'cus_[A-Za-z0-9]{1,251}', customer))), 'exact selected customer')
+        require('subscriptionId' in q and (subscription is None or (type(subscription) is str and re.fullmatch(r'sub_[A-Za-z0-9]{1,251}', subscription))), 'exact selected subscription')
+        require(subscription is None or customer is not None, 'selected subscription customer binding')
+        return {'predecessorIntentSha256': digest, 'customerId': customer, 'subscriptionId': subscription}
     if q.get('effect') == 'record-exact-cancellation-request':
         digest = q.get('cancellationRequestSha256')
         require(type(digest) is str and re.fullmatch('[a-f0-9]{64}', digest), 'exact originating cancellation request digest')
@@ -133,7 +140,7 @@ def policy():
         'appUid', 'appGid', 'appExeSha256', 'appCmdline', 'ownerExeSha256', 'journalDirectory',
         'history', 'protocol', 'ownerPrivateKey', 'ownerPublicKey', 'recoveryPrivateKey',
         'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []) + list(recipient_fields(q)))
-    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance', 'persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email', 'record-exact-cancellation-request'), 'fixed producer effect')
+    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance', 'persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email', 'record-exact-cancellation-request', 'apply-exact-customer-cancellation'), 'fixed producer effect')
     require(q['entry']['path'] == '/usr/local/libexec/lunchlineup/development-persistent-export.py', 'fixed persistent entry')
     pinned(q['entry'], False)
     require(Path(__file__).resolve() == Path(q['entry']['path']), 'installed entry required')
@@ -202,12 +209,17 @@ def app_incarnation(q, pid):
     identity = incarnation(pid, q['appUid'], q['appGid'], q['appExeSha256'], APP, q['appCmdline'])
     expected = parse(pinned(q['appEnvironment']))
     fields = ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE']
-    fields += (['RESEND_API_KEY', 'EMAIL_FROM', 'APP_ORIGIN', 'SCHEDULE_PUBLISHED_EMAIL_ENABLED', 'SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS'] if q.get('effect') == 'deliver-exact-notification-email' else ['REDIS_URL'] if q.get('effect') in ('fanout-exact-notification', 'record-exact-cancellation-request') else [] if q.get('effect') in ('reconcile-exact-import-acceptance', 'persist-exact-notification') else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
+    fields += (['STRIPE_SECRET_KEY', 'STRIPE_SELECTED_REQUEST_TIMEOUT_MS'] if q.get('effect') == 'apply-exact-customer-cancellation' else ['RESEND_API_KEY', 'EMAIL_FROM', 'APP_ORIGIN', 'SCHEDULE_PUBLISHED_EMAIL_ENABLED', 'SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS'] if q.get('effect') == 'deliver-exact-notification-email' else ['REDIS_URL'] if q.get('effect') in ('fanout-exact-notification', 'record-exact-cancellation-request') else [] if q.get('effect') in ('reconcile-exact-import-acceptance', 'persist-exact-notification') else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
         ['TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
          'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
     closed(expected, fields)
     require(expected['TENANT_EXPORT_PILOT_MODE'] == 'true' and
             all(type(value) is str and value for value in expected.values()), 'explicit closed consumer environment')
+    if q.get('effect') == 'apply-exact-customer-cancellation':
+        timeout = expected['STRIPE_SELECTED_REQUEST_TIMEOUT_MS']
+        require(re.fullmatch(r'sk_test_[A-Za-z0-9]{16,}', expected['STRIPE_SECRET_KEY']), 'explicit sandbox Stripe key')
+        require(re.fullmatch('[0-9]+', timeout) and 1000 <= int(timeout) <= 30000
+                and q['operationMs'] > int(timeout) + 8000, 'selected provider and bookkeeping original budget')
     if q.get('effect') == 'deliver-exact-notification-email':
         require(expected['SCHEDULE_PUBLISHED_EMAIL_ENABLED'] == 'true', 'selected email delivery must be enabled')
         timeout = expected['SCHEDULE_PUBLISHED_EMAIL_PROVIDER_TIMEOUT_MS']

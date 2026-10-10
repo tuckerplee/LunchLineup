@@ -1,5 +1,7 @@
 # Prisma Migrations
 
+- `20261010_zz_selected_cancellation_provider_receipt.sql`: forward exact request0-to-provider1 transition/receipt, ordered after the request-only fence on fresh installs. Retains immutable generations through unknown outcomes and rollback; no local billing finalization. Native verification remains pending.
+
 - `20261010_selected_cancellation_request_fence.sql`: additive selected request-only custody on TenantSetting; blocks old writer claim/reset/delete-recreate, preserves authorized tenant retention purge, and does not admit provider work. Retain during rollback; native migration/old-writer/privacy qualification remains pending.
 
 - `20261010_notification_provider_receipts.sql`: adds nullable immutable selected-provider intent/recipient/payload digests and concrete acceptance receipts without reclassifying legacy DELIVERED rows. Existing RLS, cascades and terminal payload erasure remain. Native migration/rollback qualification is pending.
