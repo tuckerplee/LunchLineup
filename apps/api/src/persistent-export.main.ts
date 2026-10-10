@@ -1,3 +1,4 @@
+import { AvailabilityImportPublisher } from './availability-imports/availability-imports.publisher';
 import { TenantPrismaService } from './database/tenant-prisma.service';
 import { TenantExportService } from './admin/tenant-export.service';
 import { runPersistentExportConsumer, selectedPersistentProducer } from './admin/persistent-export-consumer';
@@ -9,9 +10,12 @@ async function main(): Promise<void> {
     installProcessShutdownDeadline();
     const database = new TenantPrismaService();
     // No Nest/AppModule, routes, other outboxes, timer or cleanup producer starts here.
-    const service = selectedPersistentProducer() === 'generate-exact-export'
+    const effect = selectedPersistentProducer();
+    const service = effect === 'generate-exact-export'
         ? new TenantExportService(database, undefined, { startWorker: false })
-        : new ScheduleSolveOutboxPublisher(database);
+        : effect === 'publish-exact-schedule'
+            ? new ScheduleSolveOutboxPublisher(database)
+            : new AvailabilityImportPublisher(database);
     try { await runPersistentExportConsumer(service); }
     finally { await database.onModuleDestroy(); }
 }

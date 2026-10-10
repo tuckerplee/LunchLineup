@@ -116,7 +116,7 @@ def policy():
         'appUid', 'appGid', 'appExeSha256', 'appCmdline', 'ownerExeSha256', 'journalDirectory',
         'history', 'protocol', 'ownerPrivateKey', 'ownerPublicKey', 'recoveryPrivateKey',
         'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []))
-    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule'), 'fixed producer effect')
+    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance'), 'fixed producer effect')
     require(q['entry']['path'] == '/usr/local/libexec/lunchlineup/development-persistent-export.py', 'fixed persistent entry')
     pinned(q['entry'], False)
     require(Path(__file__).resolve() == Path(q['entry']['path']), 'installed entry required')
@@ -185,7 +185,7 @@ def app_incarnation(q, pid):
     identity = incarnation(pid, q['appUid'], q['appGid'], q['appExeSha256'], APP, q['appCmdline'])
     expected = parse(pinned(q['appEnvironment']))
     fields = ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE']
-    fields += (['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') == 'publish-exact-schedule' else
+    fields += ([] if q.get('effect') == 'reconcile-exact-import-acceptance' else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
         ['TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
          'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
     closed(expected, fields)

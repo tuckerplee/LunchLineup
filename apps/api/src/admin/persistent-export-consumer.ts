@@ -1,3 +1,4 @@
+import { AvailabilityImportPublisher } from '../availability-imports/availability-imports.publisher';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -7,7 +8,7 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule';
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance';
 const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
@@ -29,6 +30,15 @@ export function consumePersistentSchedulePermit(service: object, permit: object)
     return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires };
 }
 
+export function consumePersistentImportPermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service || (value.effect !== 'publish-exact-import' && value.effect !== 'reconcile-exact-import-acceptance') || performance.now() >= value.expires) {
+        throw new Error('Persistent import permit is absent, consumed or expired.');
+    }
+    return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires, effect: value.effect };
+}
+
 // Inspection selects only one fixed implementation. It does not mint authority.
 export function selectedPersistentProducer(): Effect {
     protectedPath(CONFIG);
@@ -37,7 +47,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -72,7 +82,7 @@ function protectedPath(path: string): void {
     }
 }
 
-export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher): Promise<void> {
+export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher | AvailabilityImportPublisher): Promise<void> {
     requireValue(process.env.TENANT_EXPORT_PILOT_MODE === 'true', 'Dedicated consumer requires closed pilot startup.');
     protectedPath(CONFIG);
     const info = lstatSync(CONFIG);
@@ -83,10 +93,12 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : [])]);
     config.effect ??= 'generate-exact-export';
     requireValue((config.effect === 'generate-exact-export' && service instanceof TenantExportService)
-        || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher), 'Fixed producer implementation differs.');
+        || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
+        || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
+            && service instanceof AvailabilityImportPublisher), 'Fixed producer implementation differs.');
     for (const name of ['jobId', 'tenantId']) requireValue(typeof config[name] === 'string'
         && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact selected operation/tenant required.');
-    if (config.effect === 'publish-exact-schedule') requireValue(process.env.RABBITMQ_URL
+    if (config.effect === 'publish-exact-schedule' || config.effect === 'publish-exact-import') requireValue(process.env.RABBITMQ_URL
         && process.env.WORKER_QUEUE_NAME, 'Explicit installed broker and queue required.');
     requireValue(/^[a-f0-9]{64}$/.test(config.keyHex) && /^[a-f0-9]{64}$/.test(config.scopeSha256)
         && /^[a-f0-9]{40}$/.test(config.sourceSha), 'Pinned consumer identity required.');
@@ -157,7 +169,9 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                     try {
                         processed = service instanceof TenantExportService
                             ? await service.runPersistentOwnerExport(permit)
-                            : await service.runPersistentOwnerSchedule(permit);
+                            : service instanceof ScheduleSolveOutboxPublisher
+                                ? await service.runPersistentOwnerSchedule(permit)
+                                : await service.runPersistentOwnerImport(permit);
                         await service.closeAdmission();
                         outcome = 'settled';
                     } catch { /* Unresolved remains unknown; no replay or cleanup permission. */ }
