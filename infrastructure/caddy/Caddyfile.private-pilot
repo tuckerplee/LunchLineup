@@ -1,0 +1,93 @@
+{
+	http_port 8080
+	email {$ADMIN_EMAIL:admin@example.com}
+}
+
+http://127.0.0.1:2015 {
+	respond /health 200
+}
+
+{$CADDY_SITE_ADDRESSES:http://localhost:80, http://127.0.0.1:80, http://proxy:80} {
+	encode zstd gzip
+	request_body {
+		max_size 10MB
+	}
+
+	header {
+		X-LunchLineup-Release "{$DEPLOY_RELEASE_SHA:local}"
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		Cross-Origin-Opener-Policy "same-origin"
+		Cross-Origin-Resource-Policy "same-origin"
+		Origin-Agent-Cluster "?1"
+		X-Content-Type-Options "nosniff"
+		X-DNS-Prefetch-Control "off"
+		X-Download-Options "noopen"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		X-Permitted-Cross-Domain-Policies "none"
+		-X-Powered-By
+		-Server
+	}
+
+	header /api/* Cache-Control "no-store"
+
+	@betaWeb {
+		host beta.lunchlineup.com {$PRIVATE_APP_HOST:localhost}
+		not path /api/* /health
+	}
+	header @betaWeb Cache-Control "private, no-store, no-transform"
+
+	handle /health {
+		rewrite * /v2/ready
+		reverse_proxy api-v2:3002
+	}
+
+	handle /api/health {
+		rewrite * /v2/ready
+		reverse_proxy api-v2:3002
+	}
+
+	handle /api/v2/* {
+		uri strip_prefix /api
+		reverse_proxy api-v2:3002
+	}
+
+	@stripeWebhook {
+		method POST
+		path /api/webhooks/stripe
+	}
+	handle @stripeWebhook {
+		uri replace /api/webhooks/stripe /v1/billing/webhook
+		reverse_proxy api:3000
+	}
+
+	@stripeMeterErrorsWebhook {
+		method POST
+		path /api/webhooks/stripe/meter-errors
+	}
+	handle @stripeMeterErrorsWebhook {
+		uri replace /api/webhooks/stripe/meter-errors /v1/billing/meter-errors/webhook
+		reverse_proxy api:3000
+	}
+
+	@resendDeliveryWebhook {
+		method POST
+		path /api/webhooks/resend/delivery-events
+	}
+	handle @resendDeliveryWebhook {
+		uri replace /api/webhooks/resend/delivery-events /v1/email-delivery/provider-events
+		reverse_proxy api:3000
+	}
+
+	# The former broad v1 application surface is deliberately terminal. The
+	# three provider ingress paths above preserve their raw signed payloads while
+	# their domain implementations finish migration behind the private network.
+	handle /api/v1/* {
+		respond "API version v1 has been retired." 410
+	}
+
+	handle {
+		reverse_proxy web:3000
+	}
+}

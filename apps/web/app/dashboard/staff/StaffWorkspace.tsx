@@ -187,6 +187,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     const [permissions, setPermissions] = useState<PermissionCatalogItem[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSaving, setIsSaving] = useState<string | null>(null);
+    const [pinResetUserId, setPinResetUserId] = useState<string | null>(null);
+    const pinResetInFlight = useRef(false);
     const [error, setError] = useState<string | null>(null);
     const [pendingAction, setPendingAction] = useState<PendingStaffAction | null>(null);
     const { dialogRef: actionDialogRef, captureTrigger: captureActionTrigger } = useDialogFocus(pendingAction !== null);
@@ -525,28 +527,40 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     };
 
     const resetPin = useCallback(async (id: string) => {
-        setIsSaving(id);
+        if (pinResetInFlight.current) return;
+        pinResetInFlight.current = true;
+        setPinResetUserId(id);
         setError(null);
         setLastTemporaryPin(null);
         setLastTemporaryPinUserId(null);
         try {
             const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST', {}));
-            const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; username?: string; message?: string };
-            if (!res.ok) throw new Error(payload.message ?? 'Failed to reset PIN.');
+            const body: unknown = await res.json().catch(() => null);
+            const payload = body && typeof body === 'object' && !Array.isArray(body)
+                ? body as Record<string, unknown> : null;
+            if (!res.ok) throw new Error(typeof payload?.message === 'string' ? payload.message : 'Failed to reset PIN.');
+            if (!payload || payload.id !== id || payload.pinResetRequired !== true
+                || typeof payload.username !== 'string' || payload.username.length < 3 || payload.username.length > 32
+                || typeof payload.temporaryPin !== 'string' || !/^\d{4,8}$/.test(payload.temporaryPin)) {
+                throw new Error('The PIN reset could not be confirmed. The previous PIN may no longer work. Refresh the employee before trying again.');
+            }
+            const username = payload.username;
+            const temporaryPin = payload.temporaryPin;
             setUsers((prev) => prev.map((u) => (
-                u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
+                u.id === id ? { ...u, username, pinEnabled: true, pinResetRequired: true } : u
             )));
             setSchedulingProfileUser((current) => {
                 return current?.id === id
-                    ? { ...current, username: payload.username ?? current.username, pinEnabled: true, pinResetRequired: true }
+                    ? { ...current, username, pinEnabled: true, pinResetRequired: true }
                     : current;
             });
-            setLastTemporaryPin(payload.temporaryPin ?? null);
+            setLastTemporaryPin(temporaryPin);
             setLastTemporaryPinUserId(id);
         } catch (err) {
             setError((err as Error).message);
         } finally {
-            setIsSaving(null);
+            pinResetInFlight.current = false;
+            setPinResetUserId(null);
         }
     }, []);
 
@@ -566,7 +580,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     }, []);
 
     const confirmPendingAction = useCallback(() => {
-        if (!pendingAction) return;
+        if (!pendingAction || (pendingAction.action === 'reset-pin' && pinResetInFlight.current)) return;
 
         const { action, user } = pendingAction;
         setPendingAction(null);
@@ -822,7 +836,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                         const nextRoleIds = Array.from(event.currentTarget.selectedOptions).map((option) => option.value);
                                                         stageUserRoles(user.id, nextRoleIds);
                                                     }}
-                                                    disabled={isSaving === user.id}
+                                                    disabled={isSaving === user.id || pinResetUserId === user.id}
                                                     style={{ minHeight: 86, border: '1px solid var(--border)', borderRadius: 8, padding: '0.45rem', background: '#fff', color: 'var(--text-primary)' }}
                                                 >
                                                     {delegableRoles.map((role) => (
@@ -836,7 +850,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                     <Button
                                                         type="button"
                                                         size="sm"
-                                                        disabled={!roleDraftChanged || isSaving === user.id}
+                                                        disabled={!roleDraftChanged || isSaving === user.id || pinResetUserId === user.id}
                                                         onClick={() => void updateUserRoles(user.id, draftRoleIds)}
                                                     >
                                                         {isSaving === user.id ? 'Saving...' : 'Save roles'}
@@ -845,7 +859,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                         type="button"
                                                         size="sm"
                                                         variant="outline"
-                                                        disabled={!roleDraftChanged || isSaving === user.id}
+                                                        disabled={!roleDraftChanged || isSaving === user.id || pinResetUserId === user.id}
                                                         onClick={() => cancelUserRoleDraft(user.id)}
                                                     >
                                                         Cancel
@@ -874,13 +888,13 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId && !user.email ? (
-                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('reset-pin', user, event.currentTarget)} disabled={isSaving === user.id}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('reset-pin', user, event.currentTarget)} disabled={pinResetUserId !== null || isSaving === user.id}>
                                                     <RotateCcw aria-hidden="true" size={14} />
-                                                    {isSaving === user.id ? 'Resetting...' : 'Reset PIN'}
+                                                    {pinResetUserId === user.id ? 'Resetting...' : 'Reset PIN'}
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId ? (
-                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('remove', user, event.currentTarget)} disabled={isSaving === user.id}>
+                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('remove', user, event.currentTarget)} disabled={isSaving === user.id || pinResetUserId === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Removing...' : 'Remove permanently'}
                                                 </Button>
@@ -996,7 +1010,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                                 <input
                                                                     type="checkbox"
                                                                     checked={drawerDraftRoleIds.includes(role.id)}
-                                                                    disabled={isSaving === schedulingProfileUser.id}
+                                                                    disabled={isSaving === schedulingProfileUser.id || pinResetUserId === schedulingProfileUser.id}
                                                                     onChange={(event) => {
                                                                         const nextRoleIds = event.target.checked
                                                                             ? Array.from(new Set([...drawerDraftRoleIds, role.id]))
@@ -1015,7 +1029,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                         <Button
                                                             type="button"
                                                             size="sm"
-                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id}
+                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id || pinResetUserId === schedulingProfileUser.id}
                                                             onClick={() => void updateUserRoles(schedulingProfileUser.id, drawerDraftRoleIds)}
                                                         >
                                                             {isSaving === schedulingProfileUser.id ? 'Saving...' : 'Save roles'}
@@ -1024,7 +1038,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                             type="button"
                                                             size="sm"
                                                             variant="outline"
-                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id}
+                                                            disabled={!drawerRoleDraftChanged || isSaving === schedulingProfileUser.id || pinResetUserId === schedulingProfileUser.id}
                                                             onClick={() => cancelUserRoleDraft(schedulingProfileUser.id)}
                                                         >
                                                             Cancel
@@ -1066,7 +1080,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                             size="sm"
                                             variant="outline"
                                             onClick={(event) => openPendingAction('reset-pin', schedulingProfileUser, event.currentTarget)}
-                                            disabled={isSaving === schedulingProfileUser.id}
+                                            disabled={pinResetUserId !== null || isSaving === schedulingProfileUser.id}
                                         >
                                             <RotateCcw aria-hidden="true" size={14} />
                                             Reset PIN
@@ -1076,7 +1090,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                         size="sm"
                                         variant="outline"
                                         onClick={(event) => openPendingAction('remove', schedulingProfileUser, event.currentTarget)}
-                                        disabled={isSaving === schedulingProfileUser.id}
+                                        disabled={isSaving === schedulingProfileUser.id || pinResetUserId === schedulingProfileUser.id}
                                     >
                                         <UserMinus aria-hidden="true" size={14} />
                                         Remove permanently
@@ -1261,6 +1275,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                 <Button
                                     variant={pendingAction.action === 'remove' ? 'destructive' : 'default'}
                                     onClick={confirmPendingAction}
+                                    disabled={pendingAction.action === 'reset-pin' && pinResetUserId !== null}
                                 >
                                     {pendingAction.action === 'reset-pin' ? (
                                         <RotateCcw aria-hidden="true" size={16} />

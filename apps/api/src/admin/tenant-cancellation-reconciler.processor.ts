@@ -1,3 +1,4 @@
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import {
     Injectable,
     Logger,
@@ -83,6 +84,7 @@ export class TenantCancellationReconcilerProcessor {
     }
 
     start(): void {
+        if (pilotProducersClosed()) return;
         if (this.timer) return;
         this.stopped = false;
         this.timer = setInterval(() => void this.sweepNow(), this.pollIntervalMs);
@@ -100,6 +102,7 @@ export class TenantCancellationReconcilerProcessor {
     }
 
     sweepNow(): Promise<TenantCancellationSweepSummary> {
+        requireOrdinaryProducer('billing reconciliation sweep and claim');
         if (this.stopped) {
             return Promise.resolve(emptySweepSummary());
         }

@@ -1,7 +1,7 @@
 'use client';
 
 import type { CSSProperties } from 'react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     ACCOUNT_DELETION_RECOVERY_KEY,
     ACCOUNT_DELETION_RECEIPT_STORAGE_KEY,
@@ -146,7 +146,13 @@ export function AccountLifecyclePanel({
     const [pendingDeletionReceipt, setPendingDeletionReceipt] = useState<AccountDeletionReceipt | null>(null);
     const [exportJob, setExportJob] = useState<AccountExportJob | null>(null);
     const [recoveringExport, setRecoveringExport] = useState(false);
+    const [exportRecoveryRequired, setExportRecoveryRequired] = useState(true);
     const [exportError, setExportError] = useState<string | null>(null);
+
+    const exportLifetime = useRef<AbortController | null>(null);
+    const exportReadVersion = useRef(0);
+    const exportRecoveryFlight = useRef(false);
+    const exportStartFlight = useRef(false);
 
     const tenantSlug = status?.slug ?? '';
     const deletionRecorded = pendingDeletionReceipt !== null;
@@ -180,21 +186,51 @@ export function AccountLifecyclePanel({
         void loadStatus();
     }, [loadStatus]);
 
-    const recoverExport = useCallback(async () => {
+    useEffect(() => {
+        const lifetime = new AbortController();
+        exportLifetime.current = lifetime;
+        exportReadVersion.current += 1;
+        exportRecoveryFlight.current = false;
+        exportStartFlight.current = false;
+        setRecoveringExport(false);
+        setAction(current => current === 'export' ? null : current);
+        setExportRecoveryRequired(true);
+        if (!canExportAccount || deletionRecorded) setExportJob(null);
+        return () => {
+            lifetime.abort();
+            exportReadVersion.current += 1;
+        };
+    }, [canExportAccount, deletionRecorded]);
+
+    const recoverExport = useCallback(async (afterStartFailure = false) => {
         if (!canExportAccount || deletionRecorded) {
             setExportJob(null);
             return;
         }
 
+        const lifetime = exportLifetime.current;
+        if (!lifetime || lifetime.signal.aborted || exportRecoveryFlight.current
+            || (exportStartFlight.current && !afterStartFailure)) return;
+        exportRecoveryFlight.current = true;
+        const version = ++exportReadVersion.current;
+        const current = () => !lifetime.signal.aborted && exportLifetime.current === lifetime
+            && exportReadVersion.current === version;
         setRecoveringExport(true);
         setExportError(null);
         try {
-            const payload = await fetchJsonWithSession<AccountExportJobsResponse>('/admin/account/exports');
+            const payload = await fetchJsonWithSession<AccountExportJobsResponse>('/admin/account/exports', { signal: lifetime.signal });
+            if (!current()) return;
             setExportJob(selectRecoverableExportJob(payload.jobs));
+            setExportRecoveryRequired(false);
         } catch (error) {
+            if (!current()) return;
+            setExportRecoveryRequired(true);
             setExportError(error instanceof Error ? error.message : 'Unable to recover recent account exports.');
         } finally {
-            setRecoveringExport(false);
+            if (current()) {
+                exportRecoveryFlight.current = false;
+                setRecoveringExport(false);
+            }
         }
     }, [canExportAccount, deletionRecorded]);
 
@@ -209,15 +245,24 @@ export function AccountLifecyclePanel({
     useEffect(() => {
         if (deletionRecorded || !canExportAccount || !exportIsActive || !exportJobId || !exportStatusPath) return;
 
+        const lifetime = exportLifetime.current;
+        if (!lifetime || lifetime.signal.aborted) return;
         let disposed = false;
         let timeoutId: number | undefined;
         const schedule = (delay: number) => {
             timeoutId = window.setTimeout(() => void poll(), delay);
         };
         const poll = async () => {
+            if (disposed || lifetime.signal.aborted) return;
+            if (exportRecoveryFlight.current || exportStartFlight.current) {
+                schedule(EXPORT_POLL_INTERVAL_MS);
+                return;
+            }
+            const version = exportReadVersion.current;
             try {
-                const nextJob = await fetchJsonWithSession<AccountExportJob>(exportStatusPath);
-                if (disposed) return;
+                const nextJob = await fetchJsonWithSession<AccountExportJob>(exportStatusPath, { signal: lifetime.signal });
+                if (disposed || lifetime.signal.aborted) return;
+                if (version !== exportReadVersion.current) { schedule(EXPORT_POLL_INTERVAL_MS); return; }
                 setExportJob(nextJob);
                 setExportError(null);
                 if (isActiveExportJob(nextJob)) {
@@ -228,7 +273,8 @@ export function AccountLifecyclePanel({
                     setExportError(nextJob.error || 'Account export could not be generated.');
                 }
             } catch (error) {
-                if (disposed) return;
+                if (disposed || lifetime.signal.aborted) return;
+                if (version !== exportReadVersion.current) { schedule(EXPORT_POLL_INTERVAL_MS); return; }
                 setExportError(error instanceof Error ? error.message : 'Unable to refresh account export status.');
                 schedule(EXPORT_RETRY_INTERVAL_MS);
             }
@@ -247,34 +293,50 @@ export function AccountLifecyclePanel({
             return;
         }
 
+        const lifetime = exportLifetime.current;
+        if (!lifetime || lifetime.signal.aborted || exportStartFlight.current || exportRecoveryFlight.current
+            || recoveringExport || exportRecoveryRequired || deletionRecorded || isActiveExportJob(exportJob)) return;
+        exportStartFlight.current = true;
+        exportReadVersion.current += 1;
+        const current = () => !lifetime.signal.aborted && exportLifetime.current === lifetime;
+
         setAction('export');
         setNotice(null);
         setExportError(null);
         try {
             const job = await fetchJsonWithSession<AccountExportJob>('/admin/account/export', {
+                signal: lifetime.signal,
                 method: 'POST',
                 headers: jsonHeaders(),
                 body: JSON.stringify({}),
             });
+            if (!current()) return;
             setExportJob(job);
             if (job.state === 'ready') {
                 setNotice({ tone: 'success', text: 'Account export is ready to download.' });
             }
-        } catch (error) {
-            setNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to export account data.' });
+        } catch {
+            if (!current()) return;
+            setExportRecoveryRequired(true);
+            setNotice({ tone: 'error', text: 'The export request outcome could not be confirmed. Check recent exports before generating another.' });
+            await recoverExport(true);
         } finally {
-            setAction(null);
+            if (current()) {
+                exportStartFlight.current = false;
+                setAction(null);
+            }
         }
-    }, [canExportAccount]);
+    }, [canExportAccount, deletionRecorded, exportJob, exportRecoveryRequired, recoverExport, recoveringExport]);
 
     const downloadExport = useCallback(() => {
+        if (!canExportAccount || deletionRecorded || exportLifetime.current?.signal.aborted) return;
         if (exportJob?.state !== 'ready' || !exportJob.downloadPath) {
             setNotice({ tone: 'error', text: 'Account export is not ready to download.' });
             return;
         }
         window.location.assign(apiPath(exportJob.downloadPath));
         setNotice({ tone: 'success', text: 'Account export download started.' });
-    }, [exportJob]);
+    }, [canExportAccount, deletionRecorded, exportJob]);
 
     const cancelAccount = useCallback(async () => {
         if (!canManageAccountLifecycle) {
@@ -460,7 +522,7 @@ export function AccountLifecyclePanel({
                     <div style={{ display: 'grid', gap: 2 }}>
                         <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>Account export</div>
                         <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-                            Export tenant profile, settings, staff, scheduling, billing, webhook, notification, and audit records without secrets.
+                            Export tenant profile, settings, staff, scheduling, time cards, payroll, billing, webhook, notification, and audit records without secrets.
                         </div>
                         {describeExportJob(exportJob) ? (
                             <div style={{ color: 'var(--text-primary)', fontSize: '0.8rem', fontWeight: 700 }} aria-live="polite">
@@ -475,6 +537,14 @@ export function AccountLifecyclePanel({
                         ) : null}
                     </div>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.45rem' }}>
+                        <button
+                            className="btn btn-secondary"
+                            type="button"
+                            onClick={() => void recoverExport()}
+                            disabled={recoveringExport || action !== null || !canExportAccount || deletionRecorded}
+                        >
+                            Refresh exports
+                        </button>
                         {exportJob?.state === 'ready' && exportJob.downloadPath ? (
                             <button
                                 className="btn btn-secondary"
@@ -489,7 +559,7 @@ export function AccountLifecyclePanel({
                             className="btn btn-secondary"
                             type="button"
                             onClick={() => void exportAccount()}
-                            disabled={loading || recoveringExport || action !== null || !canExportAccount || exportIsActive || deletionRecorded}
+                            disabled={loading || recoveringExport || exportRecoveryRequired || action !== null || !canExportAccount || exportIsActive || deletionRecorded}
                         >
                             {recoveringExport
                                 ? 'Checking exports...'

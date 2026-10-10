@@ -50,6 +50,7 @@ services:
       - "${PROXY_HTTP_BIND:-127.0.0.1}:${PROXY_HTTP_PORT:-80}:80"
       - "${PROXY_HTTPS_BIND:-127.0.0.1}:${PROXY_HTTPS_PORT:-443}:443"
     environment:
+      PRIVATE_APP_HOST: "${PRIVATE_APP_HOST:-localhost}"
       CADDY_SITE_ADDRESSES: "${CADDY_SITE_ADDRESSES:-http://localhost:80, http://127.0.0.1:80, http://proxy:80}"
       ADMIN_EMAIL: "${ADMIN_EMAIL:-admin@example.com}"
       DEPLOY_RELEASE_SHA: "${DEPLOY_RELEASE_SHA:-local}"

@@ -10,18 +10,23 @@ export async function recordAccountLifecycleRequest(
     tx: TenantPrismaTransaction,
     input: { tenantId: string; requestId: string; kind: AccountLifecycleRequestKind;
         state: AccountLifecycleRequestState; requestedAt?: Date },
+    assertCurrent: () => void = () => undefined,
 ): Promise<void> {
     const key = `${ACCOUNT_LIFECYCLE_REQUEST_PREFIX}${input.requestId}`;
     const where = { tenantId_key: { tenantId: input.tenantId, key } };
+    assertCurrent();
     const existing = await tx.tenantSetting.findUnique({ where, select: { value: true } });
+    assertCurrent();
     const prior = projectAccountLifecycleRequest(existing?.value);
     const value = {
         requestId: input.requestId, kind: input.kind, state: input.state,
         requestedAt: prior?.requestedAt ?? (input.requestedAt ?? new Date()).toISOString(),
         updatedAt: new Date().toISOString(),
     };
+    assertCurrent();
     await tx.tenantSetting.upsert({ where,
         create: { tenantId: input.tenantId, key, value }, update: { value } });
+    assertCurrent();
 }
 
 export function projectAccountLifecycleRequest(value: unknown) {

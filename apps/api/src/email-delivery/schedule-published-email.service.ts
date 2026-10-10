@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+import { consumePersistentEmailPermit } from '../admin/persistent-export-consumer';
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -16,6 +19,7 @@ const SYSTEM_STAFF_EMAIL_SUFFIX = '@staff.lunchlineup.local';
 
 type SchedulePublishedEmailInput = {
     outboxId: string;
+    createdAt: Date | string;
     recipientEmail: string | null;
     title: string;
     body: string;
@@ -23,7 +27,7 @@ type SchedulePublishedEmailInput = {
 
 type AbortableEmailSend = (
     payload: CreateEmailOptions,
-    options: { idempotencyKey: string; signal: AbortSignal },
+    options: { idempotencyKey: string; signal: AbortSignal; redirect?: 'error' },
 ) => Promise<CreateEmailResponse>;
 
 export type SchedulePublishedEmailOutcome = 'accepted' | 'disabled' | 'not_addressable' | 'suppressed';
@@ -64,12 +68,15 @@ export class SchedulePublishedEmailService {
         }
         this.from = this.validSender(this.required('EMAIL_FROM'));
         this.scheduleUrl = `${this.httpsOrigin(this.required('APP_ORIGIN'))}/dashboard/scheduling`;
-        this.resend = new Resend(apiKey);
+        this.resend = new Resend(apiKey, pilotProducersClosed()
+            ? { baseUrl: 'https://api.resend.com', userAgent: 'lunchlineup-persistent-notification' }
+            : undefined);
     }
 
     get deliveryTimeoutMs(): number { return this.providerTimeoutMs; }
 
     async send(input: SchedulePublishedEmailInput): Promise<SchedulePublishedEmailOutcome> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         return this.withDeadline(async window => {
             const prepared = await this.prepare(input, window);
             return prepared.send(input.recipientEmail, window) as Promise<SchedulePublishedEmailOutcome>;
@@ -78,13 +85,36 @@ export class SchedulePublishedEmailService {
 
     /** Database suppression preparation must finish before the caller holds Tenant/User/outbox locks. */
     async prepare(input: SchedulePublishedEmailInput, window: NotificationHandoffWindow): Promise<PreparedNotificationHandoff> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
+        return this.prepareSelected(input, window, false);
+    }
+
+    async preparePersistentOwner(permit: object, input: SchedulePublishedEmailInput, window: NotificationHandoffWindow): Promise<PreparedNotificationHandoff> {
+        const selected = consumePersistentEmailPermit(this, permit);
+        window.assertNewHandoff();
+        if (!pilotProducersClosed() || !this.enabled || input.outboxId !== selected.jobId
+            || (input.recipientEmail !== null && typeof input.recipientEmail !== 'string')
+            || createHash('sha256').update(input.recipientEmail?.trim() ?? '').digest('hex') !== selected.recipientEmailSha256) {
+            throw new Error('Selected provider operation or recipient differs.');
+        }
+        const boundInput = Object.freeze({ ...input, createdAt: new Date(input.createdAt instanceof Date ? input.createdAt.getTime() : Date.parse(input.createdAt)).toISOString() });
+        selected.owner.assertPersistentProviderInput(boundInput);
+        const boundWindow = { signal: window.signal, assertNewHandoff: () => {
+            window.assertNewHandoff();
+            selected.owner.assertPersistentProviderInput(boundInput);
+            if (performance.now() >= selected.expires) throw new Error('Original email owner deadline expired.');
+        } };
+        return this.prepareSelected(boundInput, boundWindow, true);
+    }
+
+    private async prepareSelected(input: SchedulePublishedEmailInput, window: NotificationHandoffWindow, admitted: boolean): Promise<PreparedNotificationHandoff> {
         window.assertNewHandoff();
         const boundRecipient = input.recipientEmail;
         const skip = (outcome: SchedulePublishedEmailOutcome): PreparedNotificationHandoff => Object.freeze({
             recipientEmail: boundRecipient,
             send: async (currentRecipient: string | null, selectedWindow: NotificationHandoffWindow) => {
                 this.assertPreparedRecipient(boundRecipient, currentRecipient, window, selectedWindow);
-                return outcome;
+                return admitted ? { outcome: 'skipped' as const, reason: outcome } : outcome;
             },
         });
         if (!this.enabled) return skip('disabled');
@@ -100,6 +130,16 @@ export class SchedulePublishedEmailService {
             this.logger.warn('Schedule publication email skipped reason=provider_feedback');
             return skip('suppressed');
         }
+        // Keep every automatic handoff inside the provider's 24h dedupe
+        // window, measured conservatively from durable intent creation.
+        const createdAt = input.createdAt instanceof Date ? input.createdAt.getTime() : Date.parse(input.createdAt);
+        const assertDeliveryWindow = () => {
+            const age = Date.now() - createdAt;
+            if (!Number.isFinite(createdAt) || age < 0 || age >= 23 * 60 * 60 * 1_000) {
+                throw new Error('Schedule email delivery window expired; provider outcome requires reconciliation');
+            }
+        };
+        assertDeliveryWindow();
         const payload = Object.freeze({
             from: this.from, to: recipient, subject: title,
             html: ['<!doctype html><html><body style="font-family:system-ui,sans-serif;line-height:1.5;color:#172033">',
@@ -114,9 +154,11 @@ export class SchedulePublishedEmailService {
                 this.assertPreparedRecipient(boundRecipient, currentRecipient, window, selectedWindow);
                 try {
                     // No database or asynchronous preparation between the final guard and NEW provider handoff.
+                    assertDeliveryWindow();
                     const send = this.resend!.emails.send as unknown as AbortableEmailSend;
                     const response = await send.call(this.resend!.emails, payload, {
                         idempotencyKey: `schedule-published/${outboxId}`, signal: selectedWindow.signal,
+                        ...(admitted ? { redirect: 'error' as const } : {}),
                     });
                     if (response.error) {
                         const providerError = new Error('Schedule publication email provider rejected delivery');
@@ -128,7 +170,9 @@ export class SchedulePublishedEmailService {
                         throw new Error('Schedule publication email provider returned an invalid response');
                     }
                     this.logger.log('Schedule publication email delivery accepted');
-                    return 'accepted' as const;
+                    return admitted
+                        ? { outcome: 'accepted' as const, providerMessageId: response.data.id }
+                        : 'accepted' as const;
                 } catch (error) {
                     this.logger.error(`Schedule publication email delivery failed ${runtimeErrorText(error)}`);
                     throw error;

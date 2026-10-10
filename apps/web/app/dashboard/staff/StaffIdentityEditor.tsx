@@ -4,7 +4,20 @@ import { useEffect, useRef, useState } from 'react';
 import { fetchWithSession } from '@/lib/client-api';
 import { jsonWriteInit } from '../time-cards/time-card-api';
 
-type Identity = { id: string; name: string; username: string; email: string; identityVersion?: string };
+type Identity = { id: string; name: string; username: string; email: string; identityVersion: string };
+function requireSavedIdentity(payload: unknown, userId: string): Identity {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('The saved identity could not be confirmed. Reload the saved identity before continuing.');
+  }
+  const data = payload as Partial<Identity>;
+  if (data.id !== userId || typeof data.name !== 'string' || !data.name.trim()
+    || typeof data.username !== 'string' || typeof data.email !== 'string'
+    || typeof data.identityVersion !== 'string' || !/^[a-f0-9]{64}$/.test(data.identityVersion)) {
+    throw new Error('The saved identity could not be confirmed. Reload the saved identity before continuing.');
+  }
+  return data as Identity;
+}
+
 export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: string; onClose: () => void; onSaved: () => Promise<void> }) {
   const heading = useRef<HTMLHeadingElement>(null);
   const [saved, setSaved] = useState<Identity | null>(null);
@@ -18,11 +31,11 @@ export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: stri
     setBusy(true);
     setSaved(null);
     setError(null);
+    setNotice(null);
     try {
       const response = await fetchWithSession(`/users/${userId}`);
       if (!response.ok) throw new Error('Unable to load the saved identity. Editing is unavailable.');
-      const data = await response.json() as Identity;
-      if (!data.identityVersion) throw new Error('Unable to verify the saved identity version. Editing is unavailable.');
+      const data = requireSavedIdentity(await response.json(), userId);
       setSaved(data); setName(data.name); setUsername(data.username);
     } catch (err) { setError(err instanceof Error ? err.message : 'Unable to load identity.'); }
     finally { setBusy(false); }
@@ -47,7 +60,8 @@ export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: stri
           }));
           const data = await response.json();
           if (!response.ok) throw new Error(data.message ?? 'Identity save could not be confirmed. Retry unchanged values to reconcile it.');
-          setSaved(data); setName(data.name); setUsername(data.username); setNotice('Staff identity saved.');
+          const confirmed = requireSavedIdentity(data, userId);
+          setSaved(confirmed); setName(confirmed.name); setUsername(confirmed.username); setNotice('Staff identity saved.');
           await onSaved();
         } catch (err) { setError(err instanceof Error ? err.message : 'Identity save could not be confirmed.'); }
         finally { setBusy(false); }

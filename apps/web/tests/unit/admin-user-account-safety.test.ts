@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import * as ts from 'typescript';
+import { requireAdminPinReset } from '../../app/admin/users/admin-recovery-result';
 
 const source = readFileSync(
     resolve(import.meta.dirname, '../../app/admin/users/AdminUsersWorkspace.tsx'),
@@ -51,23 +52,24 @@ describe('platform admin user account safety wiring', () => {
 
     it('retains the request target when A responds after the visible selection changes to B', async () => {
         const target = { id: 'user-a', name: 'A', username: 'a', status: 'ACTIVE' };
-        let release!: (result: { temporaryPin: string }) => void;
-        const response = new Promise<{ temporaryPin: string }>((resolveResponse) => { release = resolveResponse; });
+        let release!: (result: { temporaryPin: string; id: string; username: string; pinResetRequired: true }) => void;
+        const response = new Promise<{ temporaryPin: string; id: string; username: string; pinResetRequired: true }>((resolveResponse) => { release = resolveResponse; });
         let temporaryPin: { userId: string; pin: string } | null = null;
         const writeJson = vi.fn(() => response);
         const refreshUsers = vi.fn(async () => undefined);
         const setSavingKey = vi.fn();
         const reset = pinExpression<() => Promise<void>>('reset', {
             selectedUser: target, isSelf: false, window: { confirm: () => true }, writeJson,
-            setSavingKey, setMessage: vi.fn(), refreshUsers,
+            setRecoveryKey: setSavingKey, recoveryInFlight: { current: false }, requireAdminPinReset,
+            setMessage: vi.fn(), refreshUsers,
             setTemporaryPin: (value: { userId: string; pin: string } | null) => { temporaryPin = value; },
         });
         const pending = reset();
         const visibleSelection = { id: 'user-b' };
         expect(writeJson).toHaveBeenCalledExactlyOnceWith('/admin/users/user-a/pin/reset', 'POST', {});
-        release({ temporaryPin: 'synthetic-pin' });
+        release({ id: 'user-a', username: 'a', temporaryPin: '123456', pinResetRequired: true });
         await pending;
-        expect(temporaryPin).toEqual({ userId: 'user-a', pin: 'synthetic-pin' });
+        expect(temporaryPin).toEqual({ userId: 'user-a', pin: '123456' });
         expect(pinExpression<() => boolean>('visible', { temporaryPin, selectedUser: visibleSelection })()).toBe(false);
         expect(pinExpression<() => boolean>('visible', { temporaryPin, selectedUser: target })()).toBe(true);
         expect(refreshUsers).toHaveBeenCalledTimes(1);
@@ -79,7 +81,8 @@ describe('platform admin user account safety wiring', () => {
         const target = { id: 'user-a', name: 'A', username: 'a', status: 'ACTIVE' };
         await pinExpression<() => Promise<void>>('reset', {
             selectedUser: target, isSelf: false, window: { confirm: () => true },
-            writeJson: vi.fn(async () => ({})), setSavingKey: vi.fn(), setMessage: vi.fn(),
+            writeJson: vi.fn(async () => ({})), setRecoveryKey: vi.fn(), recoveryInFlight: { current: false },
+            requireAdminPinReset, setMessage: vi.fn(),
             refreshUsers: vi.fn(async () => undefined),
             setTemporaryPin: (value: { userId: string; pin: string } | null) => { temporaryPin = value; },
         })();

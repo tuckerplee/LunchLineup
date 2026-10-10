@@ -1,3 +1,5 @@
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
+import { consumePersistentSchedulePermit } from '../admin/persistent-export-consumer';
 import { Logger } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import * as amqp from 'amqplib';
@@ -107,6 +109,12 @@ export class ScheduleSolveOutboxPublisher {
     private readonly maxPublicationAgeMs: number;
     private readonly confirmedPublicationRecoveryAgeMs: number;
     private readonly transportDeadlineMs: number;
+    private readonly pilotClosed = pilotProducersClosed();
+    private ownerClosed = false;
+    private ownerUsed = false;
+    private ownerUnknown = false;
+    private ownerOperation?: Promise<boolean>;
+    private ownerClose?: Promise<void>;
     private timer?: NodeJS.Timeout;
     private activeSweep?: Promise<void>;
     private activeConnection?: ScheduleSolveRabbitConnection;
@@ -153,13 +161,106 @@ export class ScheduleSolveOutboxPublisher {
     }
 
     start(): void {
+        if (this.pilotClosed) return;
         if (this.timer) return;
         this.timer = setInterval(() => this.kick(), this.pollIntervalMs);
         this.timer.unref();
         this.kick();
     }
 
+    assertPersistentOwnerReady(): void {
+        if (!this.pilotClosed || this.ownerClosed || this.ownerUsed || this.timer || this.activeSweep) {
+            throw new Error('Schedule publisher is not closed and unused.');
+        }
+    }
+
+    runPersistentOwnerSchedule(permit: object): Promise<boolean> {
+        const selected = consumePersistentSchedulePermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        // Register custody before dispatching any database or transport operation.
+        this.ownerOperation = Promise.resolve().then(() => this.publishSelected(selected))
+            .catch((error) => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    closeAdmission(): Promise<void> {
+        // Terminal, synchronous close; never reopens or releases a pending backend operation.
+        this.ownerClosed = true;
+        if (this.ownerClose) return this.ownerClose;
+        this.ownerClose = (async () => {
+            try { await this.ownerOperation; } catch { this.ownerUnknown = true; }
+            if (this.ownerUnknown) throw new Error('Schedule publication requires independent reconciliation.');
+        })();
+        return this.ownerClose;
+    }
+
+    private assertOwnerOpen(expires: number): void {
+        if (!this.pilotClosed || !this.ownerUsed || this.ownerClosed || performance.now() >= expires) {
+            throw new Error('Selected schedule publication admission is closed.');
+        }
+    }
+
+    private async publishSelected(selected: { jobId: string; tenantId: string; expires: number }): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        // Rejected/uncertain transaction completion remains unknown; no retry branch exists here.
+        const claimed = await this.claim(selected.jobId, selected);
+        this.assertOwnerOpen(selected.expires);
+        if (!claimed.length) return false;
+        if (claimed.length !== 1 || claimed[0].id !== selected.jobId || claimed[0].tenantId !== selected.tenantId
+            || claimed[0].publishAttempts !== 1) throw new Error('Selected schedule claim differs.');
+        const publication = claimed[0];
+        const message = publication.queuePayload;
+        if (!message || message.type !== 'schedule.solve' || message.job_id !== selected.jobId
+            || !message.payload || typeof message.payload !== 'object' || Array.isArray(message.payload)
+            || message.payload.tenant_id !== selected.tenantId) {
+            throw new Error('Persisted schedule message differs from admitted operation.');
+        }
+        let connection: ScheduleSolveRabbitConnection | undefined;
+        let channel: ConfirmChannel | undefined;
+        try {
+            // Custody follows the actual promises, including a late connect/channel result.
+            // Owner loss closes admission synchronously. PID1 retains final process containment.
+            connection = await this.connect(process.env.RABBITMQ_URL!);
+            this.assertOwnerOpen(selected.expires);
+            channel = await connection.createConfirmChannel();
+            this.assertOwnerOpen(selected.expires);
+            // Queue provisioning is a separate effect: only check an already provisioned queue.
+            await channel.checkQueue(process.env.WORKER_QUEUE_NAME!);
+            this.assertOwnerOpen(selected.expires);
+            let returned = false;
+            channel.on('return', () => { returned = true; });
+            channel.sendToQueue(process.env.WORKER_QUEUE_NAME!, Buffer.from(JSON.stringify(message)), {
+                persistent: true, mandatory: true, contentType: 'application/json', messageId: publication.id, type: message.type,
+            });
+            await channel.waitForConfirms();
+            if (returned) throw new Error('Selected schedule message was returned by the broker.');
+            this.assertOwnerOpen(selected.expires);
+            const changed = await this.tenantDb.withTenant(publication.tenantId, (tx) => {
+                this.assertOwnerOpen(selected.expires);
+                return tx.$executeRaw`
+                UPDATE "ScheduleSolveJob"
+                SET "publicationStatus" = 'PUBLISHED', "publishedAt" = CURRENT_TIMESTAMP,
+                    "publishLeaseUntil" = NULL, "publishLastError" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+                WHERE "id" = ${publication.id} AND "tenantId" = ${publication.tenantId}
+                    AND "publicationStatus" = 'PUBLISHING' AND "publishAttempts" = ${publication.publishAttempts}
+                    AND "publishLeaseUntil" > CURRENT_TIMESTAMP
+                `;
+            });
+            if (changed !== 1) throw new Error('Selected schedule acknowledgement fence differs.');
+            this.assertOwnerOpen(selected.expires);
+        } finally {
+            // Do not race these promises and then report settlement. Failure is unknown.
+            // Both closes are attempted, and the connection remains owned until its close settles.
+            try { if (channel) await channel.close(); }
+            finally { if (connection) await connection.close(); }
+        }
+        this.assertOwnerOpen(selected.expires);
+        return true;
+    }
+
     async stop(): Promise<void> {
+        if (this.pilotClosed) { await this.closeAdmission(); return; }
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = undefined;
@@ -174,6 +275,7 @@ export class ScheduleSolveOutboxPublisher {
     }
 
     async publishPendingNow(jobId?: string): Promise<void> {
+        requireOrdinaryProducer('schedule immediate publication');
         await this.sweep(jobId);
     }
 
@@ -189,6 +291,7 @@ export class ScheduleSolveOutboxPublisher {
     }
 
     private async sweep(jobId?: string): Promise<void> {
+        requireOrdinaryProducer('schedule sweep');
         const claimed = await this.claim(jobId);
         if (claimed.length === 0) return;
 
@@ -321,9 +424,13 @@ export class ScheduleSolveOutboxPublisher {
         }
     }
 
-    private async claim(jobId?: string): Promise<ClaimedScheduleSolvePublication[]> {
+    private async claim(jobId?: string, selected?: { tenantId: string; expires: number }): Promise<ClaimedScheduleSolvePublication[]> {
+        if (selected) this.assertOwnerOpen(selected.expires);
+        else requireOrdinaryProducer('schedule claim');
         const now = new Date();
-        const leaseUntil = new Date(now.getTime() + this.leaseMs);
+        // Selected ownership lasts only through the original operation budget; never renew it.
+        const leaseUntil = new Date(now.getTime() + (selected
+            ? Math.max(1, Math.ceil(selected.expires - performance.now())) : this.leaseMs));
         const confirmedBefore = new Date(now.getTime() - this.confirmedPublicationRecoveryAgeMs);
         return this.tenantDb.withPlatformAdmin(async (tx) => {
             const candidates = await tx.$queryRaw<ScheduleSolveClaimCandidate[]>(Prisma.sql`
@@ -339,6 +446,8 @@ export class ScheduleSolveOutboxPublisher {
                 WHERE job."queuePayload" IS NOT NULL
                   AND job."status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
                   AND (${jobId ?? null}::text IS NULL OR job."id" = ${jobId ?? null})
+                  AND (${selected?.tenantId ?? null}::text IS NULL OR job."tenantId" = ${selected?.tenantId ?? null})
+                  AND (${!selected} OR (job."publicationStatus" = 'PENDING' AND job."publishAttempts" = 0 AND job."status" = 'QUEUED'))
                   AND (
                     (
                       job."publicationStatus" IN ('PENDING', 'FAILED')
@@ -405,6 +514,9 @@ export class ScheduleSolveOutboxPublisher {
                     invalidCandidates.push(candidate);
                 }
             }
+            // An admitted publication does not authorize provenance repair or deferred retries.
+            if (selected && invalidCandidates.length) throw new Error('Selected schedule provenance is invalid.');
+            if (selected) this.assertOwnerOpen(selected.expires);
             for (const candidate of invalidCandidates) {
                 const retryAt = new Date(now.getTime() + this.maxPublicationAgeMs);
                 await tx.$executeRaw(Prisma.sql`

@@ -419,6 +419,7 @@ export async function purgeTenantApplicationData(
         staffSkills: count(await tx.staffSkill.deleteMany({ where: { tenantId: tenant.id } })),
         schedules: count(await tx.schedule.deleteMany({ where: { tenantId: tenant.id } })),
         locations: count(await tx.location.deleteMany({ where: { tenantId: tenant.id } })),
+        cancellationObservations: count(await tx.tenantCancellationObservation.deleteMany({ where: { tenantId: tenant.id } })),
         tenantSettings: count(await tx.tenantSetting.deleteMany({ where: { tenantId: tenant.id } })),
         webhookDeliveries: count(await tx.webhookDelivery.deleteMany({ where: { tenantId: tenant.id } })),
         webhookEndpoints: count(await tx.webhookEndpoint.deleteMany({ where: { tenantId: tenant.id } })),
@@ -518,6 +519,7 @@ export async function purgeTenantOwnedRecords(tx: Prisma.TransactionClient, tena
         locations: count(await tx.location.deleteMany({
             where: { tenantId },
         })),
+        cancellationObservations: count(await tx.tenantCancellationObservation.deleteMany({ where: { tenantId } })),
         tenantSettings: count(await tx.tenantSetting.deleteMany({
             where: { tenantId },
         })),

@@ -28,7 +28,7 @@
 	header /api/* Cache-Control "no-store"
 
 	@betaWeb {
-		host beta.lunchlineup.com
+		host beta.lunchlineup.com {$PRIVATE_APP_HOST:localhost}
 		not path /api/* /health
 	}
 	header @betaWeb Cache-Control "private, no-store, no-transform"

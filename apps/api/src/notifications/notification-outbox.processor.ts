@@ -1,8 +1,13 @@
+import { createHash } from 'node:crypto';
+import { SchedulePublishedEmailService } from '../email-delivery/schedule-published-email.service';
+import Redis from 'ioredis';
+import { consumePersistentNotificationPermit } from '../admin/persistent-export-consumer';
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Logger } from '@nestjs/common';
 import { Prisma, type Notification, type NotificationType } from '@prisma/client';
 import { runtimeErrorText } from '../common/runtime-error-diagnostic';
 import { ACTIVE_SCHEDULABLE_USER_FILTER } from '../common/schedulable-user';
-import { TenantPrismaService } from '../database/tenant-prisma.service';
+import { TenantPrismaService, type TenantPrismaTransaction } from '../database/tenant-prisma.service';
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000;
 const MIN_POLL_INTERVAL_MS = 250;
@@ -62,6 +67,7 @@ const DELIVERY_TRANSACTION_OPTIONS = { maxWait: 2_000, timeout: 40_000, isolatio
 const BOOKKEEPING_HEADROOM_MS = 8_000;
 
 type NotificationOutboxProcessorOptions = {
+    persistentEmail?: SchedulePublishedEmailService;
     pollIntervalMs?: number;
     leaseMs?: number;
     batchSize?: number;
@@ -86,6 +92,15 @@ export class NotificationOutboxProcessor {
     private readonly externalTimeoutMs: number;
     private readonly recordOutcome?: (status: NotificationDeliveryMetricStatus) => void;
     private readonly setDeadLetteredCount?: (count: number) => void;
+    private readonly pilotClosed = pilotProducersClosed();
+    private readonly persistentEmail?: SchedulePublishedEmailService;
+    private readonly ownerAbort = new AbortController();
+    private ownerEmailClaim?: { jobId: string; recipientEmail: string | null; title: string; body: string; createdAtMs: number; expires: number };
+    private ownerClosed = false;
+    private ownerUsed = false;
+    private ownerUnknown = false;
+    private ownerOperation?: Promise<boolean>;
+    private ownerClose?: Promise<void>;
     private timer?: NodeJS.Timeout;
     private activeSweep?: Promise<void>;
 
@@ -93,6 +108,7 @@ export class NotificationOutboxProcessor {
         private readonly tenantDb: TenantPrismaService,
         options: NotificationOutboxProcessorOptions = {},
     ) {
+        this.persistentEmail = options.persistentEmail;
         this.pollIntervalMs = options.pollIntervalMs
             ?? this.boundedInteger(
                 process.env.NOTIFICATION_OUTBOX_POLL_INTERVAL_MS,
@@ -133,13 +149,384 @@ export class NotificationOutboxProcessor {
     }
 
     start(): void {
+        if (pilotProducersClosed()) return;
         if (this.timer) return;
         this.timer = setInterval(() => this.kick(), this.pollIntervalMs);
         this.timer.unref();
         this.kick();
     }
 
+    persistentOwnerEmailService(): SchedulePublishedEmailService | undefined { return this.persistentEmail; }
+
+    assertPersistentProviderInput(input: { outboxId: string; recipientEmail: string | null; title: string; body: string; createdAt: Date | string }): void {
+        const claim = this.ownerEmailClaim;
+        if (!claim) throw new Error('No committed selected provider claim.');
+        this.assertOwnerOpen(claim.expires);
+        if (input.outboxId !== claim.jobId || input.recipientEmail !== claim.recipientEmail
+            || input.title !== claim.title || input.body !== claim.body
+            || this.leaseTime(input.createdAt) !== claim.createdAtMs) {
+            throw new Error('Prepared provider payload differs from committed selected claim.');
+        }
+    }
+
+    assertPersistentOwnerReady(): void {
+        if (!this.pilotClosed || this.ownerClosed || this.ownerUsed || this.timer || this.activeSweep) {
+            throw new Error('Notification producer is not closed and unused.');
+        }
+    }
+
+    runPersistentOwnerNotification(permit: object): Promise<boolean> {
+        const selected = consumePersistentNotificationPermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        this.ownerOperation = Promise.resolve().then(() => selected.effect === 'deliver-exact-notification-email'
+            ? this.deliverSelectedEmail(selected, permit)
+            : this.runSelectedNotification({ ...selected, effect: selected.effect }))
+            .catch((error) => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    closeAdmission(): Promise<void> {
+        this.ownerClosed = true;
+        this.ownerAbort.abort(new Error('Persistent notification admission closed.'));
+        if (this.ownerClose) return this.ownerClose;
+        this.ownerClose = (async () => {
+            try { await this.ownerOperation; } catch { this.ownerUnknown = true; }
+            if (this.ownerUnknown) throw new Error('Notification effect requires independent reconciliation.');
+        })();
+        return this.ownerClose;
+    }
+
+    private assertOwnerOpen(expires: number): void {
+        if (!this.pilotClosed || !this.ownerUsed || this.ownerClosed || performance.now() >= expires) {
+            throw new Error('Selected notification admission is closed.');
+        }
+    }
+
+    private async deliverSelectedEmail(selected: {
+        jobId: string; tenantId: string; recipientId: string; expires: number;
+        recipientEmailSha256?: string; intentSha256: string;
+    }, permit: object): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        const email = this.persistentEmail;
+        const recipientDigest = selected.recipientEmailSha256;
+        if (!email || typeof recipientDigest !== 'string' || !/^[a-f0-9]{64}$/.test(recipientDigest)
+            || !/^[a-f0-9]{64}$/.test(selected.intentSha256)) throw new Error('Fixed selected email custody required.');
+        const started = performance.now();
+        if (selected.expires - started <= email.deliveryTimeoutMs + BOOKKEEPING_HEADROOM_MS) {
+            throw new Error('Original owner budget cannot cover provider and bookkeeping.');
+        }
+        const providerExpires = Math.min(selected.expires - BOOKKEEPING_HEADROOM_MS, started + email.deliveryTimeoutMs);
+        const leaseUntil = new Date(Date.now() + Math.ceil(selected.expires - started));
+        const window: NotificationHandoffWindow = {
+            signal: this.ownerAbort.signal,
+            assertNewHandoff: () => {
+                this.assertOwnerOpen(selected.expires);
+                if (this.ownerAbort.signal.aborted || performance.now() >= providerExpires) {
+                    throw new Error('Original selected provider handoff window closed.');
+                }
+            },
+        };
+        const timer = setTimeout(() => this.ownerAbort.abort(new Error('Selected provider handoff deadline exceeded.')),
+            Math.max(0, Math.ceil(providerExpires - performance.now())));
+        type SelectedRow = ClaimedNotificationIntent & {
+            status: string; providerIntentSha256: string | null; providerRecipientSha256: string | null;
+            providerPayloadSha256: string | null; providerOutcome: string | null; providerMessageId: string | null;
+        };
+        type SelectedUser = { id: string; email: string | null; role: string; deletedAt: Date | null;
+            suspendedAt: Date | null; emailDeliverySuppressedAt: Date | null };
+        const digestEmail = (value: string | null) => createHash('sha256').update(value?.trim() ?? '').digest('hex');
+        const digestPayload = (row: SelectedRow) => createHash('sha256').update(JSON.stringify({
+            tenantId: row.tenantId, outboxId: row.id, recipientId: row.userId, type: row.notificationType,
+            title: row.title, body: row.body, createdAt: new Date(this.leaseTime(row.createdAt)).toISOString(),
+        })).digest('hex');
+        const readLocked = async (tx: TenantPrismaTransaction) => {
+            this.assertOwnerOpen(selected.expires);
+            const tenants = await tx.$queryRaw<Array<{ id: string; status: string; deletedAt: Date | null }>>`
+                SELECT "id", "status", "deletedAt" FROM "Tenant" WHERE "id" = ${selected.tenantId} FOR SHARE NOWAIT
+            `;
+            this.assertOwnerOpen(selected.expires);
+            const users = await tx.$queryRaw<SelectedUser[]>`
+                SELECT "id", "email", "role", "deletedAt", "suspendedAt", "emailDeliverySuppressedAt" FROM "User"
+                WHERE "id" = ${selected.recipientId} AND "tenantId" = ${selected.tenantId} FOR SHARE NOWAIT
+            `;
+            this.assertOwnerOpen(selected.expires);
+            const rows = await tx.$queryRaw<SelectedRow[]>`
+                SELECT "id", "tenantId", "userId", "dedupeKey", "notificationType", "title", "body", "attempts",
+                    "failureCount", "createdAt", "leaseUntil", "status", "providerIntentSha256", "providerRecipientSha256",
+                    "providerPayloadSha256", "providerOutcome", "providerMessageId"
+                FROM "NotificationOutbox" WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+            `;
+            this.assertOwnerOpen(selected.expires);
+            const row = rows[0]; const tenant = tenants[0]; const user = users[0];
+            if (!row) return undefined;
+            if (rows.length !== 1 || row.id !== selected.jobId || row.tenantId !== selected.tenantId
+                || row.userId !== selected.recipientId || row.notificationType !== 'SCHEDULE_PUBLISHED'
+                || !tenant || tenant.deletedAt !== null || tenant.status === 'PURGED'
+                || !user || user.deletedAt !== null || user.suspendedAt !== null
+                || !['MANAGER', 'STAFF'].includes(user.role) || digestEmail(user.email) !== recipientDigest) {
+                throw new Error('Selected email recipient or durable intent differs.');
+            }
+            const notification = await tx.notification.findFirst({
+                where: { id: selected.jobId, tenantId: selected.tenantId, userId: selected.recipientId },
+            });
+            this.assertOwnerOpen(selected.expires);
+            if (!notification || notification.type !== row.notificationType || notification.title !== row.title || notification.body !== row.body) {
+                throw new Error('Selected email requires the exact persisted internal notification.');
+            }
+            return { row, user };
+        };
+        const custody: { claim?: Promise<{ row: SelectedRow; recipientEmail: string | null } | undefined>; delivery?: Promise<boolean> } = {};
+        try {
+            const claimed = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+                const callback = Promise.resolve().then(async () => {
+                    const current = await readLocked(tx);
+                    this.assertOwnerOpen(selected.expires);
+                    if (!current) return undefined;
+                    const { row, user } = current;
+                    if (row.status !== 'PENDING' || row.attempts !== 0 || row.providerIntentSha256 !== null) return undefined;
+                    const createdAt = this.leaseTime(row.createdAt);
+                    if (!Number.isFinite(createdAt) || Date.now() < createdAt || Date.now() - createdAt >= 23 * 60 * 60 * 1000) {
+                        throw new Error('Original durable email delivery window expired.');
+                    }
+                    const payloadDigest = digestPayload(row);
+                    this.assertOwnerOpen(selected.expires);
+                    const updated = await tx.$queryRaw<SelectedRow[]>`
+                        UPDATE "NotificationOutbox"
+                        SET "status" = 'PROCESSING', "attempts" = 1, "leaseUntil" = ${leaseUntil}, "lastError" = NULL,
+                            "providerIntentSha256" = ${selected.intentSha256}, "providerRecipientSha256" = ${recipientDigest},
+                            "providerPayloadSha256" = ${payloadDigest}, "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId} AND "userId" = ${selected.recipientId}
+                            AND "status" = 'PENDING' AND "attempts" = 0 AND "providerIntentSha256" IS NULL
+                            AND "providerOutcome" IS NULL AND "providerMessageId" IS NULL
+                            AND "nextAttemptAt" <= clock_timestamp()
+                        RETURNING "id", "tenantId", "userId", "dedupeKey", "notificationType", "title", "body", "attempts",
+                            "failureCount", "createdAt", "leaseUntil", "status", "providerIntentSha256", "providerRecipientSha256",
+                            "providerPayloadSha256", "providerOutcome", "providerMessageId"
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const claim = updated[0];
+                    if (updated.length !== 1 || !claim || claim.id !== selected.jobId || claim.tenantId !== selected.tenantId
+                        || claim.userId !== selected.recipientId || claim.attempts !== 1 || claim.status !== 'PROCESSING'
+                        || claim.providerIntentSha256 !== selected.intentSha256 || claim.providerRecipientSha256 !== recipientDigest
+                        || claim.providerPayloadSha256 !== payloadDigest || this.leaseTime(claim.leaseUntil) !== leaseUntil.getTime()) {
+                        throw new Error('Selected email committed-claim readback differs.');
+                    }
+                    return { row: claim, recipientEmail: user.email };
+                });
+                custody.claim = callback;
+                return callback;
+            }, DELIVERY_TRANSACTION_OPTIONS);
+            this.assertOwnerOpen(selected.expires);
+            if (!claimed) return false;
+            this.ownerEmailClaim = Object.freeze({ jobId: claimed.row.id, recipientEmail: claimed.recipientEmail,
+                title: claimed.row.title, body: claimed.row.body, createdAtMs: this.leaseTime(claimed.row.createdAt), expires: selected.expires });
+            // Committed intent fencing precedes preparation/provider dispatch and survives transaction failure.
+            window.assertNewHandoff();
+            const prepared = await email.preparePersistentOwner(permit, {
+                outboxId: claimed.row.id, createdAt: claimed.row.createdAt, recipientEmail: claimed.recipientEmail,
+                title: claimed.row.title, body: claimed.row.body,
+            }, window);
+            this.assertOwnerOpen(selected.expires);
+            const accepted = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+                const callback = Promise.resolve().then(async () => {
+                    const current = await readLocked(tx);
+                    this.assertOwnerOpen(selected.expires);
+                    if (!current) throw new Error('Selected email claim disappeared.');
+                    const { row, user } = current;
+                    if (row.status !== 'PROCESSING' || row.attempts !== 1 || row.providerIntentSha256 !== selected.intentSha256
+                        || row.providerRecipientSha256 !== recipientDigest || row.providerPayloadSha256 !== digestPayload(row)
+                        || row.providerPayloadSha256 !== claimed.row.providerPayloadSha256 || row.providerOutcome !== null
+                        || row.providerMessageId !== null || this.leaseTime(row.leaseUntil) !== leaseUntil.getTime()
+                        || user.email !== claimed.recipientEmail || prepared.recipientEmail !== user.email) {
+                        throw new Error('Selected email ownership, recipient or payload changed.');
+                    }
+                    this.assertOwnerOpen(selected.expires);
+                    const live = await tx.$queryRaw<Array<{ live: boolean }>>`
+                        SELECT ("leaseUntil" > clock_timestamp()) AS "live" FROM "NotificationOutbox"
+                        WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId}
+                            AND "status" = 'PROCESSING' AND "attempts" = 1
+                            AND "providerIntentSha256" = ${selected.intentSha256}
+                    `;
+                    window.assertNewHandoff();
+                    if (live.length !== 1 || live[0].live !== true) throw new Error('Original selected provider lease expired.');
+                    const outcome: unknown = user.emailDeliverySuppressedAt
+                        ? { outcome: 'skipped', reason: 'suppressed' }
+                        : await prepared.send(user.email, window);
+                    // No new provider handoff follows. Bookkeeping stays within the ORIGINAL owner expiry.
+                    this.assertOwnerOpen(selected.expires);
+                    const receipt = outcome as { outcome?: unknown; reason?: unknown; providerMessageId?: unknown } | null;
+                    const providerAccepted = receipt?.outcome === 'accepted' && typeof receipt.providerMessageId === 'string'
+                        && receipt.providerMessageId.length >= 1 && receipt.providerMessageId.length <= 255;
+                    const skip = receipt?.outcome === 'skipped' && (receipt.reason === 'suppressed' || receipt.reason === 'not_addressable');
+                    if (!providerAccepted && !skip) throw new Error('Selected provider outcome is unknown.');
+                    const providerOutcome = providerAccepted ? 'ACCEPTED'
+                        : receipt!.reason === 'suppressed' ? 'SKIPPED_SUPPRESSED' : 'SKIPPED_NOT_ADDRESSABLE';
+                    const providerMessageId = providerAccepted ? receipt!.providerMessageId as string : null;
+                    const changed = await tx.$executeRaw`
+                        UPDATE "NotificationOutbox"
+                        SET "status" = 'DELIVERED', "deliveredAt" = CURRENT_TIMESTAMP, "nextAttemptAt" = NULL,
+                            "leaseUntil" = NULL, "lastError" = NULL, "providerOutcome" = ${providerOutcome},
+                            "providerMessageId" = ${providerMessageId}, "providerCompletedAt" = CURRENT_TIMESTAMP,
+                            "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId} AND "userId" = ${selected.recipientId}
+                            AND "status" = 'PROCESSING' AND "attempts" = 1 AND "leaseUntil" = ${leaseUntil}
+                            AND "leaseUntil" > clock_timestamp() AND "providerIntentSha256" = ${selected.intentSha256}
+                            AND "providerRecipientSha256" = ${recipientDigest} AND "providerPayloadSha256" = ${claimed.row.providerPayloadSha256}
+                            AND "providerOutcome" IS NULL AND "providerMessageId" IS NULL
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    if (changed !== 1) throw new Error('Selected provider receipt acknowledgement lost ownership.');
+                    return providerAccepted;
+                });
+                custody.delivery = callback;
+                return callback;
+            }, DELIVERY_TRANSACTION_OPTIONS);
+            this.assertOwnerOpen(selected.expires);
+            return accepted;
+        } catch (error) {
+            this.ownerClosed = true;
+            this.ownerUnknown = true;
+            this.ownerAbort.abort(error);
+            throw error;
+        } finally {
+            try { if (custody.claim) await custody.claim; }
+            finally {
+                try { if (custody.delivery) await custody.delivery; }
+                finally { clearTimeout(timer); this.ownerAbort.abort(new Error('Selected email operation finished.')); }
+            }
+        }
+    }
+
+    private async runSelectedNotification(selected: {
+        jobId: string; tenantId: string; recipientId: string; expires: number;
+        effect: 'persist-exact-notification' | 'fanout-exact-notification';
+    }): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        const custody: { callback?: Promise<boolean>; redis?: Redis } = {};
+        let result = false;
+        try {
+            result = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+                // Register the callback itself: transaction timeout is not callback/provider settlement.
+                const callback = Promise.resolve().then(async () => {
+                    this.assertOwnerOpen(selected.expires);
+                    const tenants = await tx.$queryRaw<Array<{ id: string; status: string; deletedAt: Date | null }>>`
+                        SELECT "id", "status", "deletedAt" FROM "Tenant"
+                        WHERE "id" = ${selected.tenantId} FOR SHARE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const users = await tx.$queryRaw<Array<{ id: string; role: string; deletedAt: Date | null; suspendedAt: Date | null }>>`
+                        SELECT "id", "role", "deletedAt", "suspendedAt" FROM "User"
+                        WHERE "id" = ${selected.recipientId} AND "tenantId" = ${selected.tenantId} FOR SHARE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const rows = await tx.$queryRaw<Array<ClaimedNotificationIntent & { status: string }>>`
+                        SELECT "id", "tenantId", "userId", "dedupeKey", "notificationType", "title", "body", "attempts", "failureCount", "createdAt", "leaseUntil", "status"
+                        FROM "NotificationOutbox"
+                        WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const row = rows[0];
+                    if (!row) return false;
+                    const tenant = tenants[0]; const user = users[0];
+                    if (rows.length !== 1 || row.id !== selected.jobId || row.tenantId !== selected.tenantId
+                        || row.userId !== selected.recipientId
+                        || !tenant || tenant.deletedAt !== null || tenant.status === 'PURGED'
+                        || !user || user.deletedAt !== null
+                        || (row.notificationType === 'SCHEDULE_PUBLISHED'
+                            && (!['MANAGER', 'STAFF'].includes(user.role) || user.suspendedAt !== null))) {
+                        throw new Error('Selected notification recipient is not eligible.');
+                    }
+                    const notification = await tx.notification.findFirst({
+                        where: { id: selected.jobId, tenantId: selected.tenantId, userId: selected.recipientId },
+                    });
+                    this.assertOwnerOpen(selected.expires);
+                    if (selected.effect === 'persist-exact-notification') {
+                        if (row.status !== 'PENDING' || row.attempts !== 0) return false;
+                        if (notification) {
+                            if (notification.type !== row.notificationType || notification.title !== row.title || notification.body !== row.body) {
+                                throw new Error('Existing notification content differs from selected durable intent.');
+                            }
+                            return false;
+                        }
+                        const created = await tx.notification.create({ data: {
+                            id: row.id, tenantId: row.tenantId, userId: row.userId,
+                            type: row.notificationType, title: row.title, body: row.body,
+                        } });
+                        this.assertOwnerOpen(selected.expires);
+                        if (created.id !== selected.jobId || created.tenantId !== selected.tenantId
+                            || created.userId !== selected.recipientId) throw new Error('Notification persistence readback differs.');
+                        return true;
+                    }
+                    if (!notification || notification.type !== row.notificationType) {
+                        throw new Error('Selected notification has not been durably persisted.');
+                    }
+                    const url = process.env.REDIS_URL;
+                    if (!url) throw new Error('Explicit admitted Redis endpoint required.');
+                    // Never pass a URL to ioredis: URL query options precede explicit options there.
+                    const endpoint = new URL(url);
+                    const path = endpoint.pathname;
+                    const host = endpoint.hostname.startsWith('[')
+                        ? endpoint.hostname.slice(1, -1) : endpoint.hostname;
+                    const db = path === '' || path === '/' ? 0 : Number(path.slice(1));
+                    const port = endpoint.port === '' ? 6379 : Number(endpoint.port);
+                    if (!['redis:', 'rediss:'].includes(endpoint.protocol) || !host
+                        || url.includes('?') || url.includes('#')
+                        || (path !== '' && path !== '/' && !/^\/[0-9]+$/.test(path))
+                        || !Number.isSafeInteger(db) || db < 0 || db > 2147483647
+                        || !Number.isSafeInteger(port) || port < 1 || port > 65535
+                        || (!endpoint.hostname.startsWith('[') && !/^[A-Za-z0-9.-]+$/.test(host))) {
+                        throw new Error('Selected Redis endpoint must be a network URL without query options.');
+                    }
+                    const username = endpoint.username ? decodeURIComponent(endpoint.username) : undefined;
+                    const password = endpoint.password ? decodeURIComponent(endpoint.password) : undefined;
+                    this.assertOwnerOpen(selected.expires);
+                    const redis = new Redis({
+                        host, port, db, username, password,
+                        tls: endpoint.protocol === 'rediss:' ? {} : undefined,
+                        lazyConnect: true, enableOfflineQueue: false, enableReadyCheck: false,
+                        enableAutoPipelining: false, reconnectOnError: () => false,
+                        maxRetriesPerRequest: 0, retryStrategy: () => null,
+                        autoResendUnfulfilledCommands: false, autoResubscribe: false,
+                    });
+                    custody.redis = redis;
+                    let transportFailed = false;
+                    redis.on('error', () => { transportFailed = true; });
+                    await redis.connect();
+                    this.assertOwnerOpen(selected.expires);
+                    if (transportFailed) throw new Error('Selected Redis connection failed.');
+                    const subscribers = await redis.publish(`notifications:user:${selected.recipientId}`, JSON.stringify(notification));
+                    this.assertOwnerOpen(selected.expires);
+                    if (transportFailed || !Number.isSafeInteger(subscribers) || subscribers < 0) {
+                        throw new Error('Selected Redis fan-out acknowledgement is unknown.');
+                    }
+                    // Redis acceptance does not prove any browser received/read the notification.
+                    return true;
+                });
+                custody.callback = callback;
+                return callback;
+            }, DELIVERY_TRANSACTION_OPTIONS);
+        } catch (error) {
+            // A rejected transaction can leave its async body waiting on a transport operation.
+            this.ownerClosed = true;
+            this.ownerUnknown = true;
+            throw error;
+        } finally {
+            try { if (custody.callback) await custody.callback; }
+            finally {
+                const redis = custody.redis;
+                if (redis) {
+                    try { await redis.quit(); }
+                    finally { redis.disconnect(false); }
+                }
+            }
+        }
+        this.assertOwnerOpen(selected.expires);
+        return result;
+    }
+
     async stop(): Promise<void> {
+        if (this.pilotClosed) { await this.closeAdmission(); return; }
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = undefined;
@@ -148,6 +535,7 @@ export class NotificationOutboxProcessor {
     }
 
     async enqueueInTransaction(tx: any, entries: NotificationOutboxEntry[]): Promise<number> {
+        requireOrdinaryProducer('notification enqueue');
         if (entries.length === 0) return 0;
         const result = await tx.notificationOutbox.createMany({
             data: entries.map((entry) => ({
@@ -164,6 +552,7 @@ export class NotificationOutboxProcessor {
     }
 
     async deliverPendingNow(tenantId: string, dedupeKeys: string[]): Promise<NotificationDeliverySummary> {
+        requireOrdinaryProducer('notification immediate delivery');
         const keys = Array.from(new Set(dedupeKeys));
         if (keys.length === 0) {
             return { status: 'NOT_REQUIRED', delivered: 0, pending: 0, failed: 0 };
@@ -193,12 +582,14 @@ export class NotificationOutboxProcessor {
     }
 
     private async sweep(): Promise<void> {
+        requireOrdinaryProducer('notification sweep');
         const claimed = await this.claim();
         await Promise.all(claimed.map((intent) => this.deliver(intent)));
         await this.refreshDeadLetteredCount();
     }
 
     private async claim(tenantId?: string, dedupeKeys: string[] = []): Promise<ClaimedNotificationIntent[]> {
+        requireOrdinaryProducer('notification claim');
         const now = new Date();
         const leaseUntil = new Date(now.getTime() + this.leaseMs);
         const tenantFilter = tenantId
@@ -221,6 +612,7 @@ export class NotificationOutboxProcessor {
                         AND outbox."leaseUntil" <= ${now}
                     )
                 )
+                AND outbox."providerIntentSha256" IS NULL
                 ${tenantFilter}
                 ${dedupeFilter}
                 ORDER BY COALESCE(outbox."nextAttemptAt", outbox."leaseUntil", outbox."createdAt") ASC,

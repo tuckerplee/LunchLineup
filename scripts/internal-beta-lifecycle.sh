@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotent VM107 internal-beta launch, verification, and resource-saving pause.
+# Private-target lifecycle. Activation remains blocked pending estate guard admission.
 # This script owns application services only; Proxmox VM power and onboot policy
 # remain explicit host-operator actions.
 set -euo pipefail
@@ -18,9 +18,11 @@ CI_PUBLIC_KEY="${BETA_CI_PUBLIC_KEY_FILE:-/etc/lunchlineup/trust/internal-ci-rec
 CI_POLICY="${BETA_CI_POLICY_FILE:-/etc/lunchlineup/trust/internal-beta-policy.json}"
 CI_RECEIPT_VERIFIER="${BETA_CI_RECEIPT_VERIFIER:-/usr/local/libexec/lunchlineup/verify-internal-ci-candidate-receipt.mjs}"
 COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-lunchlineup}"
-EXPECTED_HOSTNAME="${BETA_EXPECTED_HOSTNAME:-lunchlineup-dev}"
-BETA_HOST="${BETA_HOST:-beta.lunchlineup.com}"
-PUBLIC_ORIGIN="${BETA_PUBLIC_ORIGIN:-https://beta.lunchlineup.com}"
+PRIVATE_TARGET_PROFILE="${LUNCHLINEUP_PRIVATE_TARGET_PROFILE:-}"
+EXPECTED_HOSTNAME=""
+LEGACY_BETA_HOST="${BETA_HOST:-}"
+BETA_HOST=""
+PUBLIC_ORIGIN=""
 BUILD_IMAGES="${BETA_BUILD_IMAGES:-false}"
 RUN_BACKUP_RESTORE_PROOF="${BETA_RUN_BACKUP_RESTORE_PROOF:-true}"
 START_TIMEOUT_SECONDS="${BETA_START_TIMEOUT_SECONDS:-600}"
@@ -108,7 +110,7 @@ env_path() {
 
 compose() {
   timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" \
-    docker compose \
+    env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker compose \
       --project-name "$COMPOSE_PROJECT_NAME" \
       --project-directory "$APP_DIR" \
       --env-file "$RUNTIME_ENV" \
@@ -119,7 +121,7 @@ compose() {
 container_value() {
   local container_id="$1"
   local format="$2"
-  timeout --foreground 30s docker inspect --format "$format" "$container_id"
+  timeout --foreground 30s env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker inspect --format "$format" "$container_id"
 }
 
 validate_inputs() {
@@ -134,11 +136,10 @@ validate_inputs() {
   [[ "$APP_DIR" == /opt/lunchlineup ]] || fail "APP_DIR must remain /opt/lunchlineup on VM107"
   [[ "$RUNTIME_ENV" == /opt/lunchlineup-secrets/runtime.env ]] \
     || fail "BETA_RUNTIME_ENV_FILE must remain the VM107 root-only runtime env"
-  [[ "$EXPECTED_HOSTNAME" == lunchlineup-dev ]] \
-    || fail "BETA_EXPECTED_HOSTNAME must remain lunchlineup-dev"
-  [[ "$BETA_HOST" == beta.lunchlineup.com ]] || fail "BETA_HOST must remain beta.lunchlineup.com"
-  [[ "$PUBLIC_ORIGIN" == https://beta.lunchlineup.com ]] \
-    || fail "BETA_PUBLIC_ORIGIN must remain https://beta.lunchlineup.com"
+  [[ "$PRIVATE_TARGET_PROFILE" == /etc/lunchlineup/trust/private-target.json ]] \
+    || fail "LUNCHLINEUP_PRIVATE_TARGET_PROFILE must name the installed private-target.json"
+  [[ -z "$LEGACY_BETA_HOST" && -z "${BETA_PUBLIC_ORIGIN:-}" && -z "${BETA_EXPECTED_HOSTNAME:-}" ]] \
+    || fail "legacy host/origin overrides are forbidden; use the private target profile"
   [[ -d "$APP_DIR/.git" ]] || fail "APP_DIR is not the VM107 Git checkout"
   if [[ "$ACTION" != pause ]]; then
     [[ -f "$RUNTIME_ENV" && ! -L "$RUNTIME_ENV" ]] \
@@ -165,8 +166,6 @@ validate_inputs() {
     runtime_mode_value=$((8#$runtime_mode))
     (( (runtime_mode_value & 077) == 0 )) || fail "runtime env must not be group- or world-readable"
   fi
-  [[ "$(hostname -s)" == "$EXPECTED_HOSTNAME" ]] \
-    || fail "host identity is not the expected VM107 guest hostname"
   [[ "$CANDIDATE_REF" == origin/* ]] \
     || fail "BETA_CANDIDATE_REF must be an origin remote-tracking ref"
   git check-ref-format "refs/remotes/$CANDIDATE_REF" >/dev/null \
@@ -183,6 +182,27 @@ require_root_owned_input() {
   (( (8#$mode & 022) == 0 )) || fail "$label must not be group- or world-writable"
 }
 
+read_private_target() {
+  local helper=/usr/local/libexec/lunchlineup/private-target-profile.mjs fields machine_id
+  require_root_owned_input "$PRIVATE_TARGET_PROFILE" /etc/lunchlineup/trust private-target-profile
+  require_root_owned_input "$helper" /usr/local/libexec/lunchlineup private-target-reader
+  require_root_owned_input /usr/local/libexec/lunchlineup/internal-ci-evidence.mjs /usr/local/libexec/lunchlineup private-target-dependency
+  fields="$(LUNCHLINEUP_PRIVATE_TARGET_PROFILE="$PRIVATE_TARGET_PROFILE" node "$helper")" \
+    || fail "private target profile is invalid"
+  BETA_HOST="$(printf '%s\n' "$fields" | sed -n '1p')"
+  PUBLIC_ORIGIN="$(printf '%s\n' "$fields" | sed -n '2p')"
+  EXPECTED_HOSTNAME="$(printf '%s\n' "$fields" | sed -n '3p')"
+  machine_id="$(printf '%s\n' "$fields" | sed -n '4p')"
+  [[ "$(hostname -s)" == "$EXPECTED_HOSTNAME" && "$(cat /etc/machine-id)" == "$machine_id" ]] \
+    || fail "private target machine identity mismatch"
+  [[ ! -e /etc/lunchlineup/vm107-launch.hold && ! -e /etc/lunchlineup/private-launch.hold ]] \
+    || fail "launch hold is present"
+  # Domain/build binding is not infrastructure authority. No profile flag may
+  # bypass this blocker; a separately reviewed installed guard must bind local
+  # Docker ownership, production exclusions and physical backing/quota first.
+  fail "private target activation blocked: installed estate/storage/hold guard admission is not implemented"
+}
+
 verify_signed_internal_ci_candidate() {
   current_check="signed_internal_ci_candidate"
   require_root_owned_input "$CANDIDATE_RECEIPT" /opt/lunchlineup-release candidate-receipt
@@ -193,7 +213,7 @@ verify_signed_internal_ci_candidate() {
   require_root_owned_input "$CI_POLICY" /etc/lunchlineup/trust internal-ci-policy
   [[ "$CI_RECEIPT_VERIFIER" == /usr/local/libexec/lunchlineup/verify-internal-ci-candidate-receipt.mjs ]]
   require_root_owned_input "$CI_RECEIPT_VERIFIER" /usr/local/libexec/lunchlineup receipt-verifier
-  node "$CI_RECEIPT_VERIFIER" --receipt "$CANDIDATE_RECEIPT" --signature "$CANDIDATE_SIGNATURE" \
+  LUNCHLINEUP_PRIVATE_TARGET_PROFILE="$PRIVATE_TARGET_PROFILE" node "$CI_RECEIPT_VERIFIER" --receipt "$CANDIDATE_RECEIPT" --signature "$CANDIDATE_SIGNATURE" \
     --public-key "$CI_PUBLIC_KEY" --approved-policy "$CI_POLICY" \
     --release-manifest "$RELEASE_MANIFEST" --artifact-manifest "$ARTIFACT_MANIFEST" \
     --expected-source-sha "$SOURCE_SHA"
@@ -201,40 +221,13 @@ verify_signed_internal_ci_candidate() {
 
 load_and_verify_candidate_images() {
   current_check="candidate_images"
-  local release_root image_prefix artifact_name archive_relative archive_sha archive_bytes expected_id resolved_ref archive_path candidate_tag existing_id actual_bytes actual_sha
-  release_root="$(dirname "$RELEASE_MANIFEST")"
-  [[ "$RELEASE_IMAGE_DIR" == "$release_root/images" && -d "$RELEASE_IMAGE_DIR" && ! -L "$RELEASE_IMAGE_DIR" ]] \
-    || fail "release image directory must be the bundle images directory"
-  image_prefix="$(env_value IMAGE_PREFIX)"
-  [[ "$image_prefix" =~ ^[a-z0-9][a-z0-9._/-]*$ ]] || fail "IMAGE_PREFIX is invalid"
-  while IFS=$'\t' read -r artifact_name archive_relative archive_sha archive_bytes expected_id resolved_ref; do
-    [[ "$artifact_name" =~ ^[a-z0-9-]+$ && "$archive_relative" == "images/$artifact_name.tar.gz" \
-      && "$archive_sha" =~ ^[a-f0-9]{64}$ && "$archive_bytes" =~ ^[1-9][0-9]*$ \
-      && "$expected_id" =~ ^sha256:[a-f0-9]{64}$ ]] || fail "release image manifest entry is invalid"
-    archive_path="$release_root/$archive_relative"
-    require_root_owned_input "$archive_path" "$RELEASE_IMAGE_DIR" "image-$artifact_name"
-    actual_bytes="$(stat -c '%s' "$archive_path")"
-    [[ "$actual_bytes" == "$archive_bytes" ]] || fail "image archive byte count mismatch for $artifact_name"
-    actual_sha="$(sha256sum "$archive_path" | awk '{print $1}')"
-    [[ "$actual_sha" == "$archive_sha" ]] || fail "image archive digest mismatch for $artifact_name"
-    candidate_tag="$image_prefix/$artifact_name:$SOURCE_SHA"
-    existing_id="$(docker image inspect --format '{{.Id}}' "$candidate_tag" 2>/dev/null || true)"
-    [[ -z "$existing_id" || "$existing_id" == "$expected_id" ]] || fail "candidate image tag conflicts for $artifact_name"
-    timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" docker load --input "$archive_path" >/dev/null || fail "candidate image archive did not load for $artifact_name"
-    docker image inspect "$expected_id" >/dev/null 2>&1 || fail "loaded image ID mismatch for $artifact_name"
-    docker image tag "$expected_id" "$candidate_tag"
-    [[ "$(docker image inspect --format '{{.Id}}' "$candidate_tag")" == "$expected_id" ]] || fail "candidate image tag verification failed for $artifact_name"
-    if [[ "$resolved_ref" == "$candidate_tag" ]]; then
-      [[ "$(docker image inspect --format '{{.Id}}' "$resolved_ref")" == "$expected_id" ]] || fail "Compose image ID mismatch for $artifact_name"
-    fi
-  done < <(node - "$RELEASE_MANIFEST" <<'NODE'
-const manifest=JSON.parse(require('node:fs').readFileSync(process.argv[2]));
-for (const [name,image] of Object.entries(manifest.images ?? {})) {
-  process.stdout.write([name,image.archive?.path,image.archive?.sha256,image.archive?.bytes,image.localImageId,image.resolvedRef].join('\t')+'\n');
-}
-NODE
-  )
-  all_image_ids_matched=true
+  # The installed supervisor starts the existing archive-preflight worker only
+  # after authenticated guardian/Manager custody. A shell argv/env/FD number or
+  # a copied preflight receipt cannot supply that authority. The worker receives
+  # immutable inputs through the existing credential-bound descriptor channel.
+  # Its read-only result never authorizes load/tag. The mutation executor and
+  # this lifecycle's authenticated adapter are not installed/implemented yet.
+  fail "image mutation refused: use owner-custodied preflight; lifecycle mutation adapter is not implemented"
 }
 
 ensure_scratch_dir() {
@@ -282,7 +275,16 @@ verify_source_and_runtime() {
   [[ "$(env_value DATA_TARGET_ENV)" == disposable ]] || fail "DATA_TARGET_ENV must remain disposable"
   [[ "$(env_value APP_ORIGIN)" == "$PUBLIC_ORIGIN" ]] || fail "APP_ORIGIN does not match the beta origin"
   [[ "$(env_value NEXT_PUBLIC_APP_ORIGIN)" == "$PUBLIC_ORIGIN" ]] \
-    || fail "NEXT_PUBLIC_APP_ORIGIN does not match the beta origin"
+    || fail "NEXT_PUBLIC_APP_ORIGIN does not match the private origin"
+  [[ "$(env_value NEXT_PUBLIC_APP_URL)" == "$PUBLIC_ORIGIN" \
+    && "$(env_value PRIVATE_APP_HOST)" == "$BETA_HOST" \
+    && "$(env_value CADDY_SITE_ADDRESSES)" == "http://$BETA_HOST" ]] \
+    || fail "compiled URL/proxy host and private HTTP backend must match the private target"
+  # VM107's sole admitted private publication; never accept an arbitrary probe URL.
+  [[ "$EXPECTED_HOSTNAME" == lunchlineup-dev && "$BETA_HOST" == dev.lunchlineup.com \
+    && "$(env_value PROXY_HTTP_BIND)" == 10.231.10.108 \
+    && "$(env_value PROXY_HTTP_PORT)" == 80 ]] \
+    || fail "VM107 private HTTP publication must be exactly 10.231.10.108:80"
   [[ "$(env_value PASSWORD_RESET_EMAIL_OUTBOX_ENABLED)" == true ]] \
     || fail "password-reset email outbox must be enabled"
   [[ "$(env_value STAFF_INVITATION_OUTBOX_ENABLED)" == true ]] \
@@ -425,9 +427,9 @@ verify_http_surfaces() {
   current_check="release_surfaces"
   ensure_scratch_dir
   prepare_curl_config
-  http_release_probe direct_health http://127.0.0.1/health "$BETA_HOST" health false \
+  http_release_probe direct_health http://10.231.10.108:80/health "$BETA_HOST" health false \
     || fail "direct beta health or release identity failed"
-  http_release_probe direct_web http://127.0.0.1/ "$BETA_HOST" html false \
+  http_release_probe direct_web http://10.231.10.108:80/ "$BETA_HOST" html false \
     || fail "direct beta web or release identity failed"
   http_release_probe public_health "$PUBLIC_ORIGIN/health" '' health true \
     || fail "public beta health or release identity failed"
@@ -579,14 +581,14 @@ verify_deployed_marker() {
 pause_services() {
   current_check="compose_pause"
   local running_ids
-  running_ids="$(timeout --foreground 30s docker ps -q \
+  running_ids="$(timeout --foreground 30s env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker ps -q \
     --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
   if [[ -n "$running_ids" ]]; then
     # Word splitting is intentional: docker emits one validated container ID per line.
     timeout --foreground "$((STOP_TIMEOUT_SECONDS + 30))s" \
-      docker stop --time "$STOP_TIMEOUT_SECONDS" $running_ids >/dev/null
+      env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker stop --time "$STOP_TIMEOUT_SECONDS" $running_ids >/dev/null
   fi
-  remaining_ids="$(timeout --foreground 30s docker ps -q \
+  remaining_ids="$(timeout --foreground 30s env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker ps -q \
     --filter "label=com.docker.compose.project=$COMPOSE_PROJECT_NAME")"
   [[ -z "$remaining_ids" ]] || fail "one or more project containers remain running after pause"
   completed=true
@@ -602,7 +604,8 @@ main() {
   # Keep this lock path in sync with lunchlineup-storage-maintenance.
   require_command flock
   exec 9>/run/lock/lunchlineup-deploy.lock
-  flock -n 9 || fail "another deployment or storage cleanup owns VM107"
+  flock -n 9 || fail "another deployment or storage cleanup owns this target"
+  read_private_target
   if [[ "$ACTION" == pause ]]; then
     current_check="pause_source_identity"
     [[ "$(git -C "$APP_DIR" rev-parse HEAD)" == "$SOURCE_SHA" ]] \

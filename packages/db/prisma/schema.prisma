@@ -21,6 +21,7 @@ model Tenant {
   stripeCustomerId                   String?
   stripeSubscriptionId               String?
   stripeSubscriptionCurrentPeriodEnd DateTime?
+  selectedBillingRevision            Int       @default(0)
   status                             TenantStatus @default(TRIAL)
   trialEndsAt                        DateTime?
   gracePeriodEndsAt                  DateTime?
@@ -34,6 +35,8 @@ model Tenant {
   retentionLegalHoldReason           String?
   retentionLegalHoldByUserId         String?
 
+  cancellationTerminalEvents    TenantCancellationTerminalEvent[]
+  cancellationObservations      TenantCancellationObservation[]
   users                         User[]
   locations                     Location[]
   shifts                        Shift[]
@@ -1349,6 +1352,23 @@ model PlatformConfig {
 }
 
 model TenantSetting {
+  selectedLifecycleIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleOperationId String? @db.VarChar(128)
+  selectedLifecycleProviderIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleProviderCustomerId String? @db.VarChar(255)
+  selectedLifecycleProviderLeaseUntil DateTime?
+  selectedLifecycleProviderRequestId String? @db.VarChar(255)
+  selectedLifecycleProviderReceipt Json?
+  selectedLifecycleProviderCompletedAt DateTime?
+  selectedLifecycleProviderBillingRevision Int?
+  selectedLifecycleFinalizationIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleFinalizationReceipt Json?
+  selectedLifecycleTerminalIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleTerminalReceipt Json?
+  selectedLifecycleObservationFinalizationIntentSha256 String?
+  selectedLifecycleObservationFinalizationReceipt Json?
+  selectedLifecycleObservationTerminalIntentSha256 String?
+  selectedLifecycleObservationTerminalReceipt Json?
   id        String   @id @default(uuid())
   tenantId  String
   key       String
@@ -1364,6 +1384,7 @@ model TenantSetting {
 // ─── Billing (Part XII) ───
 
 model BillingEvent {
+  terminalCancellationReceipt TenantCancellationTerminalEvent?
   id            String   @id @default(uuid())
   tenantId      String
   type          String // invoice.paid, subscription.created, etc.
@@ -1378,6 +1399,42 @@ model BillingEvent {
   @@index([tenantId])
   @@index([type])
   @@index([createdAt])
+}
+
+model TenantCancellationObservation {
+  id                      String @id
+  tenantId                String
+  operationId             String
+  requestIntentSha256     String
+  providerIntentSha256    String
+  observationIntentSha256 String @unique
+  customerId              String
+  subscriptionId          String
+  priorReceiptSha256      String?
+  processFence            Json
+  original                Json
+  leaseOwner              String
+  leaseUntil              DateTime
+  attempts                Int
+  receipt                 Json?
+  billingRevision         Int?
+  createdAt               DateTime @default(now())
+  completedAt             DateTime?
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+  @@unique([tenantId, providerIntentSha256], map: "TenantCancellationObservation_provider_once")
+}
+
+model TenantCancellationTerminalEvent {
+  eventId   String @id
+  tenantId  String
+  receipt   Json
+  createdAt DateTime @default(now())
+
+  event BillingEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
 }
 
 enum StripeUsageMetric {
@@ -1494,6 +1551,12 @@ model NotificationOutbox {
   status           NotificationOutboxStatus @default(PENDING)
   attempts         Int                      @default(0)
   failureCount     Int                      @default(0)
+  providerIntentSha256    String? @db.VarChar(64)
+  providerRecipientSha256 String? @db.VarChar(64)
+  providerPayloadSha256   String? @db.VarChar(64)
+  providerMessageId       String? @db.VarChar(255)
+  providerOutcome         String? @db.VarChar(32)
+  providerCompletedAt     DateTime?
   nextAttemptAt    DateTime?                @default(now())
   leaseUntil       DateTime?
   deliveredAt      DateTime?

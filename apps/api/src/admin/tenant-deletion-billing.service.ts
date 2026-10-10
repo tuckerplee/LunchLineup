@@ -1,3 +1,4 @@
+import { requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { randomUUID } from 'node:crypto';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
@@ -228,6 +229,7 @@ export class TenantDeletionBillingService {
     async reconcilePendingDeletionBillingCandidate(
         tenantId: string,
     ): Promise<TenantDeletionBillingReconciliationAttempt> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         let claim: ClaimedTenantDeletionBillingCandidate | null = null;
         try {
             claim = await this.claimPendingDeletionBillingCandidate(tenantId, true);
@@ -257,6 +259,7 @@ export class TenantDeletionBillingService {
         limit: number,
         excludedTenantIds: readonly string[] = [],
     ): Promise<ClaimedTenantDeletionBillingCandidate[]> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const boundedLimit = Number.isInteger(limit) ? Math.min(Math.max(limit, 1), 100) : 25;
         const now = new Date();
         return this.tenantDb.withPlatformAdmin(async (tx) => {
@@ -323,6 +326,7 @@ export class TenantDeletionBillingService {
         claim: ClaimedTenantDeletionBillingCandidate,
         signal?: AbortSignal,
     ): Promise<Extract<TenantDeletionBillingReconciliationAttempt, { outcome: 'processed' }>> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const barrier = await this.readPendingDeletionBarrier(claim.tenantId);
         if (!barrier) {
             await this.recordReconciliationFailure(claim, true).catch(() => undefined);
@@ -346,10 +350,12 @@ export class TenantDeletionBillingService {
     }
 
     async requestDeletion(actor: TenantLifecycleActor, body: RequestTenantDeletionBody) {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         return this.requestDeletionForTarget(actor, body, actor.tenantId);
     }
 
     async requestArchivedDeletion(targetTenantId: string, actor: AdminUserLifecycleActor, body: ArchivedTenantDeletionBody) {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         actor = capturePlatformTenantActor(actor);
         if (!targetTenantId?.trim() || targetTenantId !== targetTenantId.trim()) throw new BadRequestException('Tenant not found.');
         if (targetTenantId === actor.tenantId) throw new BadRequestException('Use your own workspace account deletion flow.');

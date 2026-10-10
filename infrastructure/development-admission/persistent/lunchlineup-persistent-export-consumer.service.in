@@ -1,0 +1,29 @@
+# Dedicated export-only process; do not substitute Nest main.ts or a full API unit.
+[Unit]
+Description=Exact-instance admitted export consumer
+Requires=lunchlineup-persistent-export-owner.service
+After=lunchlineup-persistent-export-owner.service
+BindsTo=lunchlineup-persistent-export-owner.service
+
+[Service]
+Type=exec
+User=PINNED_APP_USER
+Group=PINNED_APP_GROUP
+UMask=0077
+Environment=TENANT_EXPORT_PILOT_MODE=true
+EnvironmentFile=PINNED_PROTECTED_EXPORT_ENV
+ExecStart=PINNED_NODE PINNED_COMPILED_EXPORT_ENTRY
+RuntimeMaxSec=PINNED_CONSUMER_LIFETIME
+TimeoutStopSec=PINNED_CONSUMER_STOP_BOUND
+KillMode=control-group
+Restart=no
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=PINNED_EXPORT_ARTIFACT_DIRECTORY
+MemoryMax=PINNED_CONSUMER_MEMORY
+TasksMax=PINNED_CONSUMER_PIDS
+CPUQuota=PINNED_CONSUMER_CPU
+LimitCORE=0
+StandardOutput=null
+StandardError=journal
+# Network/DB identity, quotas, TLS, LSM and IO confinement require admitted policy.

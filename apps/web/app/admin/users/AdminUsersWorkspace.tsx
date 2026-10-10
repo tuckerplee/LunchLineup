@@ -11,6 +11,7 @@ import {
     retainAdminListSelection,
     type AdminListPagination,
 } from '../admin-list-pagination';
+import { requireAdminPinReset, requireAdminMfaReset } from './admin-recovery-result';
 import { canMutateAdminUserLifecycle, resolveAdminUserStatus, type AdminUserStatus } from './admin-user-lifecycle';
 
 type UserRole = 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
@@ -218,6 +219,8 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const [tenantLoading, setTenantLoading] = useState(true);
     const [tenantLoadingMore, setTenantLoadingMore] = useState(false);
     const [savingKey, setSavingKey] = useState<string | null>(null);
+    const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
+    const recoveryInFlight = useRef(false);
     const [message, setMessage] = useState<Banner>(null);
     const [temporaryPin, setTemporaryPin] = useState<{ userId: string; pin: string } | null>(null);
     const userRequestId = useRef(0);
@@ -377,29 +380,33 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     }, [form, refreshUsers, selectedUser]);
 
     const resetPin = useCallback(async () => {
+        if (recoveryInFlight.current) return;
         if (!selectedUser || isSelf || !selectedUser.username || selectedUser.status === 'DELETED' || selectedUser.status === 'SUSPENDED') return;
         if (!window.confirm(`Reset the PIN for ${selectedUser.name}? This signs them out of all sessions.`)) return;
-        setSavingKey(`pin:${selectedUser.id}`);
+        recoveryInFlight.current = true;
+        setRecoveryKey(`pin:${selectedUser.id}`);
         setMessage(null);
+        setTemporaryPin(null);
         try {
-            const payload = await writeJson<{ temporaryPin?: string; username?: string; pinResetRequired?: boolean }>(
+            const payload = await writeJson<unknown>(
                 `/admin/users/${selectedUser.id}/pin/reset`,
                 'POST',
                 {},
             );
-            setTemporaryPin(payload.temporaryPin
-                ? { userId: selectedUser.id, pin: payload.temporaryPin }
-                : null);
+            const result = requireAdminPinReset(payload, selectedUser.id);
+            setTemporaryPin({ userId: selectedUser.id, pin: result.temporaryPin });
             setMessage({ tone: 'success', text: `PIN reset for ${selectedUser.name}.` });
             await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
-            setSavingKey(null);
+            recoveryInFlight.current = false;
+            setRecoveryKey(null);
         }
     }, [isSelf, refreshUsers, selectedUser]);
 
     const resetMfa = useCallback(async () => {
+        if (recoveryInFlight.current) return;
         if (!selectedUser || isSelf || !selectedUser.mfaEnabled || !canMutateAdminUserLifecycle(selectedUser.status) || selectedUser.status === 'SUSPENDED') return;
         const expected = `reset-mfa:${selectedUser.id}`;
         const confirmation = typeof window === 'undefined'
@@ -417,16 +424,19 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             return;
         }
 
-        setSavingKey(`mfa:${selectedUser.id}`);
+        recoveryInFlight.current = true;
+        setRecoveryKey(`mfa:${selectedUser.id}`);
         setMessage(null);
         try {
-            await writeJson(`/admin/users/${selectedUser.id}/mfa/reset`, 'POST', { confirmation, reason: reason.trim() });
+            const payload = await writeJson<unknown>(`/admin/users/${selectedUser.id}/mfa/reset`, 'POST', { confirmation, reason: reason.trim() });
+            requireAdminMfaReset(payload, selectedUser.id);
             setMessage({ tone: 'success', text: `MFA factors cleared for ${selectedUser.name}; all sessions were revoked.` });
             await refreshUsers();
         } catch (error) {
             setMessage({ tone: 'error', text: (error as Error).message });
         } finally {
-            setSavingKey(null);
+            recoveryInFlight.current = false;
+            setRecoveryKey(null);
         }
     }, [isSelf, refreshUsers, selectedUser]);
 
@@ -489,7 +499,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         setMessage(null);
     }, []);
 
-    const actionDisabled = loading || !selectedUser;
+    const actionDisabled = loading || !selectedUser || recoveryKey !== null;
     const saveDisabled = actionDisabled || selectedIsDeleted || savingKey === `save:${selectedUser?.id ?? ''}`;
     const pinDisabled = actionDisabled || isSelf || !selectedUser?.username || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `pin:${selectedUser?.id ?? ''}`;
     const mfaDisabled = actionDisabled || isSelf || !selectedUser?.mfaEnabled || selectedUser?.status === 'SUSPENDED' || selectedIsDeleted || savingKey === `mfa:${selectedUser?.id ?? ''}`;
@@ -646,7 +656,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                             {users.map((user, index) => {
                                 const isSelected = user.id === selectedUserId;
                                 const rowIsSelf = Boolean(currentUserId && user.id === currentUserId);
-                                const rowBusy = Boolean(savingKey && savingKey.endsWith(`:${user.id}`));
+                                const rowBusy = recoveryKey !== null || Boolean(savingKey && savingKey.endsWith(`:${user.id}`));
                                 const isLocked = user.status === 'LOCKED';
                                 const isSuspended = user.status === 'SUSPENDED';
                                 const isDeleted = user.status === 'DELETED';
@@ -1001,7 +1011,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     {savingKey === `save:${selectedUser.id}` ? 'Saving...' : 'Save changes'}
                                 </button>
                                 <button className="btn btn-secondary" type="button" onClick={() => void resetPin()} disabled={pinDisabled}>
-                                    {savingKey === `pin:${selectedUser.id}` ? 'Resetting PIN...' : 'Reset PIN'}
+                                    {recoveryKey === `pin:${selectedUser.id}` ? 'Resetting PIN...' : 'Reset PIN'}
                                 </button>
                                 <button
                                     className="btn btn-secondary"
@@ -1009,7 +1019,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                                     onClick={() => void resetMfa()}
                                     disabled={mfaDisabled}
                                 >
-                                    {savingKey === `mfa:${selectedUser.id}` ? 'Resetting MFA...' : 'Reset MFA'}
+                                    {recoveryKey === `mfa:${selectedUser.id}` ? 'Resetting MFA...' : 'Reset MFA'}
                                 </button>
                                 {selectedUser.status === 'SUSPENDED' ? (
                                     <button

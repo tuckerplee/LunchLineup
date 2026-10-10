@@ -1,3 +1,5 @@
+import { consumePersistentImportPermit } from '../admin/persistent-export-consumer';
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import {
     Injectable,
     Logger,
@@ -36,6 +38,12 @@ function workerInteger(name: string, fallback: number, minimum: number, maximum:
 @Injectable()
 export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestroy {
     private readonly logger = new Logger(AvailabilityImportPublisher.name);
+    private readonly pilotClosed = pilotProducersClosed();
+    private ownerClosed = false;
+    private ownerUsed = false;
+    private ownerUnknown = false;
+    private ownerOperation?: Promise<boolean>;
+    private ownerClose?: Promise<void>;
     private timer?: NodeJS.Timeout;
     private activeSweep?: Promise<void>;
     private shutdown?: Promise<void>;
@@ -46,6 +54,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     constructor(private readonly tenantDb: TenantPrismaService) {}
 
     onModuleInit(): void {
+        if (pilotProducersClosed()) return;
         if (this.lifecycle !== 'starting') return;
         this.lifecycle = 'ready';
         this.timer = setInterval(() => this.kick(), PUBLISH_INTERVAL_MS);
@@ -53,7 +62,141 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
         this.kick();
     }
 
+    assertPersistentOwnerReady(): void {
+        if (!this.pilotClosed || this.ownerClosed || this.ownerUsed || this.timer || this.activeSweep
+            || this.lifecycle !== 'starting') throw new Error('Import publisher is not closed and unused.');
+    }
+
+    runPersistentOwnerImport(permit: object): Promise<boolean> {
+        const selected = consumePersistentImportPermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        this.ownerOperation = Promise.resolve().then(() => selected.effect === 'publish-exact-import'
+            ? this.publishSelected(selected) : this.reconcileSelectedAcceptance(selected))
+            .catch((error) => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    closeAdmission(): Promise<void> {
+        this.ownerClosed = true;
+        if (this.ownerClose) return this.ownerClose;
+        this.ownerClose = (async () => {
+            try { await this.ownerOperation; } catch { this.ownerUnknown = true; }
+            if (this.ownerUnknown) throw new Error('Import publication requires independent reconciliation.');
+        })();
+        return this.ownerClose;
+    }
+
+    private assertOwnerOpen(expires: number): void {
+        if (!this.pilotClosed || !this.ownerUsed || this.ownerClosed || performance.now() >= expires) {
+            throw new Error('Selected import publication admission is closed.');
+        }
+    }
+
+    private async reconcileSelectedAcceptance(selected: { jobId: string; tenantId: string; expires: number }): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        const rows = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+            this.assertOwnerOpen(selected.expires);
+            return tx.$queryRaw<Array<{ id: string; tenantId: string; attempts: number; startedAt: Date }>>(Prisma.sql`
+                WITH candidate AS (
+                    SELECT "id" FROM "AvailabilityImportJob"
+                    WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId}
+                        AND "publicationStatus" <> 'PUBLISHED' AND "status" <> 'PENDING'
+                        AND "attempts" > 0 AND "startedAt" IS NOT NULL
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE "AvailabilityImportJob" job
+                SET "publicationStatus" = 'PUBLISHED', "publishToken" = NULL, "publishLeaseUntil" = NULL,
+                    "publicationAmbiguous" = FALSE, "publishLastError" = NULL,
+                    "publishedAt" = COALESCE(job."publishedAt", job."startedAt", CURRENT_TIMESTAMP),
+                    "queuedAt" = COALESCE(job."queuedAt", job."startedAt", CURRENT_TIMESTAMP),
+                    "updatedAt" = CURRENT_TIMESTAMP
+                FROM candidate WHERE job."id" = candidate."id" AND job."tenantId" = ${selected.tenantId}
+                RETURNING job."id", job."tenantId", job."attempts", job."startedAt"
+            `);
+        });
+        this.assertOwnerOpen(selected.expires);
+        if (!rows.length) return false;
+        if (rows.length !== 1 || rows[0].id !== selected.jobId || rows[0].tenantId !== selected.tenantId
+            || rows[0].attempts <= 0 || !rows[0].startedAt) throw new Error('Selected import acceptance readback differs.');
+        // Only publication acceptance is reconciled. Worker completion, retry and expiry are untouched.
+        return true;
+    }
+
+    private async publishSelected(selected: { jobId: string; tenantId: string; expires: number }): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        const publishToken = randomUUID();
+        const leaseUntil = new Date(Date.now() + Math.max(1, Math.ceil(selected.expires - performance.now())));
+        const rows = await this.tenantDb.withTenant(selected.tenantId, async (tx) => {
+            this.assertOwnerOpen(selected.expires);
+            return tx.$queryRaw<ClaimedPublication[]>(Prisma.sql`
+                WITH candidate AS (
+                    SELECT "id" FROM "AvailabilityImportJob"
+                    WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId}
+                        AND "status" = 'PENDING' AND "publicationStatus" = 'PENDING'
+                        AND "publishAttempts" = 0 AND "attempts" = 0
+                        AND "publishToken" IS NULL AND "executionToken" IS NULL
+                        AND "publicationAmbiguous" = FALSE
+                        AND "nextPublishAt" <= CURRENT_TIMESTAMP AND "expiresAt" > CURRENT_TIMESTAMP
+                    FOR UPDATE SKIP LOCKED
+                )
+                UPDATE "AvailabilityImportJob" job
+                SET "publicationStatus" = 'PUBLISHING', "publishToken" = ${publishToken},
+                    "publishLeaseUntil" = ${leaseUntil}, "publishAttempts" = job."publishAttempts" + 1,
+                    "publicationAmbiguous" = TRUE, "publishLastError" = NULL, "updatedAt" = CURRENT_TIMESTAMP
+                FROM candidate WHERE job."id" = candidate."id" AND job."tenantId" = ${selected.tenantId}
+                RETURNING job."id", job."tenantId", job."publishToken", job."publishAttempts", job."attempts"
+            `);
+        });
+        this.assertOwnerOpen(selected.expires);
+        if (!rows.length) return false;
+        if (rows.length !== 1 || rows[0].id !== selected.jobId || rows[0].tenantId !== selected.tenantId
+            || rows[0].publishToken !== publishToken || rows[0].publishAttempts !== 1 || rows[0].attempts !== 0) {
+            throw new Error('Selected import claim differs.');
+        }
+        let connection: Awaited<ReturnType<typeof amqp.connect>> | undefined;
+        let channel: amqp.ConfirmChannel | undefined;
+        try {
+            // Await actual promises; a late result remains owned after terminal admission close.
+            connection = await amqp.connect(process.env.RABBITMQ_URL!);
+            this.assertOwnerOpen(selected.expires);
+            channel = await connection.createConfirmChannel();
+            this.assertOwnerOpen(selected.expires);
+            await channel.checkQueue(process.env.WORKER_QUEUE_NAME!);
+            this.assertOwnerOpen(selected.expires);
+            let returned = false;
+            channel.on('return', () => { returned = true; });
+            channel.sendToQueue(process.env.WORKER_QUEUE_NAME!, Buffer.from(JSON.stringify({
+                type: 'pdf.parse', job_id: selected.jobId, retry_count: 0,
+                payload: { import_id: selected.jobId, tenant_id: selected.tenantId },
+            })), { persistent: true, mandatory: true, contentType: 'application/json', messageId: selected.jobId });
+            await channel.waitForConfirms();
+            if (returned) throw new Error('Selected import message was returned by the broker.');
+            this.assertOwnerOpen(selected.expires);
+            const changed = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+                this.assertOwnerOpen(selected.expires);
+                return tx.$executeRaw`
+                UPDATE "AvailabilityImportJob"
+                SET "publicationStatus" = 'PUBLISHED', "publishToken" = NULL, "publishLeaseUntil" = NULL,
+                    "publicationAmbiguous" = FALSE, "publishLastError" = NULL,
+                    "publishedAt" = CURRENT_TIMESTAMP, "queuedAt" = CURRENT_TIMESTAMP, "updatedAt" = CURRENT_TIMESTAMP
+                WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId}
+                    AND "publicationStatus" = 'PUBLISHING' AND "publishToken" = ${publishToken}
+                    AND "publishAttempts" = 1 AND "publishLeaseUntil" > CURRENT_TIMESTAMP
+                `;
+            });
+            if (changed !== 1) throw new Error('Selected import acknowledgement fence differs.');
+            this.assertOwnerOpen(selected.expires);
+        } finally {
+            try { if (channel) await channel.close(); }
+            finally { if (connection) await connection.close(); }
+        }
+        this.assertOwnerOpen(selected.expires);
+        return true;
+    }
+
     onModuleDestroy(): Promise<void> {
+        if (this.pilotClosed) return this.closeAdmission();
         if (this.shutdown) return this.shutdown;
         this.lifecycle = 'draining';
         if (this.timer) {
@@ -71,6 +214,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     kick(): void {
+        requireOrdinaryProducer('availability import publication');
         if (!this.isReady() || this.activeSweep) return;
         this.activeSweep = this.publishPending()
             .catch((error) => {
@@ -84,6 +228,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async publishPending(): Promise<void> {
+        requireOrdinaryProducer('availability import publishPending');
         await this.reconcileWorkerAccepted();
         await this.recoverExpiredExecutions();
         const claimed = await this.claim();
@@ -91,6 +236,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async reconcileWorkerAccepted(): Promise<void> {
+        requireOrdinaryProducer('availability import reconcileWorkerAccepted');
         await this.tenantDb.withPlatformAdmin((tx: any) => tx.$executeRaw(Prisma.sql`
             UPDATE "AvailabilityImportJob"
             SET
@@ -110,6 +256,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async recoverExpiredExecutions(): Promise<void> {
+        requireOrdinaryProducer('availability import recoverExpiredExecutions');
         // A confirmed broker message can disappear after its worker crashes. Revoke
         // expired owners or stale missing ownership, then reuse durable publication.
         // Source bytes and the original debit remain intact; workers still validate
@@ -156,6 +303,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async claim(): Promise<ClaimedPublication[]> {
+        requireOrdinaryProducer('availability import claim');
         const now = new Date();
         const leaseUntil = new Date(now.getTime() + PUBLISH_LEASE_MS);
         const publishToken = randomUUID();

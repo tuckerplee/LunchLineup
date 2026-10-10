@@ -54,7 +54,7 @@ function activeTimeCardQuery(userId: string, canManageTeam: boolean): string {
 
 export type TimeCardSnapshot = {
     activeCard: TimeCard | null;
-    historyResponse: Response;
+    historyResponse: Response | null;
 };
 
 export async function fetchTimeCardSnapshot(userId: string, canManageTeam: boolean): Promise<TimeCardSnapshot> {
@@ -62,7 +62,9 @@ export async function fetchTimeCardSnapshot(userId: string, canManageTeam: boole
     const activeQuery = activeTimeCardQuery(userId, canManageTeam);
     const [activeResponse, historyResponse] = await Promise.all([
         fetchWithSession('/time-cards/active?' + activeQuery),
-        fetchWithSession('/time-cards?' + query),
+        // History is optional for closing an independently verified open card.
+        // A network rejection must behave like an unavailable HTTP response.
+        fetchWithSession('/time-cards?' + query).catch(() => null),
     ]);
     if (!activeResponse.ok) throw new Error('Unable to load active time card.');
 

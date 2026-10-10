@@ -1,0 +1,26 @@
+# Separate finite authority, NOT the native QA20s observer or live Manager key.
+[Unit]
+Description=Persistent export exact-instance crash containment
+After=lunchlineup-persistent-export-owner.service
+
+[Service]
+Type=exec
+User=root
+Group=root
+UMask=0077
+ExecStart=PINNED_PYTHON -I /usr/local/libexec/lunchlineup/development-persistent-export.py recovery
+RuntimeMaxSec=PINNED_RECOVERY_LIFETIME
+TimeoutStopSec=PINNED_RECOVERY_STOP_BOUND
+KillMode=control-group
+Restart=no
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=PINNED_JOURNAL_DIRECTORY
+MemoryMax=PINNED_RECOVERY_MEMORY
+TasksMax=PINNED_RECOVERY_PIDS
+CPUQuota=PINNED_RECOVERY_CPU
+LimitCORE=0
+StandardOutput=null
+StandardError=journal
+# Owner public verification key + distinct recovery private signing key only.

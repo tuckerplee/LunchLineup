@@ -358,6 +358,30 @@
       "requiresOldReleaseProof": true,
       "rationale": "Retain the private owner-only legacy import receipt catalog, immutable mappings, generation and admission/count guards during rollback; isolated old-release proof must cover public application writes, lifecycle purge and owner/ACL isolation while old code ignores private receipts, whose destructive removal waits until after the rollback window."
     },
+    "packages/db/prisma/migrations/20261010_zz_selected_cancellation_provider_receipt.sql": {
+      "sha256": "89eff4b5a6835166a3c27cd1621a620d4f9f2aad2a0271f2896767a1098f6840",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain exact request0-to-provider1 fencing and immutable provider receipt across rollback; never restore the request-only function over consumed provider rows or remove columns/fences. New forward SQL sorts after initial request fence on fresh installs. Hold all senders through schema, both forward migrations, ledger receipts and matching client. Require native exact-transition, old-writer, retention/RLS/concurrency and rollback proof. Provider acceptance/readback is separate from local paid-through/finalization; unknown outcome never releases or retries the claim."
+    },
+    "packages/db/prisma/migrations/20261010_selected_cancellation_request_fence.sql": {
+      "sha256": "4dbfb14e1ed4a2f360ca42ecd9db511fd5e4b203acfb9949f78c11c005619d1f",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain the exact selected request-only fence on TenantSetting across rollback. It rejects ordinary/old claim, reset, stale-terminalization, value replacement and delete/recreate while preserving platform-admin PURGED/no-hold tenant retention deletion. Sender/request admission stays held through schema/trigger/ledger/client installation. Require native NULL/identity checks, RBAC/MFA, old-writer batch failure, retention purge and rollback proof. Provider dispatch and local finalization require separately reviewed successors; never drop a fence to enable retries."
+    },
+    "packages/db/prisma/migrations/20261010_notification_provider_receipts.sql": {
+      "sha256": "ca63612c97f931daf2fbe2a49948d88e5759df89a43a29ac946cd97fd840776e",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain selected-provider identity, generation/retry fences and accepted/skipped receipts across rollback. Hold all senders through schema expansion and atomic post-migration ledger receipt. Drain old owners; the database rejects old reclaim/failure transitions on selected rows, which can fail an entire legacy claim batch. Old-release compatibility, terminal erasure, deletion/cascades, tenant RLS, initial claims, uncertain outcomes and exact receipt transitions require isolated proof before admission. Never drop fences or reset counters to make an old worker run; unknown outcomes are not retry permission."
+    },
     "packages/db/prisma/migrations/20261004_notification_outbox_failure_budget.sql": {
       "sha256": "04b20ca630b199328170b168b221eb2441a1f560d68507dc9cb2c3524f6802e0",
       "phase": "expand-contract",
@@ -485,6 +509,38 @@
       "contractPhase": "compatibility-proven-inline",
       "requiresOldReleaseProof": true,
       "rationale": "Retain the pre-schema notification failure budget column, NULL-only historical backfill and default/nonNULL transition during rollback; isolated old-release proof must cover old outbox claims, retry/terminal/read-marker behavior and fresh/pre-schema ordering without resetting known counters before compatibility is accepted."
+    },
+    "packages/db/prisma/migrations/20261010_zzz_selected_cancellation_finalization.sql": {
+      "sha256": "7f1ab73446e752309b2b3c48fd8e001050915b76d00e69b223566b882260bc2b",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain database-owned billing revisions, atomic new-receipt capture and immutable local finalization. No historical receipt revision backfill, no counter reset, no restoration of earlier selected-request functions over finalized rows. Old writers remain fenced; fresh/upgrade order, callback/commit uncertainty, RLS and privacy retention require isolated King proof."
+    },
+    "packages/db/prisma/migrations/20261010_zzzz_selected_cancellation_terminal_convergence.sql": {
+      "sha256": "52421f8c0ac67cd43683fb5a86188caef5c34d2194ed95571f0a24821d53fadd",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain immutable verified terminal application evidence, invalidation on parent event mutation, appended local convergence receipt and original request/provider/finalization fences. No historical authentication or chronology backfill; old writers remain fenced. Native RLS, retained-record purge, same-second chronology, replay and rollback proof required."
+    },
+    "packages/db/prisma/migrations/20261010_zzzzz_selected_cancellation_observation.sql": {
+      "sha256": "408a896e8c31474c3340eb50d866518555f9ba8986813dfc996756511b0f5168",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain separate consumed observation claims/results and original provider fences. Never clear a claim after GET uncertainty or restore an old DB snapshot as retry authority. Fresh independent admission must reconcile external custody after storage restore. Old-release retention purge must include this child or remain held; native RLS, concurrency, callback/commit uncertainty, rollback and privacy purge proof required."
+    },
+    "packages/db/prisma/migrations/20261010_zzzzzz_selected_observation_settlement.sql": {
+      "sha256": "436b14df571b53f6058486302a69acf429fcd2559aaba8c5412c4b57234ad884",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain immutable observation-linked local completion and subsequent verified-terminal receipt with original request/provider/finalization nulls and fences unchanged. Do not restore earlier CHECK/functions over reconciled rows. Old serializers and batches remain held until native original/reconciled replay, atomic billing/history/audit, RLS/retention, rollback and concurrency proof; no provider retry or historical backfill."
     }
   }
 }

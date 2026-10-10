@@ -3,6 +3,13 @@
 # temporary database. The live database is never dropped or restored over.
 set -euo pipefail
 
+# This entry point can mutate a database independently of lifecycle. Until the
+# installed target/storage/hold guard and inherited-lock admission are reviewed,
+# refuse both standalone and child invocation before traps, Docker or scratch.
+# No environment flag may bypass this boundary.
+echo 'Private backup proof blocked: installed target guard and shared-lock admission are not implemented.' >&2
+exit 1
+
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 RUNTIME_ENV="${BETA_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
 SOURCE_SHA="${BETA_CANDIDATE_SHA:-}"
@@ -65,7 +72,7 @@ env_path() {
 
 compose() {
   timeout --foreground "${COMMAND_TIMEOUT_SECONDS}s" \
-    docker compose \
+    env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker compose \
       --project-name "$COMPOSE_PROJECT_NAME" \
       --project-directory "$APP_DIR" \
       --env-file "$RUNTIME_ENV" \
@@ -81,7 +88,7 @@ cleanup() {
   local cleanup_status=0
   if [[ -n "$restore_database" ]]; then
     timeout --foreground "${CLEANUP_TIMEOUT_SECONDS}s" \
-      docker compose \
+      env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker compose \
         --project-name "$COMPOSE_PROJECT_NAME" \
         --project-directory "$APP_DIR" \
         --env-file "$RUNTIME_ENV" \
@@ -144,9 +151,9 @@ current_check="postgres_health"
 compose config --quiet
 postgres_id="$(compose ps -q postgres)"
 [[ -n "$postgres_id" ]] || fail "postgres container is not running"
-[[ "$(timeout --foreground 30s docker inspect --format '{{.State.Status}}' "$postgres_id")" == running ]] \
+[[ "$(timeout --foreground 30s env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker inspect --format '{{.State.Status}}' "$postgres_id")" == running ]] \
   || fail "postgres container is not running"
-[[ "$(timeout --foreground 30s docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$postgres_id")" == healthy ]] \
+[[ "$(timeout --foreground 30s env -i PATH=/usr/bin:/bin /usr/bin/docker --host unix:///var/run/docker.sock --config /etc/lunchlineup/docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$postgres_id")" == healthy ]] \
   || fail "postgres container is not healthy"
 
 current_check="snapshot"
