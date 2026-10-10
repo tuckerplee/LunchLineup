@@ -1,0 +1,1 @@
+export function mockUxConfiguration(): null | { kind: string; sourceSha: string; runId: string; selectionSha256: string; servers: Array<{ command: string; url: string; reuseExistingServer: boolean; timeout: number }>; traces: string; chromiumSandbox: boolean; expectedWorkers: number };

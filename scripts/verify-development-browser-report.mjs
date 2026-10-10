@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { MOCK_SERVERS } from './fixed-mock-ux.mjs';
+
+const MOCK_CASES = [{"file":"authenticated-mobile-layout.spec.ts","titlePath":["authenticated-mobile-layout.spec.ts","Authenticated mobile dashboard layout","keeps the permission-aware manager shell reachable at 375px"],"project":"chromium"},{"file":"authenticated-mobile-layout.spec.ts","titlePath":["authenticated-mobile-layout.spec.ts","Authenticated mobile dashboard layout","keeps the permission-aware manager shell reachable at 768px"],"project":"chromium"},{"file":"frontend-accessibility.spec.ts","titlePath":["frontend-accessibility.spec.ts","Frontend accessibility launch contracts","submits onboarding steps with Enter and focuses validation errors"],"project":"chromium"},{"file":"frontend-accessibility.spec.ts","titlePath":["frontend-accessibility.spec.ts","Frontend accessibility launch contracts","operates dashboard dialogs, settings tabs, pack labels, and mobile sign-out by keyboard"],"project":"chromium"},{"file":"tenant-mobile-long-content.spec.ts","titlePath":["tenant-mobile-long-content.spec.ts","Tenant long-content mobile layout","keeps long tenant identity, complete summaries and paged context readable without writes at 320px"],"project":"chromium"},{"file":"tenant-mobile-long-content.spec.ts","titlePath":["tenant-mobile-long-content.spec.ts","Tenant long-content mobile layout","keeps long tenant identity, complete summaries and paged context readable without writes at 393px"],"project":"chromium"},{"file":"tenant-mobile-long-content.spec.ts","titlePath":["tenant-mobile-long-content.spec.ts","Tenant long-content mobile layout","keeps long tenant identity, complete summaries and paged context readable without writes at 768px"],"project":"chromium"},{"file":"tenant-mobile-long-content.spec.ts","titlePath":["tenant-mobile-long-content.spec.ts","Tenant long-content mobile layout","keeps long tenant identity, complete summaries and paged context readable without writes at 1280px"],"project":"chromium"}];
 
 function requireProof(condition, message) {
   if (!condition) throw new Error(`Incomplete disposable browser proof: ${message}`);
@@ -42,12 +45,41 @@ function verifyWorkerLifecycles(executions, stats) {
   }
 }
 
-function cases(report, executed) {
+function verifyMockWorkerLifecycles(executions, stats) {
+  const expected = MOCK_CASES;
+  const sorted = [...executions].sort((a, b) => a.start - b.start);
+  requireProof(sorted.length === 8, 'mock lifecycle case count');
+  let end = timestamp(stats?.startTime);
+  requireProof(Number.isFinite(stats?.duration) && stats.duration >= 0, 'mock report duration');
+  const reportEnd = end + stats.duration;
+  for (let index = 0; index < sorted.length; index++) {
+    const row = sorted[index];
+    requireProof(key(row) === key(expected[index]) && row.worker === (index < 4 ? 0 : 1) &&
+      row.start >= end && row.end <= reportEnd, 'mock worker/group order, restart, gap or overlap');
+    end = row.end;
+  }
+}
+function mockServerContract(report) {
+  const value = report.config?.metadata?.fixedMockUx;
+  requireProof(value?.kind === 'fixed-eight-mock-ux' && value.expectedWorkers === 2 &&
+    value.traces === 'on' && value.chromiumSandbox === true &&
+    JSON.stringify(value.servers) === JSON.stringify(MOCK_SERVERS),
+    'mock fixed server/worker contract');
+  if (report.config.webServer != null) {
+    requireProof(Array.isArray(report.config.webServer) &&
+      JSON.stringify(report.config.webServer.map(({ command, url, reuseExistingServer, timeout }) =>
+        ({ command, url, reuseExistingServer, timeout }))) === JSON.stringify(MOCK_SERVERS),
+      'mock config-owned server mismatch');
+  }
+}
+
+function cases(report, executed, mockUx = false) {
   requireProof(Array.isArray(report?.errors) && report.errors.length === 0, 'global report errors');
   requireProof(report.config?.workers === 1 && report.config?.forbidOnly === true &&
-    report.config?.shard == null && report.config?.webServer == null, 'worker/focus/shard/server policy');
+    report.config?.shard == null && (mockUx || report.config?.webServer == null), 'worker/focus/shard/server policy');
+  if (mockUx) mockServerContract(report);
   requireProof(Array.isArray(report.config.projects), 'project configuration');
-  if (executed) requireProof(report.config.metadata?.actualWorkers === 1, 'actual worker count');
+  if (executed) requireProof(report.config.metadata?.actualWorkers === (mockUx ? 2 : 1), 'actual worker count');
   const rows = [];
   const executions = [];
   const ids = new Set();
@@ -80,7 +112,7 @@ function cases(report, executed) {
             'missing/invalid execution duration');
           const end = start + result.duration;
           requireProof(Number.isFinite(new Date(end).getTime()), 'invalid execution interval');
-          executions.push({ project: test.projectName, worker: result.workerIndex, start, end });
+          executions.push({ file: spec.file, titlePath: [...titlePath, spec.title], project: test.projectName, worker: result.workerIndex, start, end });
         } else {
           // Playwright's --list JSON reports each unexecuted case as skipped.
           // Execution must independently pass the checks above.
@@ -93,7 +125,7 @@ function cases(report, executed) {
   }
   visit(report.suites);
   requireProof(rows.length > 0 && new Set(rows.map(key)).size === rows.length, 'empty/duplicate selected cases');
-  if (executed) verifyWorkerLifecycles(executions, report.stats);
+  if (executed) (mockUx ? verifyMockWorkerLifecycles : verifyWorkerLifecycles)(executions, report.stats);
   if (!executed) requireProof(report.stats?.expected === 0 && report.stats.skipped === rows.length &&
     report.stats.unexpected === 0 && report.stats.flaky === 0, 'inconsistent unexecuted selection summary');
   return rows;
@@ -107,7 +139,9 @@ export function verifyDevelopmentSelection(manifest, lane, selection) {
     typeof value.file === 'string' && typeof value.project === 'string' &&
     Array.isArray(value.titlePath) && value.titlePath.length > 0 && value.titlePath.every(title => typeof title === 'string')) &&
     new Set(expected.map(key)).size === expected.length, 'invalid/duplicate expected cases');
-  const selected = cases(selection, false);
+  const mockUx = lane === 'mock-ux';
+  if (mockUx) requireProof(JSON.stringify(expected) === JSON.stringify(MOCK_CASES), 'fixed eight mock identities');
+  const selected = cases(selection, false, mockUx);
   const expectedKeys = new Set(expected.map(key));
   requireProof(selected.length === expected.length && selected.every(value => expectedKeys.has(key(value))), 'selection differs from reviewed manifest');
   if (lane === 'fullstack') requireProof(selected.every(value => Array.isArray(value.tags) && value.tags.includes('full-stack')), 'native acceptance tag');
@@ -116,7 +150,9 @@ export function verifyDevelopmentSelection(manifest, lane, selection) {
 
 export function verifyDevelopmentBrowserReport(manifest, lane, selection, report) {
   const selected = verifyDevelopmentSelection(manifest, lane, selection);
-  const actual = cases(report, true);
+  if (lane === 'mock-ux') requireProof(JSON.stringify(selection.config.metadata.fixedMockUx) ===
+    JSON.stringify(report.config?.metadata?.fixedMockUx), 'mock source/run contract changed after selection');
+  const actual = cases(report, true, lane === 'mock-ux');
   const selectedIds = new Map(selected.map(value => [key(value), value.id]));
   requireProof(actual.length === selected.length && actual.every(value => selectedIds.get(key(value)) === value.id), 'execution differs from selected cases');
   if (lane === 'fullstack') {
@@ -127,6 +163,7 @@ export function verifyDevelopmentBrowserReport(manifest, lane, selection, report
   requireProof(stats?.expected === selected.length && stats.unexpected === 0 && stats.skipped === 0 && stats.flaky === 0, 'incomplete summary');
   return { kind: 'exact-disposable-development-browser-report', releaseQualified: false, lane,
     passed: true, selected: selected.length, executed: actual.length, workers: 1, retries: 0,
+    ...(lane === 'mock-ux' ? { actualWorkers: 2, fixedServerContract: report.config.metadata.fixedMockUx } : {}),
     cases: actual.map(({ tags: _tags, ...value }) => value) };
 }
 
@@ -142,6 +179,9 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     requireProof(/^[a-f0-9]{40}$/.test(candidateSha) && /^[a-zA-Z0-9-]+$/.test(runId), 'controller identity');
     const proof = verifyDevelopmentBrowserReport(manifest, lane, selection, read(reportPath));
     const digest = path => createHash('sha256').update(readFileSync(path)).digest('hex');
+    if (lane === 'mock-ux') requireProof(proof.fixedServerContract.sourceSha === candidateSha &&
+      proof.fixedServerContract.runId === runId && proof.fixedServerContract.selectionSha256 === digest(manifestPath),
+      'mock report candidate/run/manifest binding');
     console.log(JSON.stringify({ ...proof, candidateSha, runId, manifestSha256: digest(manifestPath),
       selectionSha256: digest(selectionPath), reportSha256: digest(reportPath) }));
   }

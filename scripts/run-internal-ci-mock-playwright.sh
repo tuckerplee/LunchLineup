@@ -4,6 +4,12 @@ umask 077
 [[ "${1:-}" == --source-context && -n "${2:-}" && $# == 2 ]] || { echo 'Usage: run-internal-ci-mock-playwright.sh --source-context <context.json>' >&2; exit 64; }
 context=$2; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"
 test "$context" = "$source_root/source-context.json"; node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build >/dev/null
+if node "$build_root/scripts/fixed-mock-ux.mjs" --selected; then
+  exec node "$build_root/scripts/fixed-mock-ux.mjs" --run
+else
+  fixed_status=$?
+  [[ "$fixed_status" == 77 ]] || exit "$fixed_status"
+fi
 output="$artifact_root/mock-playwright"; mkdir -p "$output" "$artifact_root/results" "$artifact_root/details"; started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ); cd "$build_root/apps/web"
 npx playwright install chromium firefox >"$output/install.log" 2>&1
 E2E_FULL_STACK=0 E2E_MOCK_API=1 E2E_SIGNUP_MODE=closed_beta PLAYWRIGHT_JSON_OUTPUT_NAME="$output/results.json" npx playwright test --reporter=json >"$output/test.log" 2>&1

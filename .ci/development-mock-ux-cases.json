@@ -1,0 +1,80 @@
+{
+  "version": 1,
+  "releaseQualified": false,
+  "lanes": {
+    "mock-ux": [
+      {
+        "file": "authenticated-mobile-layout.spec.ts",
+        "titlePath": [
+          "authenticated-mobile-layout.spec.ts",
+          "Authenticated mobile dashboard layout",
+          "keeps the permission-aware manager shell reachable at 375px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "authenticated-mobile-layout.spec.ts",
+        "titlePath": [
+          "authenticated-mobile-layout.spec.ts",
+          "Authenticated mobile dashboard layout",
+          "keeps the permission-aware manager shell reachable at 768px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "frontend-accessibility.spec.ts",
+        "titlePath": [
+          "frontend-accessibility.spec.ts",
+          "Frontend accessibility launch contracts",
+          "submits onboarding steps with Enter and focuses validation errors"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "frontend-accessibility.spec.ts",
+        "titlePath": [
+          "frontend-accessibility.spec.ts",
+          "Frontend accessibility launch contracts",
+          "operates dashboard dialogs, settings tabs, pack labels, and mobile sign-out by keyboard"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-mobile-long-content.spec.ts",
+        "titlePath": [
+          "tenant-mobile-long-content.spec.ts",
+          "Tenant long-content mobile layout",
+          "keeps long tenant identity, complete summaries and paged context readable without writes at 320px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-mobile-long-content.spec.ts",
+        "titlePath": [
+          "tenant-mobile-long-content.spec.ts",
+          "Tenant long-content mobile layout",
+          "keeps long tenant identity, complete summaries and paged context readable without writes at 393px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-mobile-long-content.spec.ts",
+        "titlePath": [
+          "tenant-mobile-long-content.spec.ts",
+          "Tenant long-content mobile layout",
+          "keeps long tenant identity, complete summaries and paged context readable without writes at 768px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "tenant-mobile-long-content.spec.ts",
+        "titlePath": [
+          "tenant-mobile-long-content.spec.ts",
+          "Tenant long-content mobile layout",
+          "keeps long tenant identity, complete summaries and paged context readable without writes at 1280px"
+        ],
+        "project": "chromium"
+      }
+    ]
+  }
+}
