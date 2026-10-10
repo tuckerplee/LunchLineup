@@ -1,3 +1,4 @@
+import { NotificationOutboxProcessor } from '../notifications/notification-outbox.processor';
 import { AvailabilityImportPublisher } from '../availability-imports/availability-imports.publisher';
 import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
@@ -8,8 +9,8 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance';
-const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
 export function consumePersistentExportPermit(service: object, permit: object) {
@@ -39,6 +40,16 @@ export function consumePersistentImportPermit(service: object, permit: object) {
     return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires, effect: value.effect };
 }
 
+export function consumePersistentNotificationPermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service
+        || (value.effect !== 'persist-exact-notification' && value.effect !== 'fanout-exact-notification')
+        || typeof value.recipientId !== 'string' || !/^[\x20-\x7e]{1,128}$/.test(value.recipientId)
+        || performance.now() >= value.expires) throw new Error('Persistent notification permit is absent, consumed or expired.');
+    return { jobId: value.jobId, tenantId: value.tenantId, recipientId: value.recipientId, expires: value.expires, effect: value.effect };
+}
+
 // Inspection selects only one fixed implementation. It does not mint authority.
 export function selectedPersistentProducer(): Effect {
     protectedPath(CONFIG);
@@ -47,7 +58,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -82,7 +93,7 @@ function protectedPath(path: string): void {
     }
 }
 
-export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher | AvailabilityImportPublisher): Promise<void> {
+export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher | AvailabilityImportPublisher | NotificationOutboxProcessor): Promise<void> {
     requireValue(process.env.TENANT_EXPORT_PILOT_MODE === 'true', 'Dedicated consumer requires closed pilot startup.');
     protectedPath(CONFIG);
     const info = lstatSync(CONFIG);
@@ -90,12 +101,18 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     closed(config, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'keyHex', 'operationMs', 'lossMs',
-        ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : [])]);
+        ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : []),
+        ...(['persist-exact-notification', 'fanout-exact-notification'].includes(config.effect) ? ['recipientId'] : [])]);
     config.effect ??= 'generate-exact-export';
     requireValue((config.effect === 'generate-exact-export' && service instanceof TenantExportService)
         || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
         || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
-            && service instanceof AvailabilityImportPublisher), 'Fixed producer implementation differs.');
+            && service instanceof AvailabilityImportPublisher)
+        || ((config.effect === 'persist-exact-notification' || config.effect === 'fanout-exact-notification')
+            && service instanceof NotificationOutboxProcessor), 'Fixed producer implementation differs.');
+    const recipientFields = ['persist-exact-notification', 'fanout-exact-notification'].includes(config.effect) ? ['recipientId'] : [];
+    for (const name of recipientFields) requireValue(typeof config[name] === 'string' && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact notification recipient required.');
+    if (config.effect === 'fanout-exact-notification') requireValue(process.env.REDIS_URL, 'Explicit admitted Redis endpoint required.');
     for (const name of ['jobId', 'tenantId']) requireValue(typeof config[name] === 'string'
         && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact selected operation/tenant required.');
     if (config.effect === 'publish-exact-schedule' || config.effect === 'publish-exact-import') requireValue(process.env.RABBITMQ_URL
@@ -150,7 +167,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
             && value.sequence === incoming && /^[a-f0-9]{64}$/.test(value.session), 'Owner authentication/sequence failed.');
         if (incoming === 0) {
             requireValue(value.kind === 'HELLO', 'Owner hello required.');
-            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs', 'effect']);
+            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs', 'effect', ...recipientFields]);
             for (const name of Object.keys(value.body)) requireValue(value.body[name] === config[name], 'Owner selected scope differs.');
             service.assertPersistentOwnerReady();
             session = value.session;
@@ -162,7 +179,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                 requireValue(!generated && incoming === 1 && /^[a-f0-9]{64}$/.test(value.body.intentSha256), 'One durable intent required.');
                 generated = true; intentSha256 = value.body.intentSha256;
                 const permit = Object.freeze({ nonce: randomUUID() });
-                permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId, expires: performance.now() + config.operationMs });
+                permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId, recipientId: config.recipientId, expires: performance.now() + config.operationMs });
                 operationTimer = setTimeout(() => close('Original producer operation deadline exceeded.'), config.operationMs);
                 owned = (async () => {
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
@@ -171,7 +188,9 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                             ? await service.runPersistentOwnerExport(permit)
                             : service instanceof ScheduleSolveOutboxPublisher
                                 ? await service.runPersistentOwnerSchedule(permit)
-                                : await service.runPersistentOwnerImport(permit);
+                                : service instanceof AvailabilityImportPublisher
+                                    ? await service.runPersistentOwnerImport(permit)
+                                    : await service.runPersistentOwnerNotification(permit);
                         await service.closeAdmission();
                         outcome = 'settled';
                     } catch { /* Unresolved remains unknown; no replay or cleanup permission. */ }

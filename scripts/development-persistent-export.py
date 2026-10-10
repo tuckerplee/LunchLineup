@@ -109,14 +109,22 @@ def duration_seconds(value):
     return total / 1000000
 
 
+def recipient_fields(q):
+    if q.get('effect') in ('persist-exact-notification', 'fanout-exact-notification'):
+        value = q.get('recipientId')
+        require(type(value) is str and re.fullmatch(r'[ -~]{1,128}', value), 'exact selected notification recipient')
+        return {'recipientId': value}
+    return {}
+
+
 def policy():
     q = parse(controlled(POLICY, MAX))
     closed(q, ['version', 'scopeSha256', 'approvalReference', 'jobId', 'tenantId', 'sourceSha',
         'notBeforeMs', 'expiresMs', 'operationMs', 'recoveryMs', 'heartbeatMs', 'lossMs',
         'appUid', 'appGid', 'appExeSha256', 'appCmdline', 'ownerExeSha256', 'journalDirectory',
         'history', 'protocol', 'ownerPrivateKey', 'ownerPublicKey', 'recoveryPrivateKey',
-        'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []))
-    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance'), 'fixed producer effect')
+        'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []) + list(recipient_fields(q)))
+    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule', 'publish-exact-import', 'reconcile-exact-import-acceptance', 'persist-exact-notification', 'fanout-exact-notification'), 'fixed producer effect')
     require(q['entry']['path'] == '/usr/local/libexec/lunchlineup/development-persistent-export.py', 'fixed persistent entry')
     pinned(q['entry'], False)
     require(Path(__file__).resolve() == Path(q['entry']['path']), 'installed entry required')
@@ -185,7 +193,7 @@ def app_incarnation(q, pid):
     identity = incarnation(pid, q['appUid'], q['appGid'], q['appExeSha256'], APP, q['appCmdline'])
     expected = parse(pinned(q['appEnvironment']))
     fields = ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE']
-    fields += ([] if q.get('effect') == 'reconcile-exact-import-acceptance' else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
+    fields += (['REDIS_URL'] if q.get('effect') == 'fanout-exact-notification' else [] if q.get('effect') in ('reconcile-exact-import-acceptance', 'persist-exact-notification') else ['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') in ('publish-exact-schedule', 'publish-exact-import') else
         ['TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
          'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
     closed(expected, fields)
@@ -397,13 +405,13 @@ def owner(q):
     record('ADOPTED', {'app': app})
     send(peer, key, session, 0, 'HELLO', {'jobId': q['jobId'], 'tenantId': q['tenantId'],
         'scopeSha256': q['scopeSha256'], 'sourceSha': q['sourceSha'], 'operationMs': q['operationMs'], 'lossMs': q['lossMs'],
-        'effect': q.get('effect', 'generate-exact-export')})
+        'effect': q.get('effect', 'generate-exact-export'), **recipient_fields(q)})
     buffer = bytearray(); ready = None
     while ready is None:
         ready = receive(peer, buffer, key, session, 0)
     require(ready['kind'] == 'READY' and ready['body'] == {'generation': 'closed', 'cleanup': 'closed'}, 'actual closed consumer')
     require(app_incarnation(q, pid) == app, 'app changed before intent')
-    intent = record('INTENT', {'app': app, 'effect': q.get('effect', 'generate-exact-export'), 'operationMs': q['operationMs']})
+    intent = record('INTENT', {'app': app, 'effect': q.get('effect', 'generate-exact-export'), 'operationMs': q['operationMs'], **recipient_fields(q)})
     require(time.monotonic() + q['operationMs'] / 1000 + q['lossMs'] / 1000 < end, 'operation/settlement inside independent owner lifetime')
     send(peer, key, session, 1, 'GENERATE', {'intentSha256': intent})
     sequence = 2; due = time.monotonic(); operation_end = time.monotonic() + q['operationMs'] / 1000
@@ -488,7 +496,8 @@ def recover(q):
         closed(rows[1]['body'], ['app'])
         identity(rows[1]['body']['app'], APP)
     if len(rows) >= 3:
-        closed(rows[2]['body'], ['app', 'effect', 'operationMs'])
+        closed(rows[2]['body'], ['app', 'effect', 'operationMs'] + list(recipient_fields(q)))
+        require(all(rows[2]['body'].get(key) == value for key, value in recipient_fields(q).items()), 'intent recipient differs')
         require(rows[2]['body']['app'] == rows[1]['body']['app'] and
                 rows[2]['body']['effect'] == q.get('effect', 'generate-exact-export') and
                 type(rows[2]['body']['operationMs']) is int and rows[2]['body']['operationMs'] == q['operationMs'],

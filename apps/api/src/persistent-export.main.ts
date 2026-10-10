@@ -1,3 +1,4 @@
+import { NotificationOutboxProcessor } from './notifications/notification-outbox.processor';
 import { AvailabilityImportPublisher } from './availability-imports/availability-imports.publisher';
 import { TenantPrismaService } from './database/tenant-prisma.service';
 import { TenantExportService } from './admin/tenant-export.service';
@@ -15,7 +16,9 @@ async function main(): Promise<void> {
         ? new TenantExportService(database, undefined, { startWorker: false })
         : effect === 'publish-exact-schedule'
             ? new ScheduleSolveOutboxPublisher(database)
-            : new AvailabilityImportPublisher(database);
+            : effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance'
+                ? new AvailabilityImportPublisher(database)
+                : new NotificationOutboxProcessor(database);
     try { await runPersistentExportConsumer(service); }
     finally { await database.onModuleDestroy(); }
 }

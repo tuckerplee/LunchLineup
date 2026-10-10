@@ -1,3 +1,5 @@
+import Redis from 'ioredis';
+import { consumePersistentNotificationPermit } from '../admin/persistent-export-consumer';
 import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Logger } from '@nestjs/common';
 import { Prisma, type Notification, type NotificationType } from '@prisma/client';
@@ -87,6 +89,12 @@ export class NotificationOutboxProcessor {
     private readonly externalTimeoutMs: number;
     private readonly recordOutcome?: (status: NotificationDeliveryMetricStatus) => void;
     private readonly setDeadLetteredCount?: (count: number) => void;
+    private readonly pilotClosed = pilotProducersClosed();
+    private ownerClosed = false;
+    private ownerUsed = false;
+    private ownerUnknown = false;
+    private ownerOperation?: Promise<boolean>;
+    private ownerClose?: Promise<void>;
     private timer?: NodeJS.Timeout;
     private activeSweep?: Promise<void>;
 
@@ -141,7 +149,146 @@ export class NotificationOutboxProcessor {
         this.kick();
     }
 
+    assertPersistentOwnerReady(): void {
+        if (!this.pilotClosed || this.ownerClosed || this.ownerUsed || this.timer || this.activeSweep) {
+            throw new Error('Notification producer is not closed and unused.');
+        }
+    }
+
+    runPersistentOwnerNotification(permit: object): Promise<boolean> {
+        const selected = consumePersistentNotificationPermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        this.ownerOperation = Promise.resolve().then(() => this.runSelectedNotification(selected))
+            .catch((error) => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    closeAdmission(): Promise<void> {
+        this.ownerClosed = true;
+        if (this.ownerClose) return this.ownerClose;
+        this.ownerClose = (async () => {
+            try { await this.ownerOperation; } catch { this.ownerUnknown = true; }
+            if (this.ownerUnknown) throw new Error('Notification effect requires independent reconciliation.');
+        })();
+        return this.ownerClose;
+    }
+
+    private assertOwnerOpen(expires: number): void {
+        if (!this.pilotClosed || !this.ownerUsed || this.ownerClosed || performance.now() >= expires) {
+            throw new Error('Selected notification admission is closed.');
+        }
+    }
+
+    private async runSelectedNotification(selected: {
+        jobId: string; tenantId: string; recipientId: string; expires: number;
+        effect: 'persist-exact-notification' | 'fanout-exact-notification';
+    }): Promise<boolean> {
+        this.assertOwnerOpen(selected.expires);
+        const custody: { callback?: Promise<boolean>; redis?: Redis } = {};
+        let result = false;
+        try {
+            result = await this.tenantDb.withTenant(selected.tenantId, (tx) => {
+                // Register the callback itself: transaction timeout is not callback/provider settlement.
+                const callback = Promise.resolve().then(async () => {
+                    this.assertOwnerOpen(selected.expires);
+                    const tenants = await tx.$queryRaw<Array<{ id: string; status: string; deletedAt: Date | null }>>`
+                        SELECT "id", "status", "deletedAt" FROM "Tenant"
+                        WHERE "id" = ${selected.tenantId} FOR SHARE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const users = await tx.$queryRaw<Array<{ id: string; role: string; deletedAt: Date | null; suspendedAt: Date | null }>>`
+                        SELECT "id", "role", "deletedAt", "suspendedAt" FROM "User"
+                        WHERE "id" = ${selected.recipientId} AND "tenantId" = ${selected.tenantId} FOR SHARE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const rows = await tx.$queryRaw<Array<ClaimedNotificationIntent & { status: string }>>`
+                        SELECT "id", "tenantId", "userId", "dedupeKey", "notificationType", "title", "body", "attempts", "failureCount", "createdAt", "leaseUntil", "status"
+                        FROM "NotificationOutbox"
+                        WHERE "id" = ${selected.jobId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+                    `;
+                    this.assertOwnerOpen(selected.expires);
+                    const row = rows[0];
+                    if (!row) return false;
+                    const tenant = tenants[0]; const user = users[0];
+                    if (rows.length !== 1 || row.id !== selected.jobId || row.tenantId !== selected.tenantId
+                        || row.userId !== selected.recipientId
+                        || !tenant || tenant.deletedAt !== null || tenant.status === 'PURGED'
+                        || !user || user.deletedAt !== null
+                        || (row.notificationType === 'SCHEDULE_PUBLISHED'
+                            && (!['MANAGER', 'STAFF'].includes(user.role) || user.suspendedAt !== null))) {
+                        throw new Error('Selected notification recipient is not eligible.');
+                    }
+                    const notification = await tx.notification.findFirst({
+                        where: { id: selected.jobId, tenantId: selected.tenantId, userId: selected.recipientId },
+                    });
+                    this.assertOwnerOpen(selected.expires);
+                    if (selected.effect === 'persist-exact-notification') {
+                        if (row.status !== 'PENDING' || row.attempts !== 0) return false;
+                        if (notification) {
+                            if (notification.type !== row.notificationType || notification.title !== row.title || notification.body !== row.body) {
+                                throw new Error('Existing notification content differs from selected durable intent.');
+                            }
+                            return false;
+                        }
+                        const created = await tx.notification.create({ data: {
+                            id: row.id, tenantId: row.tenantId, userId: row.userId,
+                            type: row.notificationType, title: row.title, body: row.body,
+                        } });
+                        this.assertOwnerOpen(selected.expires);
+                        if (created.id !== selected.jobId || created.tenantId !== selected.tenantId
+                            || created.userId !== selected.recipientId) throw new Error('Notification persistence readback differs.');
+                        return true;
+                    }
+                    if (!notification || notification.type !== row.notificationType) {
+                        throw new Error('Selected notification has not been durably persisted.');
+                    }
+                    const url = process.env.REDIS_URL;
+                    if (!url) throw new Error('Explicit admitted Redis endpoint required.');
+                    this.assertOwnerOpen(selected.expires);
+                    const redis = new Redis(url, {
+                        lazyConnect: true, enableOfflineQueue: false, enableReadyCheck: false,
+                        maxRetriesPerRequest: 0, retryStrategy: () => null,
+                        autoResendUnfulfilledCommands: false, autoResubscribe: false,
+                    });
+                    custody.redis = redis;
+                    let transportFailed = false;
+                    redis.on('error', () => { transportFailed = true; });
+                    await redis.connect();
+                    this.assertOwnerOpen(selected.expires);
+                    if (transportFailed) throw new Error('Selected Redis connection failed.');
+                    const subscribers = await redis.publish(`notifications:user:${selected.recipientId}`, JSON.stringify(notification));
+                    this.assertOwnerOpen(selected.expires);
+                    if (transportFailed || !Number.isSafeInteger(subscribers) || subscribers < 0) {
+                        throw new Error('Selected Redis fan-out acknowledgement is unknown.');
+                    }
+                    // Redis acceptance does not prove any browser received/read the notification.
+                    return true;
+                });
+                custody.callback = callback;
+                return callback;
+            }, DELIVERY_TRANSACTION_OPTIONS);
+        } catch (error) {
+            // A rejected transaction can leave its async body waiting on a transport operation.
+            this.ownerClosed = true;
+            this.ownerUnknown = true;
+            throw error;
+        } finally {
+            try { if (custody.callback) await custody.callback; }
+            finally {
+                const redis = custody.redis;
+                if (redis) {
+                    try { await redis.quit(); }
+                    finally { redis.disconnect(false); }
+                }
+            }
+        }
+        this.assertOwnerOpen(selected.expires);
+        return result;
+    }
+
     async stop(): Promise<void> {
+        if (this.pilotClosed) { await this.closeAdmission(); return; }
         if (this.timer) {
             clearInterval(this.timer);
             this.timer = undefined;
