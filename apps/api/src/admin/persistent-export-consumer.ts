@@ -12,8 +12,8 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email' | 'record-exact-cancellation-request' | 'apply-exact-customer-cancellation' | 'finalize-exact-customer-cancellation';
-const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string; predecessorIntentSha256?: string; customerId?: string | null; subscriptionId?: string | null; providerIntentSha256?: string; receiptSha256?: string; expectedAction?: string; cancellationRequest?: Readonly<{ userId: string; sessionId: string; confirmation: string; reason: string | null }> }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email' | 'record-exact-cancellation-request' | 'apply-exact-customer-cancellation' | 'finalize-exact-customer-cancellation' | 'converge-exact-customer-cancellation';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string; predecessorIntentSha256?: string; customerId?: string | null; subscriptionId?: string | null; providerIntentSha256?: string; receiptSha256?: string; expectedAction?: string; terminalEventId?: string; terminalEventSha256?: string; predecessorFinalizationSha256?: string | null; cancellationRequest?: Readonly<{ userId: string; sessionId: string; confirmation: string; reason: string | null }> }>();
 const providerPermits = new WeakMap<object, { service: object; owner: NotificationOutboxProcessor; jobId: string; recipientEmailSha256: string; expires: number }>();
 
 const cancellationProviderPermits = new WeakMap<object, { service: PersistentCancellationProvider; owner: PrismaTenantCancellationIntentStore; jobId: string; tenantId: string; expires: number }>();
@@ -108,6 +108,26 @@ export function consumePersistentCancellationFinalizationPermit(service: object,
         customerId: value.customerId, subscriptionId: value.subscriptionId };
 }
 
+export function consumePersistentCancellationConvergencePermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service || value.effect !== 'converge-exact-customer-cancellation'
+        || ![value.predecessorIntentSha256, value.providerIntentSha256, value.receiptSha256, value.terminalEventSha256]
+            .every(item => typeof item === 'string' && /^[a-f0-9]{64}$/.test(item))
+        || (value.predecessorFinalizationSha256 !== null && (typeof value.predecessorFinalizationSha256 !== 'string'
+            || !/^[a-f0-9]{64}$/.test(value.predecessorFinalizationSha256)))
+        || value.expectedAction !== 'already_canceled' || typeof value.terminalEventId !== 'string'
+        || !/^[\x20-\x7e]{1,128}$/.test(value.terminalEventId)
+        || typeof value.customerId !== 'string' || !/^cus_[A-Za-z0-9]+$/.test(value.customerId)
+        || typeof value.subscriptionId !== 'string' || !/^sub_[A-Za-z0-9]+$/.test(value.subscriptionId)
+        || performance.now() >= value.expires) throw new Error('Exact terminal cancellation event capability required.');
+    return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires, intentSha256: value.intentSha256,
+        predecessorIntentSha256: value.predecessorIntentSha256!, providerIntentSha256: value.providerIntentSha256!,
+        receiptSha256: value.receiptSha256!, terminalEventId: value.terminalEventId,
+        terminalEventSha256: value.terminalEventSha256!, predecessorFinalizationSha256: value.predecessorFinalizationSha256,
+        customerId: value.customerId, subscriptionId: value.subscriptionId };
+}
+
 export function consumePersistentCancellationProviderPermit(service: object, permit: object) {
     const value = cancellationProviderPermits.get(permit);
     cancellationProviderPermits.delete(permit);
@@ -145,7 +165,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email' || effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation' || effect === 'finalize-exact-customer-cancellation', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email' || effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation' || effect === 'finalize-exact-customer-cancellation' || effect === 'converge-exact-customer-cancellation', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -192,10 +212,11 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         ...(['persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'].includes(config.effect) ? ['recipientId'] : []),
         ...(config.effect === 'deliver-exact-notification-email' ? ['recipientEmailSha256'] : []),
         ...(config.effect === 'record-exact-cancellation-request' ? ['cancellationRequestSha256'] : []),
-        ...(['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation'].includes(config.effect) ? ['predecessorIntentSha256', 'customerId', 'subscriptionId'] : []),
-        ...(config.effect === 'finalize-exact-customer-cancellation' ? ['providerIntentSha256', 'receiptSha256', 'expectedAction'] : [])]);
+        ...(['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation', 'converge-exact-customer-cancellation'].includes(config.effect) ? ['predecessorIntentSha256', 'customerId', 'subscriptionId'] : []),
+        ...(['finalize-exact-customer-cancellation', 'converge-exact-customer-cancellation'].includes(config.effect) ? ['providerIntentSha256', 'receiptSha256', 'expectedAction'] : []),
+        ...(config.effect === 'converge-exact-customer-cancellation' ? ['terminalEventId', 'terminalEventSha256', 'predecessorFinalizationSha256'] : [])]);
     config.effect ??= 'generate-exact-export';
-    requireValue(((config.effect === 'record-exact-cancellation-request' || config.effect === 'apply-exact-customer-cancellation' || config.effect === 'finalize-exact-customer-cancellation') && service instanceof PrismaTenantCancellationIntentStore)
+    requireValue(((config.effect === 'record-exact-cancellation-request' || config.effect === 'apply-exact-customer-cancellation' || config.effect === 'finalize-exact-customer-cancellation' || config.effect === 'converge-exact-customer-cancellation') && service instanceof PrismaTenantCancellationIntentStore)
         || (config.effect === 'generate-exact-export' && service instanceof TenantExportService)
         || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
         || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
@@ -215,20 +236,30 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         cancellationRequest = selectedCancellationRequest(config.cancellationRequestSha256);
     }
     for (const name of recipientFields) requireValue(typeof config[name] === 'string' && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact notification recipient required.');
-    const cancellationProviderFields = ['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation'].includes(config.effect)
+    const cancellationProviderFields = ['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation', 'converge-exact-customer-cancellation'].includes(config.effect)
         ? ['predecessorIntentSha256', 'customerId', 'subscriptionId'] : [];
-    if (['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation'].includes(config.effect)) {
+    if (['apply-exact-customer-cancellation', 'finalize-exact-customer-cancellation', 'converge-exact-customer-cancellation'].includes(config.effect)) {
         requireValue(typeof config.predecessorIntentSha256 === 'string' && /^[a-f0-9]{64}$/.test(config.predecessorIntentSha256), 'Exact recorded request intent required.');
         requireValue(config.customerId === null || (typeof config.customerId === 'string' && /^cus_[A-Za-z0-9]{1,251}$/.test(config.customerId)), 'Exact selected customer required.');
         requireValue(config.subscriptionId === null || (typeof config.subscriptionId === 'string' && /^sub_[A-Za-z0-9]{1,251}$/.test(config.subscriptionId)), 'Exact selected subscription required.');
         requireValue(config.subscriptionId === null || config.customerId !== null, 'Selected subscription requires a bound customer.');
     }
-    if (config.effect === 'finalize-exact-customer-cancellation') {
+    if (['finalize-exact-customer-cancellation', 'converge-exact-customer-cancellation'].includes(config.effect)) {
         for (const key of ['providerIntentSha256', 'receiptSha256']) requireValue(typeof config[key] === 'string'
             && /^[a-f0-9]{64}$/.test(config[key]), 'Exact provider intent and canonical receipt digest required.');
         requireValue(['none', 'scheduled', 'already_scheduled', 'already_canceled'].includes(config.expectedAction),
             'Exact permitted local cancellation transition required.');
         cancellationProviderFields.push('providerIntentSha256', 'receiptSha256', 'expectedAction');
+    }
+    if (config.effect === 'converge-exact-customer-cancellation') {
+        requireValue(config.customerId !== null && config.subscriptionId !== null && config.expectedAction === 'already_canceled',
+            'Terminal convergence requires exact nonnull provider resources.');
+        requireValue(typeof config.terminalEventId === 'string' && /^[\x20-\x7e]{1,128}$/.test(config.terminalEventId)
+            && typeof config.terminalEventSha256 === 'string' && /^[a-f0-9]{64}$/.test(config.terminalEventSha256),
+            'Exact terminal event identity/digest required.');
+        requireValue(config.predecessorFinalizationSha256 === null || (typeof config.predecessorFinalizationSha256 === 'string'
+            && /^[a-f0-9]{64}$/.test(config.predecessorFinalizationSha256)), 'Explicit prior local receipt digest or absence required.');
+        cancellationProviderFields.push('terminalEventId', 'terminalEventSha256', 'predecessorFinalizationSha256');
     }
     const fixedCancellationProvider = config.effect === 'apply-exact-customer-cancellation' && service instanceof PrismaTenantCancellationIntentStore
         ? service.persistentOwnerCancellationProvider() : undefined;
@@ -311,7 +342,7 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                 currentPermit = permit;
                 const expires = performance.now() + config.operationMs;
                 permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId,
-                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires, cancellationRequest, predecessorIntentSha256: config.predecessorIntentSha256, customerId: config.customerId, subscriptionId: config.subscriptionId, providerIntentSha256: config.providerIntentSha256, receiptSha256: config.receiptSha256, expectedAction: config.expectedAction });
+                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires, cancellationRequest, predecessorIntentSha256: config.predecessorIntentSha256, customerId: config.customerId, subscriptionId: config.subscriptionId, providerIntentSha256: config.providerIntentSha256, receiptSha256: config.receiptSha256, expectedAction: config.expectedAction, terminalEventId: config.terminalEventId, terminalEventSha256: config.terminalEventSha256, predecessorFinalizationSha256: config.predecessorFinalizationSha256 });
                 if (fixedEmail && service instanceof NotificationOutboxProcessor) providerPermits.set(permit, { service: fixedEmail, owner: service, jobId: config.jobId,
                     recipientEmailSha256: config.recipientEmailSha256, expires });
                 if (fixedCancellationProvider && service instanceof PrismaTenantCancellationIntentStore) cancellationProviderPermits.set(permit, {
@@ -321,7 +352,9 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
                     try {
                         processed = service instanceof PrismaTenantCancellationIntentStore
-                            ? config.effect === 'finalize-exact-customer-cancellation'
+                            ? config.effect === 'converge-exact-customer-cancellation'
+                                ? await service.runPersistentOwnerCancellationConvergence(permit)
+                                : config.effect === 'finalize-exact-customer-cancellation'
                                 ? await service.runPersistentOwnerCancellationFinalization(permit)
                                 : config.effect === 'apply-exact-customer-cancellation'
                                 ? await service.runPersistentOwnerCancellationProvider(permit)

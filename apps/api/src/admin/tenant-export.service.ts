@@ -940,6 +940,8 @@ export const TENANT_EXPORT_COLLECTIONS: readonly ExportCollection[] = [
 ];
 
 export const TENANT_EXPORT_EXCLUDED_MODELS = {
+  TenantCancellationTerminalEvent:
+    "Internal authenticated provider application evidence is excluded; customer lifecycle history remains separately projected.",
   MfaTotpClaim: "Authentication replay-prevention claims are never exported.",
   OnboardingSignupAttempt:
     "Authentication signup recovery and idempotency records are never exported.",

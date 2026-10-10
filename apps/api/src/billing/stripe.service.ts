@@ -14,6 +14,15 @@ import { StripeCreditPurchaseService } from './stripe-credit-purchase.service';
 import { stripeErrorLog } from './stripe-error-diagnostic';
 
 type StripeWebhookObject = Record<string, any>;
+// Module-private, one-use evidence minted only after constructEvent verifies the raw body.
+// Ordinary BillingEvent inserts cannot mint this capability.
+const verifiedCancellationTerminalEvents = new WeakMap<Stripe.Event, Readonly<{
+    tenantId: string; operationId: string; customerId: string; subscriptionId: string;
+    providerEventId: string; providerEventCreated: number; apiVersion: string;
+    rawBodySha256: string; signatureSha256: string; endpointId: string; accountId: string; webhookKeySha256: string;
+    outcome: Prisma.InputJsonObject;
+}>>();
+
 type CheckoutActor = {
     email?: string | null;
     name?: string | null;
@@ -1983,6 +1992,48 @@ export class StripeService {
         }
 
         const data = event.data.object as StripeWebhookObject;
+        const receiptEndpoint = this.configService.get<string>('STRIPE_TERMINAL_RECEIPT_ENDPOINT_ID');
+        const receiptAccount = this.configService.get<string>('STRIPE_TERMINAL_RECEIPT_ACCOUNT_ID');
+        const receiptKeyHash = this.configService.get<string>('STRIPE_TERMINAL_RECEIPT_WEBHOOK_KEY_SHA256');
+        if (receiptEndpoint || receiptAccount || receiptKeyHash) {
+            if (!receiptEndpoint || !/^we_[A-Za-z0-9]{1,251}$/.test(receiptEndpoint)
+                || !receiptAccount || !/^acct_[A-Za-z0-9]{1,249}$/.test(receiptAccount)
+                || !receiptKeyHash || !/^[a-f0-9]{64}$/.test(receiptKeyHash)
+                || createHash('sha256').update(endpointSecret).digest('hex') !== receiptKeyHash) {
+                throw new ServiceUnavailableException('Pinned terminal webhook verification context differs.');
+            }
+            const operationId = typeof data.metadata?.[CANCELLATION_OPERATION_METADATA_KEY] === 'string'
+                ? data.metadata[CANCELLATION_OPERATION_METADATA_KEY] as string : null;
+            const signedTenantId = typeof data.metadata?.tenantId === 'string' ? data.metadata.tenantId as string : null;
+            const customerId = typeof data.customer === 'string' ? data.customer as string : null;
+            const subscriptionId = typeof data.id === 'string' ? data.id as string : null;
+            const rawEvent = event as unknown as Record<string, unknown>;
+            if (event.type === 'customer.subscription.deleted' && event.livemode === false && event.object === 'event'
+                && /^evt_[A-Za-z0-9]{1,251}$/.test(event.id) && Number.isSafeInteger(event.created) && event.created > 0
+                && event.api_version === '2024-04-10' && rawEvent.account === undefined && rawEvent.context === undefined
+                && data.object === 'subscription' && data.livemode === false && data.status === 'canceled'
+                && operationId && /^[\x20-\x7e]{1,128}$/.test(operationId)
+                && signedTenantId && /^[\x20-\x7e]{1,128}$/.test(signedTenantId)
+                && customerId && /^cus_[A-Za-z0-9]{1,251}$/.test(customerId)
+                && subscriptionId && /^sub_[A-Za-z0-9]{1,251}$/.test(subscriptionId)
+                && typeof data.cancel_at_period_end === 'boolean') {
+                const epoch = (value: unknown): string | null => {
+                    if (value === null || value === undefined) return null;
+                    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0
+                        || !Number.isFinite(new Date(value * 1000).getTime())) throw new Error('Canonical signed terminal timestamp required.');
+                    return new Date(value * 1000).toISOString();
+                };
+                verifiedCancellationTerminalEvents.set(event, Object.freeze({ tenantId: signedTenantId, operationId, customerId, subscriptionId,
+                    providerEventId: event.id, providerEventCreated: event.created, apiVersion: event.api_version,
+                    rawBodySha256: createHash('sha256').update(payload).digest('hex'),
+                    signatureSha256: createHash('sha256').update(signature).digest('hex'),
+                    endpointId: receiptEndpoint, accountId: receiptAccount, webhookKeySha256: receiptKeyHash,
+                    outcome: Object.freeze({ action: 'already_canceled', cancelAtPeriodEnd: data.cancel_at_period_end,
+                        currentPeriodEnd: epoch(data.current_period_end), cancelAt: epoch(data.cancel_at),
+                        canceledAt: epoch(data.canceled_at), cancellationBehavior: 'cancel_at_period_end' }),
+                }));
+            }
+        }
         if (
             ['refund.created', 'refund.updated', 'refund.failed'].includes(event.type)
             && data.metadata?.purchaseType === CREDIT_PACK_PURCHASE_TYPE
@@ -2211,6 +2262,7 @@ export class StripeService {
                     purchasedPlanCode,
                     currentSubscription,
                 );
+                await this.recordVerifiedTerminalCancellationApplication(tx, event, tenantId, subscriptionId, sideEffectDisposition);
             });
         } catch (err) {
             if (this.isDuplicateStripeEvent(err)) {
@@ -2218,7 +2270,53 @@ export class StripeService {
                 return;
             }
             throw err;
-        }
+        } finally { verifiedCancellationTerminalEvents.delete(event); }
+    }
+
+    private async recordVerifiedTerminalCancellationApplication(
+        tx: Prisma.TransactionClient, event: Stripe.Event, tenantId: string, subscriptionId: string | null,
+        disposition: StripeSideEffectDisposition | null,
+    ): Promise<void> {
+        const verified = verifiedCancellationTerminalEvents.get(event);
+        verifiedCancellationTerminalEvents.delete(event);
+        if (!verified || disposition !== 'applied' || verified.providerEventId !== event.id
+            || verified.providerEventCreated !== event.created || verified.apiVersion !== event.api_version || verified.tenantId !== tenantId
+            || verified.subscriptionId !== subscriptionId) return;
+        // The canonical terminal side effect already holds billing/Tenant and a successful
+        // lifecycle try-lock. Capture actual post-effect state, never a predicted +1 revision.
+        const tenant = await tx.tenant.findUnique({ where: { id: tenantId }, select: {
+            status: true, deletedAt: true, stripeCustomerId: true, stripeSubscriptionId: true,
+            stripeSubscriptionCurrentPeriodEnd: true, selectedBillingRevision: true,
+        } });
+        if (!tenant || tenant.status !== TenantStatus.CANCELLED || tenant.deletedAt !== null
+            || tenant.stripeCustomerId !== verified.customerId || tenant.stripeSubscriptionId !== null
+            || tenant.stripeSubscriptionCurrentPeriodEnd !== null) return;
+        const platform = await tx.tenantSetting.findUnique({ where: { tenantId_key: {
+            tenantId, key: PLATFORM_ARCHIVE_INTENT_SETTING_KEY } }, select: { id: true } });
+        if (platform) return;
+        const selected = await tx.tenantSetting.findUnique({ where: { tenantId_key: {
+            tenantId, key: CUSTOMER_CANCELLATION_INTENT_SETTING_KEY } }, select: { value: true } });
+        const intent = this.asJsonRecord(selected?.value);
+        if (intent?.kind !== 'CUSTOMER_CANCELLATION' || intent.operationId !== verified.operationId
+            || intent.providerSubscriptionId !== verified.subscriptionId) return;
+        const billingEvent = await tx.billingEvent.findUnique({ where: { stripeEventId: event.id },
+            select: { id: true, tenantId: true, type: true, metadata: true } });
+        const metadata = this.asJsonRecord(billingEvent?.metadata);
+        if (!billingEvent || billingEvent.tenantId !== tenantId || billingEvent.type !== 'customer.subscription.deleted'
+            || metadata?.sideEffectDisposition !== 'applied'
+            || metadata.subscriptionId !== verified.subscriptionId || metadata.customerId !== verified.customerId
+            || metadata.cancellationOperationId !== verified.operationId) throw new Error('Verified terminal application event differs.');
+        await tx.tenantCancellationTerminalEvent.create({ data: { eventId: billingEvent.id, tenantId,
+            receipt: { version: 1, provenance: 'verified-stripe-terminal-webhook-v1',
+                providerEventId: verified.providerEventId, providerEventCreated: verified.providerEventCreated, apiVersion: verified.apiVersion,
+                rawBodySha256: verified.rawBodySha256, signatureSha256: verified.signatureSha256,
+                endpointId: verified.endpointId, accountId: verified.accountId, webhookKeySha256: verified.webhookKeySha256,
+                accountMode: 'direct', livemode: false, tenantId, operationId: verified.operationId,
+                customerId: verified.customerId, subscriptionId: verified.subscriptionId,
+                outcome: verified.outcome,
+                postState: { status: 'CANCELLED', deletedAt: null, customerId: verified.customerId,
+                    subscriptionId: null, currentPeriodEnd: null, billingRevision: tenant.selectedBillingRevision },
+            } } });
     }
 
     private async recordBillingEvent(
@@ -3264,6 +3362,13 @@ export class StripeService {
             stripeEventLivemode: typeof event.livemode === 'boolean' ? event.livemode : null,
             stripeEventCreated: this.asNumber(event.created),
             sideEffectDisposition,
+            // Retain only the authenticated terminal event's operation marker. Never infer it
+            // from an older local intent or a different pre-lock provider observation.
+            cancellationOperationId: event.type === 'customer.subscription.deleted'
+                && sideEffectDisposition === 'applied' && data.object === 'subscription'
+                && this.asString(data.id) === subscriptionId
+                && typeof data.metadata?.[CANCELLATION_OPERATION_METADATA_KEY] === 'string'
+                ? data.metadata[CANCELLATION_OPERATION_METADATA_KEY] : null,
             entitlementTerminalPriority: eventOrder?.terminalPriority,
             stripeObjectType: this.asString(data.object),
             stripeObjectId: this.asString(data.id),

@@ -22,7 +22,7 @@ async function main(): Promise<void> {
         ? new SchedulePublishedEmailService(config, new EmailDeliveryFeedbackService(config, database))
         : undefined;
     const cancellationProvider = effect === 'apply-exact-customer-cancellation' ? new PersistentCancellationProvider(config) : undefined;
-    const service = effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation' || effect === 'finalize-exact-customer-cancellation'
+    const service = effect === 'record-exact-cancellation-request' || effect === 'apply-exact-customer-cancellation' || effect === 'finalize-exact-customer-cancellation' || effect === 'converge-exact-customer-cancellation'
         ? new PrismaTenantCancellationIntentStore(database, undefined, undefined, undefined, undefined, cancellationProvider)
         : effect === 'generate-exact-export'
         ? new TenantExportService(database, undefined, { startWorker: false })

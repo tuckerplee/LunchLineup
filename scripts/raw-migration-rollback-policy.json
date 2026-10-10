@@ -517,6 +517,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "Retain database-owned billing revisions, atomic new-receipt capture and immutable local finalization. No historical receipt revision backfill, no counter reset, no restoration of earlier selected-request functions over finalized rows. Old writers remain fenced; fresh/upgrade order, callback/commit uncertainty, RLS and privacy retention require isolated King proof."
+    },
+    "packages/db/prisma/migrations/20261010_zzzz_selected_cancellation_terminal_convergence.sql": {
+      "sha256": "52421f8c0ac67cd43683fb5a86188caef5c34d2194ed95571f0a24821d53fadd",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain immutable verified terminal application evidence, invalidation on parent event mutation, appended local convergence receipt and original request/provider/finalization fences. No historical authentication or chronology backfill; old writers remain fenced. Native RLS, retained-record purge, same-second chronology, replay and rollback proof required."
     }
   }
 }

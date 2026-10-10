@@ -35,6 +35,7 @@ model Tenant {
   retentionLegalHoldReason           String?
   retentionLegalHoldByUserId         String?
 
+  cancellationTerminalEvents    TenantCancellationTerminalEvent[]
   users                         User[]
   locations                     Location[]
   shifts                        Shift[]
@@ -1361,6 +1362,8 @@ model TenantSetting {
   selectedLifecycleProviderBillingRevision Int?
   selectedLifecycleFinalizationIntentSha256 String? @db.VarChar(64)
   selectedLifecycleFinalizationReceipt Json?
+  selectedLifecycleTerminalIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleTerminalReceipt Json?
   id        String   @id @default(uuid())
   tenantId  String
   key       String
@@ -1376,6 +1379,7 @@ model TenantSetting {
 // ─── Billing (Part XII) ───
 
 model BillingEvent {
+  terminalCancellationReceipt TenantCancellationTerminalEvent?
   id            String   @id @default(uuid())
   tenantId      String
   type          String // invoice.paid, subscription.created, etc.
@@ -1390,6 +1394,18 @@ model BillingEvent {
   @@index([tenantId])
   @@index([type])
   @@index([createdAt])
+}
+
+model TenantCancellationTerminalEvent {
+  eventId   String @id
+  tenantId  String
+  receipt   Json
+  createdAt DateTime @default(now())
+
+  event BillingEvent @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId])
 }
 
 enum StripeUsageMetric {
