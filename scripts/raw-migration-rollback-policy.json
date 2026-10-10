@@ -358,6 +358,14 @@
       "requiresOldReleaseProof": true,
       "rationale": "Retain the private owner-only legacy import receipt catalog, immutable mappings, generation and admission/count guards during rollback; isolated old-release proof must cover public application writes, lifecycle purge and owner/ACL isolation while old code ignores private receipts, whose destructive removal waits until after the rollback window."
     },
+    "packages/db/prisma/migrations/20261010_selected_cancellation_request_fence.sql": {
+      "sha256": "4dbfb14e1ed4a2f360ca42ecd9db511fd5e4b203acfb9949f78c11c005619d1f",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain the exact selected request-only fence on TenantSetting across rollback. It rejects ordinary/old claim, reset, stale-terminalization, value replacement and delete/recreate while preserving platform-admin PURGED/no-hold tenant retention deletion. Sender/request admission stays held through schema/trigger/ledger/client installation. Require native NULL/identity checks, RBAC/MFA, old-writer batch failure, retention purge and rollback proof. Provider dispatch and local finalization require separately reviewed successors; never drop a fence to enable retries."
+    },
     "packages/db/prisma/migrations/20261010_notification_provider_receipts.sql": {
       "sha256": "ca63612c97f931daf2fbe2a49948d88e5759df89a43a29ac946cd97fd840776e",
       "phase": "expand-contract",

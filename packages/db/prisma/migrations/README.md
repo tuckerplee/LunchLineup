@@ -1,5 +1,7 @@
 # Prisma Migrations
 
+- `20261010_selected_cancellation_request_fence.sql`: additive selected request-only custody on TenantSetting; blocks old writer claim/reset/delete-recreate, preserves authorized tenant retention purge, and does not admit provider work. Retain during rollback; native migration/old-writer/privacy qualification remains pending.
+
 - `20261010_notification_provider_receipts.sql`: adds nullable immutable selected-provider intent/recipient/payload digests and concrete acceptance receipts without reclassifying legacy DELIVERED rows. Existing RLS, cascades and terminal payload erasure remain. Native migration/rollback qualification is pending.
 
 - `20261004_legacy_import_retry_receipts.sql`: adds operator-private exact-export admission, company and entity receipts with immutable identity tombstones and a target generation UUID. It has no application foreign keys or runtime grants and is intentionally outside the public Prisma model. See `docs/runbooks/legacy-import-exact-replay.md`; native catalog/RLS/concurrency/recovery and rollout qualification remain pending.

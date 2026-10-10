@@ -1,8 +1,10 @@
-import { requireOrdinaryProducer } from '../common/pilot-producer-admission';
+import { consumePersistentCancellationRequestPermit } from './persistent-export-consumer';
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
-import type { MfaSessionObserver } from '@lunchlineup/rbac';
+import { MFA_MARKER_TTL_SCRIPT, observeMfaVerification, type MfaSessionIdentity, type MfaSessionObserver } from '@lunchlineup/rbac';
+import Redis from 'ioredis';
 import { RbacService } from '../auth/rbac.service';
 import { recordAccountLifecycleRequest } from './account-lifecycle-request';
 import { withCustomerLifecycleAdmission } from './customer-lifecycle-authority';
@@ -137,6 +139,188 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         private readonly rbac?: RbacService,
         private readonly mfaObserver?: MfaSessionObserver,
     ) {}
+
+    private readonly pilotClosed = pilotProducersClosed();
+    private ownerUsed = false;
+    private ownerClosed = false;
+    private ownerUnknown = false;
+    private ownerOperation?: Promise<boolean>;
+    private ownerCallback?: Promise<boolean>;
+    private ownerClose?: Promise<void>;
+    private ownerMfaRedis?: Redis;
+    private ownerMfaConnect?: Promise<void>;
+    private ownerMfaRead?: Promise<unknown>;
+    private ownerMfaUsed = false;
+
+    assertPersistentOwnerReady(): void {
+        if (!this.pilotClosed || this.ownerUsed || this.ownerClosed) throw new Error('Cancellation request owner is not closed and unused.');
+    }
+
+    closeAdmission(): Promise<void> {
+        this.ownerClosed = true;
+        this.ownerMfaRedis?.disconnect(false);
+        if (this.ownerClose) return this.ownerClose;
+        this.ownerClose = (async () => {
+            try { await this.ownerOperation; } catch { this.ownerUnknown = true; }
+            try { await this.ownerCallback; } catch { this.ownerUnknown = true; }
+            if (this.ownerUnknown) throw new Error('Cancellation request requires independent reconciliation.');
+        })();
+        return this.ownerClose;
+    }
+
+    runPersistentOwnerCancellationRequest(permit: object): Promise<boolean> {
+        const selected = consumePersistentCancellationRequestPermit(this, permit);
+        this.assertPersistentOwnerReady();
+        this.ownerUsed = true;
+        const assertOpen = () => {
+            if (this.ownerClosed || !this.pilotClosed || performance.now() >= selected.expires) {
+                throw new Error('Original cancellation request admission closed.');
+            }
+        };
+        const actor = Object.freeze({ tenantId: selected.tenantId, userId: selected.request.userId,
+            sessionId: selected.request.sessionId, ipAddress: null, userAgent: null });
+        this.ownerOperation = Promise.resolve().then(async () => {
+            try {
+                assertOpen();
+                const result = await withCustomerLifecycleAdmission(this.tenantDb, this.rbac, {
+                    observeSessionMfa: identity => this.observeSelectedMfa(identity, selected, assertOpen),
+                }, actor,
+                    (tx, assertAuthority) => {
+                        const callback = Promise.resolve().then(async () => {
+                            const current = () => { assertOpen(); assertAuthority(); };
+                            current();
+                            const tenant = await this.findTenantSubject(tx, selected.tenantId);
+                            current();
+                            assertTenantSlugConfirmation(selected.request.confirmation, tenant.slug);
+                            this.assertNoLifecycleBarrier(tenant, 'CUSTOMER_CANCELLATION');
+                            const existing = await this.findIntent(tx, selected.tenantId, 'CUSTOMER_CANCELLATION');
+                            current();
+                            // No reuse/reset/recovery or inference from an expired provider lease.
+                            if (existing) throw new Error('Selected request recording requires no prior customer cancellation intent.');
+                            const history = await tx.tenantSetting.findUnique({ where: { tenantId_key: {
+                                tenantId: selected.tenantId, key: `internal:account-lifecycle-request:${selected.jobId}`,
+                            } }, select: { id: true } });
+                            current();
+                            if (history) throw new Error('Selected lifecycle request identity already exists.');
+                            const intent = await this.resetIntent(tx, {
+                                kind: 'CUSTOMER_CANCELLATION', tenantId: selected.tenantId, actor,
+                                confirmation: selected.request.confirmation, reason: selected.request.reason,
+                                operationId: selected.jobId,
+                                providerSubscriptionId: tenant.stripeSubscriptionId?.trim() || null,
+                                subscriptionFingerprint: this.subscriptionFingerprint(tenant.id, tenant.stripeSubscriptionId),
+                            }, current);
+                            current();
+                            const fenced = await tx.$executeRaw`
+                                UPDATE "TenantSetting"
+                                SET "selectedLifecycleIntentSha256" = ${selected.intentSha256},
+                                    "selectedLifecycleOperationId" = ${selected.jobId}
+                                WHERE "tenantId" = ${selected.tenantId}
+                                    AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                                    AND "value"->>'operationId' = ${selected.jobId}
+                                    AND "value"->>'state' = 'PENDING_PROVIDER'
+                                    AND "value"->>'providerAttempts' = '0'
+                                    AND "value"->>'providerLeaseOwner' IS NULL
+                                    AND "value"->>'providerLeaseExpiresAt' IS NULL
+                                    AND "selectedLifecycleIntentSha256" IS NULL
+                                    AND "selectedLifecycleOperationId" IS NULL
+                            `;
+                            current();
+                            if (fenced !== 1 || intent.providerAttempts !== 0 || intent.providerLeaseOwner !== null) {
+                                throw new Error('Selected request fence acknowledgement differs.');
+                            }
+                            await tx.auditLog.create({ data: {
+                                tenantId: tenant.id, userId: actor.userId, actorUserId: actor.userId,
+                                actorTenantId: tenant.id, action: 'TENANT_CANCELLATION_INTENT_RECORDED_BY_CUSTOMER',
+                                resource: 'Tenant', resourceId: tenant.id,
+                                newValue: { operationId: selected.jobId, state: 'PENDING_PROVIDER',
+                                    ...(selected.request.reason ? { reason: selected.request.reason } : {}) },
+                                ipAddress: null, userAgent: null,
+                            } });
+                            current();
+                            return true;
+                        });
+                        this.ownerCallback = callback;
+                        return callback;
+                    });
+                assertOpen();
+                return result;
+            } catch (error) {
+                this.ownerClosed = true;
+                this.ownerUnknown = true;
+                throw error;
+            } finally {
+                // The canonical MFA helper bounds observation with a race; retain its
+                // actual Redis command as well as the mutation callback through failure.
+                this.ownerMfaRedis?.disconnect(false);
+                try { if (this.ownerCallback) await this.ownerCallback; }
+                finally {
+                    try { if (this.ownerMfaConnect) await this.ownerMfaConnect; }
+                    finally { if (this.ownerMfaRead) await this.ownerMfaRead; }
+                }
+            }
+        });
+        return this.ownerOperation;
+    }
+
+    private async observeSelectedMfa(
+        identity: MfaSessionIdentity,
+        selected: ReturnType<typeof consumePersistentCancellationRequestPermit>,
+        assertOpen: () => void,
+    ) {
+        assertOpen();
+        if (this.ownerMfaUsed || identity.sub !== selected.request.userId
+            || identity.tenantId !== selected.tenantId || identity.sessionId !== selected.request.sessionId) {
+            throw new Error('Exact single originating-session MFA observation required.');
+        }
+        this.ownerMfaUsed = true;
+        const url = process.env.REDIS_URL;
+        if (!url) throw new Error('Explicit admitted MFA Redis endpoint required.');
+        // Same closed connection policy as accepted Redis354; URL query options
+        // must never override no-reconnect/no-replay options in ioredis.
+        const endpoint = new URL(url);
+        const path = endpoint.pathname;
+        const host = endpoint.hostname.startsWith('[') ? endpoint.hostname.slice(1, -1) : endpoint.hostname;
+        const db = path === '' || path === '/' ? 0 : Number(path.slice(1));
+        const port = endpoint.port === '' ? 6379 : Number(endpoint.port);
+        if (!['redis:', 'rediss:'].includes(endpoint.protocol) || !host || url.includes('?') || url.includes('#')
+            || (path !== '' && path !== '/' && !/^\/[0-9]+$/.test(path))
+            || !Number.isSafeInteger(db) || db < 0 || db > 2147483647
+            || !Number.isSafeInteger(port) || port < 1 || port > 65535
+            || (!endpoint.hostname.startsWith('[') && !/^[A-Za-z0-9.-]+$/.test(host))) {
+            throw new Error('Selected MFA Redis endpoint must be a network URL without query options.');
+        }
+        const username = endpoint.username ? decodeURIComponent(endpoint.username) : undefined;
+        const password = endpoint.password ? decodeURIComponent(endpoint.password) : undefined;
+        assertOpen();
+        const redis = new Redis({ host, port, db, username, password,
+            tls: endpoint.protocol === 'rediss:' ? {} : undefined,
+            lazyConnect: true, enableOfflineQueue: false, enableReadyCheck: false,
+            enableAutoPipelining: false, reconnectOnError: () => false,
+            maxRetriesPerRequest: 0, retryStrategy: () => null,
+            autoResendUnfulfilledCommands: false, autoResubscribe: false,
+        });
+        this.ownerMfaRedis = redis;
+        let failed = false;
+        redis.on('error', () => { failed = true; });
+        this.ownerMfaConnect = redis.connect();
+        await this.ownerMfaConnect;
+        assertOpen();
+        if (failed || redis.status !== 'ready') throw new Error('Selected MFA observation is unavailable.');
+        const timeout = Math.min(5000, Math.floor(selected.expires - performance.now()));
+        if (timeout < 250) throw new Error('Original owner budget cannot cover MFA observation.');
+        const observation = await observeMfaVerification(identity, (script, key) => {
+            assertOpen();
+            if (failed || redis.status !== 'ready' || script !== MFA_MARKER_TTL_SCRIPT
+                || key !== `session_mfa:${selected.request.sessionId}` || this.ownerMfaRead) {
+                throw new Error('Exact bounded MFA marker read required.');
+            }
+            this.ownerMfaRead = redis.eval(script, 1, key);
+            return this.ownerMfaRead;
+        }, timeout);
+        assertOpen();
+        if (failed) throw new Error('Selected MFA observation failed.');
+        return observation;
+    }
 
     async prepare(input: PrepareIntentInput): Promise<PreparedTenantCancellationIntent> {
         requireOrdinaryProducer('unadmitted lifecycle or provider effect');
@@ -1111,7 +1295,8 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             terminalizedAt: null,
         };
         assertCurrent();
-        await this.writeIntent(tx, intent);
+        await this.writeIntent(tx, intent, assertCurrent);
+        assertCurrent();
         return intent;
     }
 
@@ -1152,7 +1337,9 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     private async writeIntent(
         tx: TenantPrismaTransaction,
         intent: TenantCancellationIntentRow,
+        assertCurrent: () => void = () => undefined,
     ): Promise<void> {
+        assertCurrent();
         const value = serializeIntentSetting(intent);
         await tx.tenantSetting.upsert({
             where: {
@@ -1168,13 +1355,15 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             },
             update: { value },
         });
+        assertCurrent();
         if (intent.kind === 'CUSTOMER_CANCELLATION') {
             await recordAccountLifecycleRequest(tx, {
                 tenantId: intent.tenantId, requestId: intent.operationId, kind: 'CANCELLATION',
                 state: intent.state === 'FINALIZED' ? 'COMPLETED'
                     : intent.state === 'BLOCKED' ? 'BLOCKED'
                         : intent.state === 'SUPERSEDED' ? 'SUPERSEDED' : 'PENDING',
-            });
+            }, assertCurrent);
+            assertCurrent();
         }
     }
 

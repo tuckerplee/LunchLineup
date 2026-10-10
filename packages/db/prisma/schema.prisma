@@ -1349,6 +1349,8 @@ model PlatformConfig {
 }
 
 model TenantSetting {
+  selectedLifecycleIntentSha256 String? @db.VarChar(64)
+  selectedLifecycleOperationId String? @db.VarChar(128)
   id        String   @id @default(uuid())
   tenantId  String
   key       String

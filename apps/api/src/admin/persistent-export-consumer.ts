@@ -1,7 +1,8 @@
+import { PrismaTenantCancellationIntentStore } from './tenant-cancellation-lifecycle.service';
 import { SchedulePublishedEmailService } from '../email-delivery/schedule-published-email.service';
 import { NotificationOutboxProcessor } from '../notifications/notification-outbox.processor';
 import { AvailabilityImportPublisher } from '../availability-imports/availability-imports.publisher';
-import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { connect } from 'node:net';
@@ -10,8 +11,8 @@ import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email';
-const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule' | 'publish-exact-import' | 'reconcile-exact-import-acceptance' | 'persist-exact-notification' | 'fanout-exact-notification' | 'deliver-exact-notification-email' | 'record-exact-cancellation-request';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number; recipientId?: string; recipientEmailSha256?: string; intentSha256: string; cancellationRequest?: Readonly<{ userId: string; sessionId: string; confirmation: string; reason: string | null }> }>();
 const providerPermits = new WeakMap<object, { service: object; owner: NotificationOutboxProcessor; jobId: string; recipientEmailSha256: string; expires: number }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
@@ -61,6 +62,37 @@ export function consumePersistentEmailPermit(service: object, permit: object) {
     return { jobId: value.jobId, recipientEmailSha256: value.recipientEmailSha256, expires: value.expires, owner: value.owner };
 }
 
+export function consumePersistentCancellationRequestPermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service || value.effect !== 'record-exact-cancellation-request'
+        || !value.cancellationRequest || performance.now() >= value.expires) {
+        throw new Error('Exact cancellation request permit is absent, consumed or expired.');
+    }
+    return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires,
+        intentSha256: value.intentSha256, request: value.cancellationRequest };
+}
+
+function selectedCancellationRequest(digest: string) {
+    const path = '/etc/lunchlineup/trust/persistent-cancellation-request.json';
+    protectedPath(path);
+    const info = lstatSync(path);
+    requireValue(info.isFile() && info.nlink === 1 && info.size <= 16384
+        && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private originating request required.');
+    const bytes = readFileSync(path);
+    requireValue(createHash('sha256').update(bytes).digest('hex') === digest, 'Originating request digest differs.');
+    const request = JSON.parse(bytes.toString('utf8'));
+    closed(request, ['userId', 'sessionId', 'confirmation', 'reason']);
+    for (const key of ['userId', 'sessionId']) requireValue(typeof request[key] === 'string'
+        && /^[\x20-\x7e]{1,128}$/.test(request[key]), 'Exact originating actor/session required.');
+    requireValue(typeof request.confirmation === 'string' && request.confirmation.length >= 1
+        && request.confirmation.length <= 255, 'Explicit tenant confirmation required.');
+    requireValue(request.reason === null || (typeof request.reason === 'string'
+        && request.reason.length >= 1 && request.reason.length <= 500 && request.reason.trim() === request.reason), 'Canonical optional request reason required.');
+    return Object.freeze({ userId: request.userId as string, sessionId: request.sessionId as string,
+        confirmation: request.confirmation as string, reason: request.reason as string | null });
+}
+
 // Inspection selects only one fixed implementation. It does not mint authority.
 export function selectedPersistentProducer(): Effect {
     protectedPath(CONFIG);
@@ -69,7 +101,7 @@ export function selectedPersistentProducer(): Effect {
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
     const effect = config.effect ?? 'generate-exact-export';
-    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email', 'Fixed producer effect required.');
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule' || effect === 'publish-exact-import' || effect === 'reconcile-exact-import-acceptance' || effect === 'persist-exact-notification' || effect === 'fanout-exact-notification' || effect === 'deliver-exact-notification-email' || effect === 'record-exact-cancellation-request', 'Fixed producer effect required.');
     return effect;
 }
 
@@ -104,7 +136,7 @@ function protectedPath(path: string): void {
     }
 }
 
-export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher | AvailabilityImportPublisher | NotificationOutboxProcessor): Promise<void> {
+export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher | AvailabilityImportPublisher | NotificationOutboxProcessor | PrismaTenantCancellationIntentStore): Promise<void> {
     requireValue(process.env.TENANT_EXPORT_PILOT_MODE === 'true', 'Dedicated consumer requires closed pilot startup.');
     protectedPath(CONFIG);
     const info = lstatSync(CONFIG);
@@ -114,9 +146,11 @@ export async function runPersistentExportConsumer(service: TenantExportService |
     closed(config, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'keyHex', 'operationMs', 'lossMs',
         ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : []),
         ...(['persist-exact-notification', 'fanout-exact-notification', 'deliver-exact-notification-email'].includes(config.effect) ? ['recipientId'] : []),
-        ...(config.effect === 'deliver-exact-notification-email' ? ['recipientEmailSha256'] : [])]);
+        ...(config.effect === 'deliver-exact-notification-email' ? ['recipientEmailSha256'] : []),
+        ...(config.effect === 'record-exact-cancellation-request' ? ['cancellationRequestSha256'] : [])]);
     config.effect ??= 'generate-exact-export';
-    requireValue((config.effect === 'generate-exact-export' && service instanceof TenantExportService)
+    requireValue((config.effect === 'record-exact-cancellation-request' && service instanceof PrismaTenantCancellationIntentStore)
+        || (config.effect === 'generate-exact-export' && service instanceof TenantExportService)
         || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher)
         || ((config.effect === 'publish-exact-import' || config.effect === 'reconcile-exact-import-acceptance')
             && service instanceof AvailabilityImportPublisher)
@@ -127,12 +161,20 @@ export async function runPersistentExportConsumer(service: TenantExportService |
         requireValue(typeof config.recipientEmailSha256 === 'string' && /^[a-f0-9]{64}$/.test(config.recipientEmailSha256), 'Exact email recipient digest required.');
         recipientFields.push('recipientEmailSha256');
     }
+    let cancellationRequest: ReturnType<typeof selectedCancellationRequest> | undefined;
+    if (config.effect === 'record-exact-cancellation-request') {
+        requireValue(typeof config.cancellationRequestSha256 === 'string'
+            && /^[a-f0-9]{64}$/.test(config.cancellationRequestSha256), 'Pinned originating request required.');
+        recipientFields.push('cancellationRequestSha256');
+        cancellationRequest = selectedCancellationRequest(config.cancellationRequestSha256);
+    }
     for (const name of recipientFields) requireValue(typeof config[name] === 'string' && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact notification recipient required.');
     const fixedEmail = config.effect === 'deliver-exact-notification-email' && service instanceof NotificationOutboxProcessor
         ? service.persistentOwnerEmailService() : undefined;
     if (config.effect === 'deliver-exact-notification-email') requireValue(fixedEmail instanceof SchedulePublishedEmailService
         && process.env.SCHEDULE_PUBLISHED_EMAIL_ENABLED === 'true', 'Fixed enabled email provider required.');
-    if (config.effect === 'fanout-exact-notification') requireValue(process.env.REDIS_URL, 'Explicit admitted Redis endpoint required.');
+    if (config.effect === 'fanout-exact-notification' || config.effect === 'record-exact-cancellation-request')
+        requireValue(process.env.REDIS_URL, 'Explicit admitted Redis endpoint required.');
     for (const name of ['jobId', 'tenantId']) requireValue(typeof config[name] === 'string'
         && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact selected operation/tenant required.');
     if (config.effect === 'publish-exact-schedule' || config.effect === 'publish-exact-import') requireValue(process.env.RABBITMQ_URL
@@ -204,14 +246,16 @@ export async function runPersistentExportConsumer(service: TenantExportService |
                 currentPermit = permit;
                 const expires = performance.now() + config.operationMs;
                 permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId,
-                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires });
+                    recipientId: config.recipientId, recipientEmailSha256: config.recipientEmailSha256, intentSha256, expires, cancellationRequest });
                 if (fixedEmail && service instanceof NotificationOutboxProcessor) providerPermits.set(permit, { service: fixedEmail, owner: service, jobId: config.jobId,
                     recipientEmailSha256: config.recipientEmailSha256, expires });
                 operationTimer = setTimeout(() => close('Original producer operation deadline exceeded.'), config.operationMs);
                 owned = (async () => {
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
                     try {
-                        processed = service instanceof TenantExportService
+                        processed = service instanceof PrismaTenantCancellationIntentStore
+                            ? await service.runPersistentOwnerCancellationRequest(permit)
+                            : service instanceof TenantExportService
                             ? await service.runPersistentOwnerExport(permit)
                             : service instanceof ScheduleSolveOutboxPublisher
                                 ? await service.runPersistentOwnerSchedule(permit)
