@@ -3,7 +3,7 @@ import { TenantPrismaService } from '../database/tenant-prisma.service';
 import { RbacService } from '../auth/rbac.service';
 import { installPlatformTenantAuthorityModel } from './platform-tenant-lifecycle-authority.fixture';
 import { withCustomerLifecycleAdmission } from './customer-lifecycle-authority';
-const actor = { tenantId: 'customer-tenant', userId: 'customer-user', sessionId: 'customer-session' };
+const actor = { tenantId: 'customer-tenant', userId: 'customer-user', sessionId: 'customer-session', ipAddress: null, userAgent: 'vitest' };
 const gate = () => { let resolve!: () => void; const promise = new Promise<void>(r => { resolve = r; }); return { promise, resolve }; };
 beforeEach(() => { vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-10-08T12:00:00Z')); });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });

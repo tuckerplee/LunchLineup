@@ -360,7 +360,7 @@ describe("TenantExportService durable jobs", () => {
     expect(shared.shutdownDrains.size).toBe(1);
     const closing = service.onModuleDestroy();
     expect(service.onModuleDestroy()).toBe(closing);
-    expect(() => service.start({ tenantId: "tenant-1", userId: "user-1" })).toThrow("shutting down");
+    expect(() => service.start({ tenantId: "tenant-1", userId: "user-1", ipAddress: null, userAgent: "vitest" })).toThrow("shutting down");
     await expect(service.runWorkerOnce()).resolves.toBe(false);
     await closing;
     expect(shared.jobs.size).toBe(0);

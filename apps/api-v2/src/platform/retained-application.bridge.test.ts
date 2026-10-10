@@ -313,8 +313,10 @@ describe('archived deletion retained bridge contract', () => {
       status: 200, headers: { 'content-type': 'application/json' },
     }));
     vi.stubGlobal('fetch', fetchMock);
-    const req = request('/v2/admin/tenants/opaque-target/deletion-request', body);
-    req.method = 'POST';
+    const req = {
+      ...request('/v2/admin/tenants/opaque-target/deletion-request', body),
+      method: 'POST',
+    };
     await expect(new RetainedApplicationBridge(config).execute({ operation: matches[0]!, request: req, reply: reply() }))
       .resolves.toEqual(result);
     expect(fetchMock).toHaveBeenCalledOnce();

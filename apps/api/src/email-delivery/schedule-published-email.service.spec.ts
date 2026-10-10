@@ -226,9 +226,10 @@ function activeFeedback() {
     return { isSuppressed: vi.fn().mockResolvedValue(false) };
 }
 
-function input(overrides: Partial<Parameters<SchedulePublishedEmailService['send']>[0]> = {}) {
+function input(overrides: Partial<Parameters<SchedulePublishedEmailService['send']>[0]> = {}): Parameters<SchedulePublishedEmailService['send']>[0] {
     return {
         outboxId: 'outbox-1',
+        createdAt: new Date(),
         recipientEmail: 'staff@example.test',
         title: 'Schedule published',
         body: 'Downtown: Jul 14, 2026 to Jul 20, 2026',

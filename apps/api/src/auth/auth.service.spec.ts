@@ -467,7 +467,7 @@ describe('AuthService – handleOidcCallback', () => {
         await expect(service.handleOidcCallback('exact-code', 'exact-state', 'demo')).rejects.toBeInstanceOf(UnauthorizedException);
         expect(secureHttpRequestMock).toHaveBeenCalledTimes(2);
         expect(secureHttpRequestMock).toHaveBeenNthCalledWith(1, tokenEndpoint, expect.objectContaining({ method: 'POST', redirect: 'error', timeoutMs: 8_000 }));
-        const form = new URLSearchParams(String(secureHttpRequestMock.mock.calls[0][1].body));
+        const form = new URLSearchParams(String(secureHttpRequestMock.mock.calls[0][1]?.body));
         expect(Object.fromEntries(form)).toEqual({ grant_type: 'authorization_code', code: 'exact-code', client_id: 'test-client-id', client_secret: 'test-client-secret', redirect_uri: 'http://localhost:3000/auth/callback' });
         expect(secureHttpRequestMock).toHaveBeenNthCalledWith(2, userInfoEndpoint, expect.objectContaining({ headers: { Authorization: 'Bearer fixture-provider-token' }, timeoutMs: 8_000, maxResponseBytes: 64 * 1024, redirect: 'error' }));
         expect(mockPrisma.session.create).not.toHaveBeenCalled();

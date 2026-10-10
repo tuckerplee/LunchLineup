@@ -648,8 +648,12 @@ describe('API v2 HTTP contract', () => {
     });
     let continuation: { id: string; deletedAt: string } | null = null;
     for (let page = 0; page < 3; page += 1) {
-      const payload = { dryRun: true, stage: 'application_data', ...(continuation ? { continuation } : {}) };
-      const response = await app.inject({ method: 'POST', url: '/v2/admin/retention/purge-expired', payload,
+      const payload: {
+        dryRun: boolean;
+        stage: 'application_data';
+        continuation?: { id: string; deletedAt: string };
+      } = { dryRun: true, stage: 'application_data', ...(continuation ? { continuation } : {}) };
+      const response: LightMyRequestResponse = await app.inject({ method: 'POST', url: '/v2/admin/retention/purge-expired', payload,
         headers: { authorization: 'Bearer retention-service-token' } });
       expect(response.statusCode).toBe(200);
       expect(forwarded[page]).toEqual(payload);
