@@ -1,3 +1,4 @@
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Logger } from '@nestjs/common';
 import { Prisma, type Notification, type NotificationType } from '@prisma/client';
 import { runtimeErrorText } from '../common/runtime-error-diagnostic';
@@ -133,6 +134,7 @@ export class NotificationOutboxProcessor {
     }
 
     start(): void {
+        if (pilotProducersClosed()) return;
         if (this.timer) return;
         this.timer = setInterval(() => this.kick(), this.pollIntervalMs);
         this.timer.unref();
@@ -148,6 +150,7 @@ export class NotificationOutboxProcessor {
     }
 
     async enqueueInTransaction(tx: any, entries: NotificationOutboxEntry[]): Promise<number> {
+        requireOrdinaryProducer('notification enqueue');
         if (entries.length === 0) return 0;
         const result = await tx.notificationOutbox.createMany({
             data: entries.map((entry) => ({
@@ -164,6 +167,7 @@ export class NotificationOutboxProcessor {
     }
 
     async deliverPendingNow(tenantId: string, dedupeKeys: string[]): Promise<NotificationDeliverySummary> {
+        requireOrdinaryProducer('notification immediate delivery');
         const keys = Array.from(new Set(dedupeKeys));
         if (keys.length === 0) {
             return { status: 'NOT_REQUIRED', delivered: 0, pending: 0, failed: 0 };
@@ -193,12 +197,14 @@ export class NotificationOutboxProcessor {
     }
 
     private async sweep(): Promise<void> {
+        requireOrdinaryProducer('notification sweep');
         const claimed = await this.claim();
         await Promise.all(claimed.map((intent) => this.deliver(intent)));
         await this.refreshDeadLetteredCount();
     }
 
     private async claim(tenantId?: string, dedupeKeys: string[] = []): Promise<ClaimedNotificationIntent[]> {
+        requireOrdinaryProducer('notification claim');
         const now = new Date();
         const leaseUntil = new Date(now.getTime() + this.leaseMs);
         const tenantFilter = tenantId

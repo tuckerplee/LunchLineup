@@ -115,7 +115,8 @@ def policy():
         'notBeforeMs', 'expiresMs', 'operationMs', 'recoveryMs', 'heartbeatMs', 'lossMs',
         'appUid', 'appGid', 'appExeSha256', 'appCmdline', 'ownerExeSha256', 'journalDirectory',
         'history', 'protocol', 'ownerPrivateKey', 'ownerPublicKey', 'recoveryPrivateKey',
-        'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'])
+        'recoveryPublicKey', 'appKey', 'units', 'systemctl', 'entry', 'appEntry', 'appEnvironment', 'loadedUnits', 'queryMs', 'queryKillMs', 'terminalReserveMs'] + (['effect'] if 'effect' in q else []))
+    require(q.get('effect', 'generate-exact-export') in ('generate-exact-export', 'publish-exact-schedule'), 'fixed producer effect')
     require(q['entry']['path'] == '/usr/local/libexec/lunchlineup/development-persistent-export.py', 'fixed persistent entry')
     pinned(q['entry'], False)
     require(Path(__file__).resolve() == Path(q['entry']['path']), 'installed entry required')
@@ -183,9 +184,11 @@ def incarnation(pid, uid, gid, exe, unit, argv=None):
 def app_incarnation(q, pid):
     identity = incarnation(pid, q['appUid'], q['appGid'], q['appExeSha256'], APP, q['appCmdline'])
     expected = parse(pinned(q['appEnvironment']))
-    closed(expected, ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE',
-        'TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
-        'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
+    fields = ['DATABASE_URL', 'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'TENANT_EXPORT_PILOT_MODE']
+    fields += (['RABBITMQ_URL', 'WORKER_QUEUE_NAME'] if q.get('effect') == 'publish-exact-schedule' else
+        ['TENANT_EXPORT_ARTIFACT_DIRECTORY', 'TENANT_EXPORT_SHARED_STORAGE', 'TENANT_EXPORT_MAX_ARTIFACT_BYTES',
+         'TENANT_EXPORT_GLOBAL_QUOTA_BYTES', 'TENANT_EXPORT_PER_TENANT_QUOTA_BYTES'])
+    closed(expected, fields)
     require(expected['TENANT_EXPORT_PILOT_MODE'] == 'true' and
             all(type(value) is str and value for value in expected.values()), 'explicit closed consumer environment')
     with open('/proc/' + str(pid) + '/environ', 'rb') as stream:
@@ -393,13 +396,14 @@ def owner(q):
     pidfd = os.pidfd_open(pid, 0)
     record('ADOPTED', {'app': app})
     send(peer, key, session, 0, 'HELLO', {'jobId': q['jobId'], 'tenantId': q['tenantId'],
-        'scopeSha256': q['scopeSha256'], 'sourceSha': q['sourceSha'], 'operationMs': q['operationMs'], 'lossMs': q['lossMs']})
+        'scopeSha256': q['scopeSha256'], 'sourceSha': q['sourceSha'], 'operationMs': q['operationMs'], 'lossMs': q['lossMs'],
+        'effect': q.get('effect', 'generate-exact-export')})
     buffer = bytearray(); ready = None
     while ready is None:
         ready = receive(peer, buffer, key, session, 0)
     require(ready['kind'] == 'READY' and ready['body'] == {'generation': 'closed', 'cleanup': 'closed'}, 'actual closed consumer')
     require(app_incarnation(q, pid) == app, 'app changed before intent')
-    intent = record('INTENT', {'app': app, 'effect': 'generate-exact-export', 'operationMs': q['operationMs']})
+    intent = record('INTENT', {'app': app, 'effect': q.get('effect', 'generate-exact-export'), 'operationMs': q['operationMs']})
     require(time.monotonic() + q['operationMs'] / 1000 + q['lossMs'] / 1000 < end, 'operation/settlement inside independent owner lifetime')
     send(peer, key, session, 1, 'GENERATE', {'intentSha256': intent})
     sequence = 2; due = time.monotonic(); operation_end = time.monotonic() + q['operationMs'] / 1000
@@ -486,7 +490,7 @@ def recover(q):
     if len(rows) >= 3:
         closed(rows[2]['body'], ['app', 'effect', 'operationMs'])
         require(rows[2]['body']['app'] == rows[1]['body']['app'] and
-                rows[2]['body']['effect'] == 'generate-exact-export' and
+                rows[2]['body']['effect'] == q.get('effect', 'generate-exact-export') and
                 type(rows[2]['body']['operationMs']) is int and rows[2]['body']['operationMs'] == q['operationMs'],
                 'intent differs from accepted application/effect/budget')
     if len(rows) >= 4:

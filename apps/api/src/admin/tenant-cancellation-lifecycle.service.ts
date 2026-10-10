@@ -1,3 +1,4 @@
+import { requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
 import { createHash, randomUUID } from 'node:crypto';
@@ -138,6 +139,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     ) {}
 
     async prepare(input: PrepareIntentInput): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         input = Object.freeze({ ...input, actor: Object.freeze({ ...input.actor }) }) as PrepareIntentInput;
         // Capture request authority before any lock wait; recovery methods never
         // enter this admission wrapper or depend on the originating session.
@@ -286,6 +288,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         outcome: TenantCancellationOutcome,
         providerMutationOwnedFromAttempt = outcome.action === 'scheduled',
     ): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const owner = prepared.providerLeaseOwner;
         if (!owner) throw new Error('Provider cancellation claim is unavailable.');
         return this.withIntentScope(
@@ -460,6 +463,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     async renewProviderClaim(
         prepared: PreparedTenantCancellationIntent,
     ): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const owner = prepared.providerLeaseOwner;
         if (!owner) throw new Error('Provider cancellation claim is unavailable.');
         return this.withIntentScope(
@@ -503,6 +507,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         prepared: PreparedTenantCancellationIntent,
         outcome: TenantCancellationCompensationOutcome,
     ): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const owner = prepared.providerLeaseOwner;
         if (!owner) throw new Error('Provider cancellation claim is unavailable.');
         return this.withIntentScope('PLATFORM_ARCHIVE', prepared.tenant.id, async (tx) => {
@@ -579,6 +584,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     }
 
     async releaseProviderClaim(prepared: PreparedTenantCancellationIntent): Promise<void> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         if (!prepared.providerLeaseOwner) return;
         await this.withIntentScope(
             prepared.intent.kind,
@@ -608,6 +614,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
     async finalize(
         prepared: PreparedTenantCancellationIntent,
     ): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         return this.withIntentScope(
             prepared.intent.kind,
             prepared.tenant.id,
@@ -703,6 +710,7 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         limit: number,
         excludedOperationIds: readonly string[] = [],
     ): Promise<PreparedTenantCancellationIntent[]> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const normalizedLimit = Number.isFinite(limit) ? Math.floor(limit) : 1;
         const batchLimit = Math.max(
             1,
@@ -1504,6 +1512,7 @@ export class TenantCancellationLifecycleService {
         actor: TenantLifecycleActor,
         body: { confirmation?: unknown; reason?: unknown },
     ) {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const confirmation = normalizeTenantConfirmation(body?.confirmation);
         const reason = typeof body?.reason === 'string' && body.reason.trim()
             ? body.reason.trim().slice(0, 500)
@@ -1531,6 +1540,7 @@ export class TenantCancellationLifecycleService {
         actor: TenantPlatformArchiveActor,
         tenantId: string,
     ) {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         const capturedActor = capturePlatformTenantActor(actor);
         const prepared = await this.store.prepare({
             kind: 'PLATFORM_ARCHIVE',
@@ -1548,6 +1558,7 @@ export class TenantCancellationLifecycleService {
     async reconcilePrepared(
         prepared: PreparedTenantCancellationIntent,
     ): Promise<PreparedTenantCancellationIntent> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         let current = prepared;
         if (['BLOCKED', 'SUPERSEDED'].includes(current.intent.state)) {
             return current;

@@ -1,3 +1,4 @@
+import { requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -71,6 +72,7 @@ export class SchedulePublishedEmailService {
     get deliveryTimeoutMs(): number { return this.providerTimeoutMs; }
 
     async send(input: SchedulePublishedEmailInput): Promise<SchedulePublishedEmailOutcome> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         return this.withDeadline(async window => {
             const prepared = await this.prepare(input, window);
             return prepared.send(input.recipientEmail, window) as Promise<SchedulePublishedEmailOutcome>;
@@ -79,6 +81,7 @@ export class SchedulePublishedEmailService {
 
     /** Database suppression preparation must finish before the caller holds Tenant/User/outbox locks. */
     async prepare(input: SchedulePublishedEmailInput, window: NotificationHandoffWindow): Promise<PreparedNotificationHandoff> {
+        requireOrdinaryProducer('unadmitted lifecycle or provider effect');
         window.assertNewHandoff();
         const boundRecipient = input.recipientEmail;
         const skip = (outcome: SchedulePublishedEmailOutcome): PreparedNotificationHandoff => Object.freeze({

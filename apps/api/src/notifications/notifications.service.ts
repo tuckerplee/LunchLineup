@@ -1,3 +1,4 @@
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { Inject, Injectable, Logger, Optional, type OnModuleDestroy, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ModuleRef } from '@nestjs/core';
@@ -39,7 +40,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     ) {
         this.tenantDb = tenantDb ?? new TenantPrismaService();
         const redisUrl = this.configService.get<string>('REDIS_URL');
-        this.redis = redisUrl
+        this.redis = !pilotProducersClosed() && redisUrl
             ? new Redis(redisUrl, {
                 lazyConnect: true,
                 maxRetriesPerRequest: 1,
@@ -84,6 +85,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
      * Persists a notification to the database and publishes an internal Redis fan-out event.
      */
     async send(tenantId: string, userId: string, type: NotificationType, title: string, body: string) {
+        requireOrdinaryProducer('notification persistence and fan-out');
         this.logger.log(`Handling notification type=${type}`);
 
         // 1. Save to DB
@@ -171,6 +173,7 @@ export class NotificationsService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async publishExisting(notification: Notification): Promise<void> {
+        requireOrdinaryProducer('notification Redis fan-out');
         const channel = `notifications:user:${notification.userId}`;
         if (!this.redis) return;
         try {

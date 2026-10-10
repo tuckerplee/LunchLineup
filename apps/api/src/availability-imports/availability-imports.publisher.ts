@@ -1,3 +1,4 @@
+import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import {
     Injectable,
     Logger,
@@ -46,6 +47,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     constructor(private readonly tenantDb: TenantPrismaService) {}
 
     onModuleInit(): void {
+        if (pilotProducersClosed()) return;
         if (this.lifecycle !== 'starting') return;
         this.lifecycle = 'ready';
         this.timer = setInterval(() => this.kick(), PUBLISH_INTERVAL_MS);
@@ -71,6 +73,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     kick(): void {
+        requireOrdinaryProducer('availability import publication');
         if (!this.isReady() || this.activeSweep) return;
         this.activeSweep = this.publishPending()
             .catch((error) => {
@@ -84,6 +87,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async publishPending(): Promise<void> {
+        requireOrdinaryProducer('availability import publishPending');
         await this.reconcileWorkerAccepted();
         await this.recoverExpiredExecutions();
         const claimed = await this.claim();
@@ -91,6 +95,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async reconcileWorkerAccepted(): Promise<void> {
+        requireOrdinaryProducer('availability import reconcileWorkerAccepted');
         await this.tenantDb.withPlatformAdmin((tx: any) => tx.$executeRaw(Prisma.sql`
             UPDATE "AvailabilityImportJob"
             SET
@@ -110,6 +115,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async recoverExpiredExecutions(): Promise<void> {
+        requireOrdinaryProducer('availability import recoverExpiredExecutions');
         // A confirmed broker message can disappear after its worker crashes. Revoke
         // expired owners or stale missing ownership, then reuse durable publication.
         // Source bytes and the original debit remain intact; workers still validate
@@ -156,6 +162,7 @@ export class AvailabilityImportPublisher implements OnModuleInit, OnModuleDestro
     }
 
     private async claim(): Promise<ClaimedPublication[]> {
+        requireOrdinaryProducer('availability import claim');
         const now = new Date();
         const leaseUntil = new Date(now.getTime() + PUBLISH_LEASE_MS);
         const publishToken = randomUUID();

@@ -2,20 +2,43 @@ import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { connect } from 'node:net';
-import type { TenantExportService } from './tenant-export.service';
+import { TenantExportService } from './tenant-export.service';
+import { ScheduleSolveOutboxPublisher } from '../schedules/schedule-solve-outbox.publisher';
 
 const CONFIG = '/etc/lunchlineup/trust/persistent-export-consumer.json';
 const SOCKET = '/run/lunchlineup-persistent-export/owner.sock';
-const permits = new WeakMap<object, { service: object; jobId: string; tenantId: string; expires: number }>();
+type Effect = 'generate-exact-export' | 'publish-exact-schedule';
+const permits = new WeakMap<object, { service: object; effect: Effect; jobId: string; tenantId: string; expires: number }>();
 
 /** Only the authenticated, sequence-bound consumer below can mint a permit. */
 export function consumePersistentExportPermit(service: object, permit: object) {
     const value = permits.get(permit);
     permits.delete(permit);
-    if (!value || value.service !== service || performance.now() >= value.expires) {
+    if (!value || value.service !== service || value.effect !== 'generate-exact-export' || performance.now() >= value.expires) {
         throw new Error('Persistent export permit is absent, consumed or expired.');
     }
     return { jobId: value.jobId, tenantId: value.tenantId };
+}
+
+export function consumePersistentSchedulePermit(service: object, permit: object) {
+    const value = permits.get(permit);
+    permits.delete(permit);
+    if (!value || value.service !== service || value.effect !== 'publish-exact-schedule' || performance.now() >= value.expires) {
+        throw new Error('Persistent schedule permit is absent, consumed or expired.');
+    }
+    return { jobId: value.jobId, tenantId: value.tenantId, expires: value.expires };
+}
+
+// Inspection selects only one fixed implementation. It does not mint authority.
+export function selectedPersistentProducer(): Effect {
+    protectedPath(CONFIG);
+    const info = lstatSync(CONFIG);
+    requireValue(info.isFile() && info.nlink === 1 && info.size <= 16384
+        && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
+    const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
+    const effect = config.effect ?? 'generate-exact-export';
+    requireValue(effect === 'generate-exact-export' || effect === 'publish-exact-schedule', 'Fixed producer effect required.');
+    return effect;
 }
 
 function canonical(value: unknown): string {
@@ -49,14 +72,22 @@ function protectedPath(path: string): void {
     }
 }
 
-export async function runPersistentExportConsumer(service: TenantExportService): Promise<void> {
+export async function runPersistentExportConsumer(service: TenantExportService | ScheduleSolveOutboxPublisher): Promise<void> {
     requireValue(process.env.TENANT_EXPORT_PILOT_MODE === 'true', 'Dedicated consumer requires closed pilot startup.');
     protectedPath(CONFIG);
     const info = lstatSync(CONFIG);
     requireValue(info.isFile() && info.nlink === 1 && info.size <= 16384
         && !(info.mode & 0o007) && info.gid === process.getgid?.(), 'Private installed consumer configuration required.');
     const config = JSON.parse(readFileSync(CONFIG, 'utf8'));
-    closed(config, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'keyHex', 'operationMs', 'lossMs']);
+    closed(config, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'keyHex', 'operationMs', 'lossMs',
+        ...(Object.prototype.hasOwnProperty.call(config, 'effect') ? ['effect'] : [])]);
+    config.effect ??= 'generate-exact-export';
+    requireValue((config.effect === 'generate-exact-export' && service instanceof TenantExportService)
+        || (config.effect === 'publish-exact-schedule' && service instanceof ScheduleSolveOutboxPublisher), 'Fixed producer implementation differs.');
+    for (const name of ['jobId', 'tenantId']) requireValue(typeof config[name] === 'string'
+        && /^[\x20-\x7e]{1,128}$/.test(config[name]), 'Exact selected operation/tenant required.');
+    if (config.effect === 'publish-exact-schedule') requireValue(process.env.RABBITMQ_URL
+        && process.env.WORKER_QUEUE_NAME, 'Explicit installed broker and queue required.');
     requireValue(/^[a-f0-9]{64}$/.test(config.keyHex) && /^[a-f0-9]{64}$/.test(config.scopeSha256)
         && /^[a-f0-9]{40}$/.test(config.sourceSha), 'Pinned consumer identity required.');
     requireValue(Number.isSafeInteger(config.operationMs) && config.operationMs >= 1000 && config.operationMs <= 3600000
@@ -107,7 +138,7 @@ export async function runPersistentExportConsumer(service: TenantExportService):
             && value.sequence === incoming && /^[a-f0-9]{64}$/.test(value.session), 'Owner authentication/sequence failed.');
         if (incoming === 0) {
             requireValue(value.kind === 'HELLO', 'Owner hello required.');
-            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs']);
+            closed(value.body, ['jobId', 'tenantId', 'scopeSha256', 'sourceSha', 'operationMs', 'lossMs', 'effect']);
             for (const name of Object.keys(value.body)) requireValue(value.body[name] === config[name], 'Owner selected scope differs.');
             service.assertPersistentOwnerReady();
             session = value.session;
@@ -119,12 +150,14 @@ export async function runPersistentExportConsumer(service: TenantExportService):
                 requireValue(!generated && incoming === 1 && /^[a-f0-9]{64}$/.test(value.body.intentSha256), 'One durable intent required.');
                 generated = true; intentSha256 = value.body.intentSha256;
                 const permit = Object.freeze({ nonce: randomUUID() });
-                permits.set(permit, { service, jobId: config.jobId, tenantId: config.tenantId, expires: performance.now() + config.operationMs });
-                operationTimer = setTimeout(() => close('Original export operation deadline exceeded.'), config.operationMs);
+                permits.set(permit, { service, effect: config.effect, jobId: config.jobId, tenantId: config.tenantId, expires: performance.now() + config.operationMs });
+                operationTimer = setTimeout(() => close('Original producer operation deadline exceeded.'), config.operationMs);
                 owned = (async () => {
                     let outcome: 'settled' | 'unknown' = 'unknown'; let processed = false;
                     try {
-                        processed = await service.runPersistentOwnerExport(permit);
+                        processed = service instanceof TenantExportService
+                            ? await service.runPersistentOwnerExport(permit)
+                            : await service.runPersistentOwnerSchedule(permit);
                         await service.closeAdmission();
                         outcome = 'settled';
                     } catch { /* Unresolved remains unknown; no replay or cleanup permission. */ }
