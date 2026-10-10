@@ -1,5 +1,5 @@
 import type { PersistentCancellationProvider } from '../billing/persistent-cancellation-provider';
-import { consumePersistentCancellationRequestPermit, consumePersistentCancellationOperationPermit, consumePersistentCancellationFinalizationPermit, consumePersistentCancellationConvergencePermit } from './persistent-export-consumer';
+import { consumePersistentCancellationRequestPermit, consumePersistentCancellationOperationPermit, consumePersistentCancellationFinalizationPermit, consumePersistentCancellationConvergencePermit, consumePersistentObservedCancellationPermit } from './persistent-export-consumer';
 import { pilotProducersClosed, requireOrdinaryProducer } from '../common/pilot-producer-admission';
 import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
 import { Prisma, TenantStatus } from '@prisma/client';
@@ -296,6 +296,362 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
         }
     }
 
+    private async readSelectedObservation(
+        tx: TenantPrismaTransaction,
+        selected: ReturnType<typeof consumePersistentObservedCancellationPermit>,
+    ) {
+        const guard = () => this.assertCancellationOwnerOpen(selected.expires);
+        const digest = (value: unknown) => createHash('sha256').update(canonicalCancellationReceipt(value)).digest('hex');
+        guard(); await this.lockTenantLifecycle(tx, selected.tenantId); guard();
+        const billingLock = await tx.$queryRaw<Array<{ acquired: boolean }>>`
+            SELECT pg_try_advisory_xact_lock(hashtextextended(${`billing-checkout:${selected.tenantId}`}, 0)) AS "acquired"
+        `; guard();
+        if (billingLock.length !== 1 || billingLock[0].acquired !== true) throw new Error('Observation settlement billing lock is busy.');
+        const cursorLock = await tx.$queryRaw<Array<{ acquired: boolean }>>`
+            SELECT pg_try_advisory_xact_lock(hashtextextended(${selected.subscriptionId}, 0)) AS "acquired"
+        `; guard();
+        if (cursorLock.length !== 1 || cursorLock[0].acquired !== true) throw new Error('Observation settlement subscription cursor is busy.');
+        type Tenant = TenantCancellationSubject & { stripeCustomerId: string | null;
+            stripeSubscriptionCurrentPeriodEnd: Date | null; selectedBillingRevision: number };
+        type Setting = { original: Prisma.JsonValue; selectedLifecycleObservationFinalizationIntentSha256: string | null;
+            selectedLifecycleObservationFinalizationReceipt: Prisma.JsonValue | null;
+            selectedLifecycleObservationTerminalIntentSha256: string | null; selectedLifecycleObservationTerminalReceipt: Prisma.JsonValue | null };
+        const tenants = await tx.$queryRaw<Tenant[]>`
+            SELECT "id", "slug", "status", "deletedAt", "retentionLegalHoldAt", "stripeCustomerId",
+                "stripeSubscriptionId", "stripeSubscriptionCurrentPeriodEnd", "selectedBillingRevision"
+            FROM "Tenant" WHERE "id" = ${selected.tenantId} FOR UPDATE NOWAIT
+        `; guard();
+        const settings = await tx.$queryRaw<Setting[]>`
+            SELECT jsonb_build_object('value', "value", 'requestIntentSha256', "selectedLifecycleIntentSha256",
+                'operationId', "selectedLifecycleOperationId", 'providerIntentSha256', "selectedLifecycleProviderIntentSha256",
+                'customerId', "selectedLifecycleProviderCustomerId",
+                'providerLeaseUntil', to_char("selectedLifecycleProviderLeaseUntil", 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'),
+                'providerReceipt', "selectedLifecycleProviderReceipt", 'providerBillingRevision', "selectedLifecycleProviderBillingRevision",
+                'finalizationReceipt', "selectedLifecycleFinalizationReceipt", 'terminalReceipt', "selectedLifecycleTerminalReceipt") AS "original",
+                "selectedLifecycleObservationFinalizationIntentSha256", "selectedLifecycleObservationFinalizationReceipt",
+                "selectedLifecycleObservationTerminalIntentSha256", "selectedLifecycleObservationTerminalReceipt"
+            FROM "TenantSetting" WHERE "tenantId" = ${selected.tenantId}
+                AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation' FOR UPDATE NOWAIT
+        `; guard();
+        const tenant = tenants[0]; const row = settings[0];
+        if (tenants.length !== 1 || !tenant || settings.length !== 1 || !row) throw new Error('Original observation settlement rows are absent.');
+        const original = cancellationObject(row.original);
+        if (original.requestIntentSha256 !== selected.predecessorIntentSha256 || original.operationId !== selected.jobId
+            || original.providerIntentSha256 !== selected.providerIntentSha256 || original.customerId !== selected.customerId
+            || (original.providerReceipt === null ? null : digest(original.providerReceipt)) !== selected.priorReceiptSha256
+            || (original.finalizationReceipt === null ? null : digest(original.finalizationReceipt)) !== selected.predecessorFinalizationSha256
+            || original.terminalReceipt !== null) throw new Error('Original provider/local receipt custody differs; completed terminal chain is separate.');
+        const intent = parseIntentSetting(original.value as Prisma.JsonValue);
+        if (intent.tenantId !== selected.tenantId || intent.kind !== 'CUSTOMER_CANCELLATION' || intent.operationId !== selected.jobId
+            || intent.providerSubscriptionId !== selected.subscriptionId || intent.providerAttempts !== 1
+            || !intent.providerLeaseOwner || !intent.providerLeaseExpiresAt || intent.compensationResult !== null) {
+            throw new Error('Exact original consumed cancellation intent required.');
+        }
+        const histories = await tx.$queryRaw<Array<{ value: Prisma.JsonValue }>>`
+            SELECT "value" FROM "TenantSetting" WHERE "tenantId" = ${selected.tenantId}
+                AND "key" = ${`internal:account-lifecycle-request:${selected.jobId}`} FOR UPDATE NOWAIT
+        `; guard();
+        const history = projectAccountLifecycleRequest(histories[0]?.value);
+        if (histories.length !== 1 || !history || history.requestId !== selected.jobId || history.kind !== 'CANCELLATION') {
+            throw new Error('Original cancellation history is absent; never recreate its timestamp.');
+        }
+        const observations = await tx.$queryRaw<Array<{ id: string; operationId: string; requestIntentSha256: string;
+            providerIntentSha256: string; observationIntentSha256: string; customerId: string; subscriptionId: string;
+            priorReceiptSha256: string | null; original: Prisma.JsonValue; receipt: Prisma.JsonValue | null;
+            billingRevision: number | null; attempts: number; completedAt: Date | null }>>`
+            SELECT "id", "operationId", "requestIntentSha256", "providerIntentSha256", "observationIntentSha256", "customerId",
+                "subscriptionId", "priorReceiptSha256", "original", "receipt", "billingRevision", "attempts", "completedAt"
+            FROM "TenantCancellationObservation" WHERE "id" = ${selected.observationId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+        `; guard();
+        const observation = observations[0];
+        if (observations.length !== 1 || !observation || observation.receipt === null || observation.completedAt === null
+            || observation.attempts !== 1 || observation.billingRevision === null
+            || observation.operationId !== selected.jobId || observation.requestIntentSha256 !== selected.predecessorIntentSha256
+            || observation.providerIntentSha256 !== selected.providerIntentSha256 || observation.observationIntentSha256 !== selected.observationIntentSha256
+            || observation.customerId !== selected.customerId || observation.subscriptionId !== selected.subscriptionId
+            || observation.priorReceiptSha256 !== selected.priorReceiptSha256 || digest(observation.receipt) !== selected.observationReceiptSha256) {
+            throw new Error('Exact completed observation receipt is unavailable.');
+        }
+        const receipt = cancellationObject(observation.receipt); const provider = cancellationObject(receipt.provider);
+        const providerOutcome = cancellationObject(provider.outcome); const snapshot = cancellationObject(receipt.snapshot);
+        const processFence = cancellationObject(receipt.processFence);
+        if (receipt.version !== 1 || receipt.tenantId !== selected.tenantId || receipt.operationId !== selected.jobId
+            || receipt.observationId !== selected.observationId || receipt.observationIntentSha256 !== selected.observationIntentSha256
+            || receipt.requestIntentSha256 !== selected.predecessorIntentSha256 || receipt.providerIntentSha256 !== selected.providerIntentSha256
+            || receipt.priorReceiptSha256 !== selected.priorReceiptSha256 || receipt.originalSha256 !== digest(observation.original)
+            || receipt.backendSettlementProved !== false || receipt.retryAllowed !== false
+            || processFence.applicationProcessSettled !== true || processFence.backendSettlementProved !== false || processFence.retryAllowed !== false
+            || provider.tenantId !== selected.tenantId || provider.operationId !== selected.jobId || provider.customerId !== selected.customerId
+            || provider.disposition !== 'OBSERVED_OWNED_CANCELLATION' || provider.backendSettlementProved !== false || provider.retryAllowed !== false
+            || typeof provider.providerRequestId !== 'string' || provider.providerRequestId.length < 1 || provider.providerRequestId.length > 255
+            || providerOutcome.stripeSubscriptionId !== selected.subscriptionId || providerOutcome.providerMutationOwned !== true
+            || providerOutcome.cancellationBehavior !== 'cancel_at_period_end'
+            || !Number.isSafeInteger(snapshot.billingRevision) || snapshot.billingRevision !== observation.billingRevision) {
+            throw new Error('Positive operation-owned observation correspondence required; unknown POST remains unknown.');
+        }
+        const outcome = parseCancellationOutcome(providerOutcome);
+        if (!['already_scheduled', 'already_canceled'].includes(outcome.action)
+            || (outcome.action === 'already_canceled' ? providerOutcome.stripeStatus !== 'canceled'
+                : providerOutcome.stripeStatus === 'canceled' || !outcome.cancelAtPeriodEnd || !outcome.currentPeriodEnd)) {
+            throw new Error('Scheduled/terminal observation required.');
+        }
+        for (const value of [outcome.currentPeriodEnd, outcome.cancelAt, outcome.canceledAt]) {
+            if (value !== null && (!Number.isFinite(new Date(value).getTime()) || new Date(value).toISOString() !== value)) {
+                throw new Error('Canonical observation timestamps required.');
+            }
+        }
+        return { tenant, row, original, intent, history, observation, receipt, snapshot, outcome };
+    }
+
+    private async readObservedTerminalApplication(
+        tx: TenantPrismaTransaction, selected: ReturnType<typeof consumePersistentObservedCancellationPermit>,
+        tenant: TenantCancellationSubject & { stripeCustomerId: string | null; stripeSubscriptionCurrentPeriodEnd: Date | null; selectedBillingRevision: number },
+        predecessorBillingRevision: number,
+    ) {
+        const guard = () => this.assertCancellationOwnerOpen(selected.expires);
+        const digest = (value: unknown) => createHash('sha256').update(canonicalCancellationReceipt(value)).digest('hex');
+        if (typeof selected.terminalEventId !== 'string' || typeof selected.terminalEventSha256 !== 'string'
+            || tenant.status !== 'CANCELLED' || tenant.deletedAt !== null || tenant.stripeCustomerId !== selected.customerId
+            || tenant.stripeSubscriptionId !== null || tenant.stripeSubscriptionCurrentPeriodEnd !== null) {
+            throw new Error('Exact observed terminal application identity/projection required.');
+        }
+        // Lock the parent event before its invalidatable application receipt; both refuse contention.
+        const events = await tx.$queryRaw<Array<{ id: string; stripeEventId: string | null; type: string; metadata: Prisma.JsonValue | null }>>`
+            SELECT "id", "stripeEventId", "type", "metadata" FROM "BillingEvent"
+            WHERE "id" = ${selected.terminalEventId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+        `; guard();
+        const applications = await tx.$queryRaw<Array<{ eventId: string; tenantId: string; receipt: Prisma.JsonValue }>>`
+            SELECT "eventId", "tenantId", "receipt" FROM "TenantCancellationTerminalEvent"
+            WHERE "eventId" = ${selected.terminalEventId} AND "tenantId" = ${selected.tenantId} FOR UPDATE NOWAIT
+        `; guard();
+        const event = events[0]; const application = applications[0];
+        if (events.length !== 1 || !event || applications.length !== 1 || !application
+            || event.type !== 'customer.subscription.deleted' || !event.stripeEventId
+            || digest(application) !== selected.terminalEventSha256) throw new Error('Exact authenticated application receipt is unavailable.');
+        const proof = cancellationObject(application.receipt);
+        const post = cancellationObject(proof.postState);
+        const metadata = cancellationObject(event.metadata);
+        if (proof.version !== 1 || proof.provenance !== 'verified-stripe-terminal-webhook-v1'
+            || proof.providerEventId !== event.stripeEventId || proof.tenantId !== selected.tenantId
+            || proof.operationId !== selected.jobId || proof.customerId !== selected.customerId
+            || proof.subscriptionId !== selected.subscriptionId || proof.livemode !== false || proof.accountMode !== 'direct'
+            || proof.apiVersion !== '2024-04-10' || !Number.isSafeInteger(proof.providerEventCreated) || Number(proof.providerEventCreated) <= 0
+            || typeof proof.endpointId !== 'string' || !/^we_[A-Za-z0-9]{1,251}$/.test(proof.endpointId)
+            || typeof proof.accountId !== 'string' || !/^acct_[A-Za-z0-9]{1,249}$/.test(proof.accountId)
+            || !['rawBodySha256', 'signatureSha256', 'webhookKeySha256'].every(key => typeof proof[key] === 'string' && /^[a-f0-9]{64}$/.test(proof[key] as string))
+            || metadata.sideEffectDisposition !== 'applied' || metadata.cancellationOperationId !== selected.jobId
+            || metadata.subscriptionId !== selected.subscriptionId || metadata.customerId !== selected.customerId
+            || metadata.stripeEventLivemode !== false || metadata.status !== 'canceled'
+            || post.status !== 'CANCELLED' || post.deletedAt !== null || post.customerId !== selected.customerId
+            || post.subscriptionId !== null || post.currentPeriodEnd !== null
+            || !Number.isSafeInteger(post.billingRevision) || post.billingRevision !== tenant.selectedBillingRevision
+            || Number(post.billingRevision) <= predecessorBillingRevision) {
+            throw new Error('Authenticated post-effect chronology/resources differ or later history intervened.');
+        }
+        const outcome = parseCancellationOutcome(proof.outcome);
+        if (outcome.action !== 'already_canceled') throw new Error('Terminal application outcome required.');
+        for (const value of [outcome.currentPeriodEnd, outcome.cancelAt, outcome.canceledAt]) {
+            if (value !== null && (!Number.isFinite(new Date(value).getTime()) || new Date(value).toISOString() !== value)) {
+                throw new Error('Canonical terminal application timestamp required.');
+            }
+        }
+        return application;
+    }
+
+    runPersistentOwnerObservedCancellation(permit: object): Promise<boolean> {
+        const selected = consumePersistentObservedCancellationPermit(this, permit);
+        this.assertPersistentOwnerReady(); this.ownerUsed = true;
+        this.ownerOperation = Promise.resolve().then(() => this.settleSelectedObservation(selected))
+            .catch(error => { this.ownerUnknown = true; throw error; });
+        return this.ownerOperation;
+    }
+
+    private async settleSelectedObservation(selected: ReturnType<typeof consumePersistentObservedCancellationPermit>): Promise<boolean> {
+        const guard = () => this.assertCancellationOwnerOpen(selected.expires);
+        const digest = (value: unknown) => createHash('sha256').update(canonicalCancellationReceipt(value)).digest('hex');
+        const same = (a: unknown, b: unknown) => canonicalCancellationReceipt(a) === canonicalCancellationReceipt(b);
+        const isTerminalEvent = selected.effect === 'converge-exact-observed-cancellation';
+        const matchesReceipt = (value: Record<string, unknown>) => value.version === 1 && value.tenantId === selected.tenantId
+            && value.operationId === selected.jobId && value.requestIntentSha256 === selected.predecessorIntentSha256
+            && value.providerIntentSha256 === selected.providerIntentSha256 && value.priorReceiptSha256 === selected.priorReceiptSha256
+            && value.predecessorFinalizationSha256 === selected.predecessorFinalizationSha256
+            && value.observationId === selected.observationId && value.observationIntentSha256 === selected.observationIntentSha256
+            && value.observationReceiptSha256 === selected.observationReceiptSha256 && value.state === 'FINALIZED'
+            && value.backendSettlementProved === false && value.retryAllowed === false;
+        try {
+            guard();
+            const result = await this.tenantDb.withTenant(selected.tenantId, tx => {
+                this.ownerCallback = Promise.resolve().then(async () => {
+                    const context = await this.readSelectedObservation(tx, selected); guard();
+                    const { tenant, row, original, intent, history, observation, snapshot } = context;
+                    const prior = row.selectedLifecycleObservationFinalizationReceipt === null ? null
+                        : cancellationObject(row.selectedLifecycleObservationFinalizationReceipt);
+                    const priorTerminal = row.selectedLifecycleObservationTerminalReceipt === null ? null
+                        : cancellationObject(row.selectedLifecycleObservationTerminalReceipt);
+                    // Exact completion replay precedes all current billing/snapshot comparisons.
+                    if (prior) {
+                        if (!row.selectedLifecycleObservationFinalizationIntentSha256 || !matchesReceipt(prior)
+                            || prior.source !== 'provider-observation' || intent.state !== 'FINALIZED' || history.state !== 'COMPLETED'
+                            || intent.providerMutationOwned !== true) throw new Error('Prior observation completion differs.');
+                        if (priorTerminal) {
+                            if (!row.selectedLifecycleObservationTerminalIntentSha256 || !matchesReceipt(priorTerminal)
+                                || priorTerminal.source !== 'verified-terminal-event'
+                                || priorTerminal.observationFinalizationSha256 !== digest(prior)
+                                || typeof priorTerminal.applicationReceiptSha256 !== 'string'
+                                || digest(priorTerminal.applicationReceipt) !== priorTerminal.applicationReceiptSha256
+                                || !same(priorTerminal.outcome, cancellationObject(cancellationObject(priorTerminal.applicationReceipt).receipt).outcome)
+                                || !same(priorTerminal.outcome, intent.providerResult)) throw new Error('Prior observed terminal chain differs.');
+                        } else if (!same(prior.outcome, intent.providerResult)) throw new Error('Prior observation projection differs.');
+                        if (!isTerminalEvent) {
+                            if (parseCancellationOutcome(prior.outcome).action !== selected.expectedAction) throw new Error('Prior observation action differs.');
+                            return true;
+                        }
+                        if (digest(prior) !== selected.observationFinalizationSha256) throw new Error('Exact observation-finalization predecessor differs.');
+                        if (priorTerminal) {
+                            if (priorTerminal.eventId !== selected.terminalEventId || priorTerminal.applicationReceiptSha256 !== selected.terminalEventSha256
+                                || parseCancellationOutcome(priorTerminal.outcome).action !== 'already_canceled') throw new Error('Recorded observed terminal event differs.');
+                            return true;
+                        }
+                    } else if (isTerminalEvent || row.selectedLifecycleObservationFinalizationIntentSha256 !== null
+                        || priorTerminal !== null || row.selectedLifecycleObservationTerminalIntentSha256 !== null) {
+                        throw new Error('Exact observation completion predecessor is required.');
+                    }
+                    this.assertNoLifecycleBarrier(tenant, 'CUSTOMER_CANCELLATION');
+                    if (tenant.deletedAt !== null || tenant.stripeCustomerId !== selected.customerId) throw new Error('Current observed customer binding changed.');
+                    const platform = await tx.tenantSetting.findUnique({ where: { tenantId_key: {
+                        tenantId: selected.tenantId, key: this.intentSettingKey('PLATFORM_ARCHIVE') } }, select: { id: true } }); guard();
+                    if (platform) throw new Error('Platform observation settlement needs separate authority.');
+                    let outcome = context.outcome;
+                    let application: { eventId: string; tenantId: string; receipt: Prisma.JsonValue } | undefined;
+                    if (isTerminalEvent) {
+                        if (!prior || parseCancellationOutcome(prior.outcome).action !== 'already_scheduled'
+                            || context.outcome.action !== 'already_scheduled' || row.selectedLifecycleObservationTerminalIntentSha256 !== null
+                            || !Number.isSafeInteger(prior.billingRevisionAfter)
+                            || !same({ ...original, value: cancellationObject(observation.original).value }, observation.original)) {
+                            throw new Error('Exact observation-finalized scheduled predecessor required.');
+                        }
+                        const originalValue = cancellationObject(cancellationObject(observation.original).value);
+                        const currentValue = cancellationObject(original.value);
+                        const stable = (value: Record<string, unknown>) => Object.fromEntries(Object.entries(value)
+                            .filter(([key]) => !['state', 'providerResult', 'providerMutationOwned'].includes(key)));
+                        if (!same(stable(originalValue), stable(currentValue))) throw new Error('Original observation intent custody changed.');
+                        application = await this.readObservedTerminalApplication(tx, selected, tenant, Number(prior.billingRevisionAfter)); guard();
+                        outcome = parseCancellationOutcome(cancellationObject(application.receipt).outcome);
+                    } else {
+                        if (!same(original, observation.original) || outcome.action !== selected.expectedAction
+                            || (original.finalizationReceipt === null
+                                ? intent.state !== 'PENDING_PROVIDER' || history.state !== 'PENDING' || intent.providerResult !== null
+                                : intent.state !== 'FINALIZED' || history.state !== 'COMPLETED'
+                                    || !['scheduled', 'already_scheduled'].includes(parseCancellationOutcome(intent.providerResult).action))
+                            || tenant.selectedBillingRevision !== observation.billingRevision
+                            || !same(snapshot, { status: tenant.status, customerId: tenant.stripeCustomerId,
+                                subscriptionId: tenant.stripeSubscriptionId,
+                                currentPeriodEnd: tenant.stripeSubscriptionCurrentPeriodEnd?.toISOString() ?? null,
+                                billingRevision: tenant.selectedBillingRevision })) {
+                            throw new Error('Observation snapshot or original completion advanced; no stale settlement.');
+                        }
+                        if (outcome.action === 'already_scheduled'
+                            ? tenant.status === 'CANCELLED' || tenant.stripeSubscriptionId !== selected.subscriptionId
+                            : !(tenant.stripeSubscriptionId === selected.subscriptionId || (tenant.status === 'CANCELLED'
+                                && tenant.stripeSubscriptionId === null && tenant.stripeSubscriptionCurrentPeriodEnd === null))) {
+                            throw new Error('Observation cannot replace, resurrect or clear another subscription.');
+                        }
+                    }
+                    const terminal = outcome.action === 'already_canceled';
+                    const paidThrough = terminal ? null : new Date(outcome.currentPeriodEnd!);
+                    if (!terminal && (!paidThrough || !Number.isFinite(paidThrough.getTime())
+                        || (tenant.stripeSubscriptionCurrentPeriodEnd && paidThrough < tenant.stripeSubscriptionCurrentPeriodEnd))) {
+                        throw new Error('Observed paid-through cannot shorten a newer local boundary.');
+                    }
+                    const changesBilling = !isTerminalEvent && (terminal
+                        ? tenant.status !== 'CANCELLED' || tenant.stripeSubscriptionId !== null || tenant.stripeSubscriptionCurrentPeriodEnd !== null
+                        : tenant.stripeSubscriptionCurrentPeriodEnd?.getTime() !== paidThrough!.getTime());
+                    if (intent.actorTenantId === tenant.id) {
+                        const actors = await tx.$queryRaw<Array<{ id: string }>>`
+                            SELECT "id" FROM "User" WHERE "id" = ${intent.actorUserId} AND "tenantId" = ${tenant.id} FOR KEY SHARE NOWAIT
+                        `; guard();
+                        if (actors.length !== 1) throw new Error('Original reconciliation audit actor is unavailable.');
+                    }
+                    if (terminal && changesBilling) {
+                        await tx.$queryRaw`
+                            WITH locked AS (SELECT "id" FROM "StaffInvitationOutbox" WHERE "tenantId" = ${tenant.id}
+                                ORDER BY "id" FOR UPDATE NOWAIT) SELECT count(*) FROM locked
+                        `; guard();
+                    }
+                    const localReceipt = { version: 1, tenantId: selected.tenantId, operationId: selected.jobId,
+                        requestIntentSha256: selected.predecessorIntentSha256, providerIntentSha256: selected.providerIntentSha256,
+                        priorReceiptSha256: selected.priorReceiptSha256, predecessorFinalizationSha256: selected.predecessorFinalizationSha256,
+                        observationId: selected.observationId, observationIntentSha256: selected.observationIntentSha256,
+                        observationReceiptSha256: selected.observationReceiptSha256,
+                        source: isTerminalEvent ? 'verified-terminal-event' : 'provider-observation',
+                        ...(isTerminalEvent ? { observationFinalizationSha256: selected.observationFinalizationSha256,
+                            eventId: selected.terminalEventId, applicationReceiptSha256: selected.terminalEventSha256,
+                            applicationReceipt: application } : {}),
+                        outcome, state: 'FINALIZED', observationBillingRevision: observation.billingRevision,
+                        postState: { status: terminal ? 'CANCELLED' : tenant.status, deletedAt: null, customerId: selected.customerId,
+                            subscriptionId: terminal ? null : selected.subscriptionId, currentPeriodEnd: paidThrough?.toISOString() ?? null,
+                            billingRevision: tenant.selectedBillingRevision + (changesBilling ? 1 : 0) },
+                        billingRevisionBefore: tenant.selectedBillingRevision,
+                        billingRevisionAfter: tenant.selectedBillingRevision + (changesBilling ? 1 : 0),
+                        backendSettlementProved: false, retryAllowed: false };
+                    const finalized: TenantCancellationIntentRow = { ...intent, state: 'FINALIZED', providerResult: outcome, providerMutationOwned: true };
+                    // Only fixed source-selected identifiers enter this fragment; no caller SQL.
+                    const intentColumn = Prisma.raw(isTerminalEvent ? '"selectedLifecycleObservationTerminalIntentSha256"' : '"selectedLifecycleObservationFinalizationIntentSha256"');
+                    const receiptColumn = Prisma.raw(isTerminalEvent ? '"selectedLifecycleObservationTerminalReceipt"' : '"selectedLifecycleObservationFinalizationReceipt"');
+                    const changed = await tx.$executeRaw`
+                        UPDATE "TenantSetting" SET "value" = CAST(${JSON.stringify(serializeIntentSetting(finalized))} AS jsonb),
+                            ${intentColumn} = ${selected.intentSha256}, ${receiptColumn} = CAST(${JSON.stringify(localReceipt)} AS jsonb), "updatedAt" = CURRENT_TIMESTAMP
+                        WHERE "tenantId" = ${selected.tenantId} AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                            AND "selectedLifecycleIntentSha256" = ${selected.predecessorIntentSha256}
+                            AND "selectedLifecycleOperationId" = ${selected.jobId} AND "selectedLifecycleProviderIntentSha256" = ${selected.providerIntentSha256}
+                            AND "value" = CAST(${JSON.stringify(original.value)} AS jsonb) AND ${intentColumn} IS NULL AND ${receiptColumn} IS NULL
+                    `; guard();
+                    if (changed !== 1) throw new Error('Exact observation local receipt was not recorded.');
+                    if (changesBilling) {
+                        const changedTenant = await tx.tenant.updateMany({ where: { id: selected.tenantId,
+                            selectedBillingRevision: tenant.selectedBillingRevision, stripeCustomerId: selected.customerId,
+                            stripeSubscriptionId: tenant.stripeSubscriptionId, deletedAt: null },
+                            data: terminal ? { status: TenantStatus.CANCELLED, stripeSubscriptionId: null, stripeSubscriptionCurrentPeriodEnd: null }
+                                : { stripeSubscriptionCurrentPeriodEnd: paidThrough } }); guard();
+                        if (changedTenant.count !== 1) throw new Error('Exact observed billing transition was not recorded.');
+                    }
+                    const billing = await tx.tenant.findUnique({ where: { id: selected.tenantId }, select: {
+                        status: true, deletedAt: true, stripeCustomerId: true, stripeSubscriptionId: true,
+                        stripeSubscriptionCurrentPeriodEnd: true, selectedBillingRevision: true } }); guard();
+                    if (!billing || !same(localReceipt.postState, { status: billing.status, deletedAt: billing.deletedAt,
+                            customerId: billing.stripeCustomerId, subscriptionId: billing.stripeSubscriptionId,
+                            currentPeriodEnd: billing.stripeSubscriptionCurrentPeriodEnd?.toISOString() ?? null,
+                            billingRevision: billing.selectedBillingRevision })
+                        || billing.deletedAt !== null || billing.stripeCustomerId !== selected.customerId
+                        || billing.status !== (terminal ? 'CANCELLED' : tenant.status)
+                        || billing.stripeSubscriptionId !== (terminal ? null : selected.subscriptionId)
+                        || billing.selectedBillingRevision !== localReceipt.billingRevisionAfter
+                        || (billing.stripeSubscriptionCurrentPeriodEnd?.getTime() ?? null) !== (paidThrough?.getTime() ?? null)) {
+                        throw new Error('Atomic observation billing readback differs.');
+                    }
+                    await tx.auditLog.create({ data: { tenantId: tenant.id,
+                        userId: intent.actorTenantId === tenant.id ? intent.actorUserId : null,
+                        actorUserId: intent.actorUserId, actorTenantId: intent.actorTenantId,
+                        action: 'TENANT_CANCELLATION_RECONCILED_BY_CUSTOMER', resource: 'Tenant', resourceId: tenant.id,
+                        newValue: { operationId: intent.operationId, observationId: selected.observationId,
+                            source: localReceipt.source, billingCancellation: outcome, backendSettlementProved: false, retryAllowed: false,
+                            ...(intent.reason ? { reason: intent.reason } : {}) }, ipAddress: intent.ipAddress, userAgent: intent.userAgent } }); guard();
+                    await recordAccountLifecycleRequest(tx, { tenantId: selected.tenantId, requestId: selected.jobId,
+                        kind: 'CANCELLATION', state: 'COMPLETED' }, guard); guard();
+                    const readback = await tx.$queryRaw<Array<{ value: Prisma.JsonValue; intentSha256: string; receipt: Prisma.JsonValue }>>`
+                        SELECT "value", ${intentColumn} AS "intentSha256", ${receiptColumn} AS "receipt"
+                        FROM "TenantSetting" WHERE "tenantId" = ${selected.tenantId} AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation'
+                    `; guard();
+                    if (readback.length !== 1 || readback[0].intentSha256 !== selected.intentSha256 || !same(readback[0].receipt, localReceipt)
+                        || !same(readback[0].value, serializeIntentSetting(finalized))) throw new Error('Exact observed local completion readback differs.');
+                    return true;
+                });
+                return this.ownerCallback;
+            }, { maxWait: 5000, timeout: 60000 }); guard(); return result;
+        } catch (error) { this.ownerClosed = true; this.ownerUnknown = true; throw error; }
+        finally { if (this.ownerCallback) await this.ownerCallback; }
+    }
+
     runPersistentOwnerCancellationConvergence(permit: object): Promise<boolean> {
         const selected = consumePersistentCancellationConvergencePermit(this, permit);
         this.assertPersistentOwnerReady(); this.ownerUsed = true;
@@ -501,7 +857,8 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
             selectedLifecycleProviderCustomerId: string | null; selectedLifecycleProviderReceipt: Prisma.JsonValue | null;
             selectedLifecycleProviderBillingRevision: number | null; selectedLifecycleFinalizationIntentSha256: string | null;
             selectedLifecycleFinalizationReceipt: Prisma.JsonValue | null; selectedLifecycleTerminalIntentSha256: string | null;
-            selectedLifecycleTerminalReceipt: Prisma.JsonValue | null };
+            selectedLifecycleTerminalReceipt: Prisma.JsonValue | null;
+            selectedLifecycleObservationFinalizationReceipt: Prisma.JsonValue | null; selectedLifecycleObservationTerminalReceipt: Prisma.JsonValue | null };
         const digest = (value: unknown) => createHash('sha256').update(canonicalCancellationReceipt(value)).digest('hex');
         try {
             guard();
@@ -524,7 +881,8 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                             "selectedLifecycleProviderIntentSha256", "selectedLifecycleProviderCustomerId",
                             "selectedLifecycleProviderReceipt", "selectedLifecycleProviderBillingRevision",
                             "selectedLifecycleFinalizationIntentSha256", "selectedLifecycleFinalizationReceipt",
-                            "selectedLifecycleTerminalIntentSha256", "selectedLifecycleTerminalReceipt"
+                            "selectedLifecycleTerminalIntentSha256", "selectedLifecycleTerminalReceipt",
+                            "selectedLifecycleObservationFinalizationReceipt", "selectedLifecycleObservationTerminalReceipt"
                         FROM "TenantSetting" WHERE "tenantId" = ${selected.tenantId}
                             AND "key" = 'internal:tenant-lifecycle-intent:customer_cancellation' FOR UPDATE NOWAIT
                     `; guard();
@@ -570,13 +928,34 @@ export class PrismaTenantCancellationIntentStore implements TenantCancellationIn
                             && terminal.providerReceiptSha256 === selected.receiptSha256
                             && terminal.predecessorFinalizationSha256 === digest(row.selectedLifecycleFinalizationReceipt)
                             && canonicalCancellationReceipt(terminal.outcome) === canonicalCancellationReceipt(intent.providerResult));
+                        const observed = row.selectedLifecycleObservationFinalizationReceipt === null ? null
+                            : cancellationObject(row.selectedLifecycleObservationFinalizationReceipt);
+                        const observedTerminal = row.selectedLifecycleObservationTerminalReceipt === null ? null
+                            : cancellationObject(row.selectedLifecycleObservationTerminalReceipt);
+                        const compatibleObserved = Boolean(observed && observed.source === 'provider-observation'
+                            && observed.tenantId === selected.tenantId && observed.operationId === selected.jobId
+                            && observed.requestIntentSha256 === selected.predecessorIntentSha256
+                            && observed.providerIntentSha256 === selected.providerIntentSha256 && observed.priorReceiptSha256 === selected.receiptSha256
+                            && observed.predecessorFinalizationSha256 === digest(row.selectedLifecycleFinalizationReceipt)
+                            && (canonicalCancellationReceipt(observed.outcome) === canonicalCancellationReceipt(intent.providerResult)
+                                || (observedTerminal && observedTerminal.observationFinalizationSha256 === digest(observed)
+                                    && observedTerminal.source === 'verified-terminal-event'
+                                    && observedTerminal.tenantId === selected.tenantId && observedTerminal.operationId === selected.jobId
+                                    && observedTerminal.requestIntentSha256 === selected.predecessorIntentSha256
+                                    && observedTerminal.providerIntentSha256 === selected.providerIntentSha256
+                                    && observedTerminal.priorReceiptSha256 === selected.receiptSha256
+                                    && observedTerminal.predecessorFinalizationSha256 === digest(row.selectedLifecycleFinalizationReceipt)
+                                    && observedTerminal.observationId === observed.observationId
+                                    && observedTerminal.observationIntentSha256 === observed.observationIntentSha256
+                                    && observedTerminal.observationReceiptSha256 === observed.observationReceiptSha256
+                                    && canonicalCancellationReceipt(observedTerminal.outcome) === canonicalCancellationReceipt(intent.providerResult))));
                         if (intent.state !== 'FINALIZED' || !row.selectedLifecycleFinalizationIntentSha256
                             || prior.providerReceiptSha256 !== selected.receiptSha256
                             || prior.requestIntentSha256 !== selected.predecessorIntentSha256
                             || prior.providerIntentSha256 !== selected.providerIntentSha256
                             || prior.operationId !== selected.jobId || prior.tenantId !== selected.tenantId
                             || prior.action !== selected.expectedAction
-                            || (!compatibleTerminal && canonicalCancellationReceipt(intent.providerResult) !== canonicalCancellationReceipt(outcome))) {
+                            || (!compatibleTerminal && !compatibleObserved && canonicalCancellationReceipt(intent.providerResult) !== canonicalCancellationReceipt(outcome))) {
                             throw new Error('Durable prior local finalization differs.');
                         }
                         return true;

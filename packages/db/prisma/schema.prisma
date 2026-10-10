@@ -1365,6 +1365,10 @@ model TenantSetting {
   selectedLifecycleFinalizationReceipt Json?
   selectedLifecycleTerminalIntentSha256 String? @db.VarChar(64)
   selectedLifecycleTerminalReceipt Json?
+  selectedLifecycleObservationFinalizationIntentSha256 String?
+  selectedLifecycleObservationFinalizationReceipt Json?
+  selectedLifecycleObservationTerminalIntentSha256 String?
+  selectedLifecycleObservationTerminalReceipt Json?
   id        String   @id @default(uuid())
   tenantId  String
   key       String

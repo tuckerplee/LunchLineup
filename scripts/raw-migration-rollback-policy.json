@@ -533,6 +533,14 @@
       "contractPhase": "after-rollback-window",
       "requiresOldReleaseProof": true,
       "rationale": "Retain separate consumed observation claims/results and original provider fences. Never clear a claim after GET uncertainty or restore an old DB snapshot as retry authority. Fresh independent admission must reconcile external custody after storage restore. Old-release retention purge must include this child or remain held; native RLS, concurrency, callback/commit uncertainty, rollback and privacy purge proof required."
+    },
+    "packages/db/prisma/migrations/20261010_zzzzzz_selected_observation_settlement.sql": {
+      "sha256": "436b14df571b53f6058486302a69acf429fcd2559aaba8c5412c4b57234ad884",
+      "phase": "expand-contract",
+      "rollbackSchema": "retain",
+      "contractPhase": "after-rollback-window",
+      "requiresOldReleaseProof": true,
+      "rationale": "Retain immutable observation-linked local completion and subsequent verified-terminal receipt with original request/provider/finalization nulls and fences unchanged. Do not restore earlier CHECK/functions over reconciled rows. Old serializers and batches remain held until native original/reconciled replay, atomic billing/history/audit, RLS/retention, rollback and concurrency proof; no provider retry or historical backfill."
     }
   }
 }
