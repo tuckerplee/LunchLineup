@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-const playwrightConfig = readFileSync(resolve(__dirname, '../../playwright.config.ts'), 'utf8');
+const playwrightConfig = readFileSync(resolve(__dirname, '../../playwright.config.mts'), 'utf8');
 const mockApi = readFileSync(resolve(__dirname, '../e2e/mock-api.mjs'), 'utf8');
 const internalPipeline = JSON.parse(readFileSync(resolve(__dirname, '../../../../.ci/pipeline.json'), 'utf8')) as { steps: Array<{ name: string; run: string }> };
 const mockPlaywrightRunner = readFileSync(resolve(__dirname, '../../../../scripts/run-internal-ci-mock-playwright.sh'), 'utf8');

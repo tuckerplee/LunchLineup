@@ -1,3 +1,4 @@
+// Explicit ESM keeps the protected .mjs helper graph out of Playwright's CommonJS require hook.
 import { defineConfig, devices } from '@playwright/test';
 import { resolve } from 'node:path';
 import { requireQaBaseUrl } from './tests/e2e/qa-isolation-policy';

@@ -550,7 +550,7 @@ test('internal beta local pipeline keeps isolated source, active scanners, exact
   assert.match(mockPlaywright, /--purpose build --require-clean/);
   assert.match(mockPlaywright, /stats\.unexpected!==0\|\|stats\.skipped!==0\|\|stats\.flaky!==0/);
   assert.match(mockPlaywright, /E2E_SIGNUP_MODE=closed_beta/);
-  const playwrightConfig = read('apps/web/playwright.config.ts');
+  const playwrightConfig = read('apps/web/playwright.config.mts');
   for (const tag of ['@full-stack', '@closed-beta', '@turnstile', '@chromium', '@desktop-chromium', '@mobile-chromium']) {
     assert.match(playwrightConfig, new RegExp(tag));
   }
