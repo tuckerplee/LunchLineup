@@ -119,7 +119,7 @@ fullstack-playwright)
     E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')"
     E2E_RELEASE_MANIFEST_SHA256="$manifest_sha" E2E_WEB_IMAGE_ID="$web_id"
     E2E_PUBLIC_BUILD_CONFIG_SHA256="$public_sha" E2E_INTERACTION_PROOF_ROOT="$proof_dir")
-  interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.ts --workers=1 --retries=0)
+  interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.mts --workers=1 --retries=0)
   env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$proof_dir/selection.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" --list >"$proof_dir/selection.log" 2>&1
   node "$build_root/scripts/verify-development-browser-report.mjs" --selection "$build_root/.ci/development-browser-cases.json" interaction "$proof_dir/selection.json" >"$proof_dir/selection-proof.json"
   env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$proof_dir/results.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" >"$artifact_root/interaction-proof.log" 2>&1

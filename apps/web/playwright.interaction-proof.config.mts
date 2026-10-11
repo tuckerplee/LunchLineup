@@ -1,6 +1,6 @@
 import { defineConfig, devices } from '@playwright/test';
 
-import baseConfig from './playwright.config';
+import baseConfig from './playwright.config.mjs';
 
 const candidateSha = process.env.E2E_CANDIDATE_SHA ?? 'local-source';
 const candidateTreeSha = process.env.E2E_CANDIDATE_TREE_SHA ?? 'local-tree';

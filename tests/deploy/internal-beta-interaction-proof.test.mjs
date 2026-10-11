@@ -101,7 +101,7 @@ test('DB-backed scheduling readback follows authoritative shift ids instead of r
 test('critical interaction source contains no skip and names every launch contract', () => {
   const desktop = read('apps/web/tests/e2e/internal-beta-interaction-desktop.proof.ts');
   const touch = read('apps/web/tests/e2e/internal-beta-interaction-touch.proof.ts');
-  const config = read('apps/web/playwright.interaction-proof.config.ts');
+  const config = read('apps/web/playwright.interaction-proof.config.mts');
   assert.doesNotMatch(`${desktop}\n${touch}`, /test\.(?:skip|fixme)|\.skip\(/);
   for (const phrase of [
     'slight movement', 'outside drop', 'Escape', 'pointercancel', 'exact proposed employee and time',

@@ -417,7 +417,7 @@ interaction="$artifact_root/development-interaction"; mkdir -- "$interaction"
 web_image=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).services.web.image)' "$artifact_root/compose-config.json")
 web_id=$(docker image inspect --format '{{.Id}}' "$web_image")
 interaction_env=(BASE_URL=http://127.0.0.1:8080 E2E_FULL_STACK=1 E2E_ADMIN_USERNAME=e2e.interaction.admin E2E_MOCK_API=0 E2E_SIGNUP_MODE=closed_beta E2E_COMPOSE_PROJECT_NAME="$project" E2E_COMPOSE_ENV_FILE="$env_file" E2E_CANDIDATE_SHA="$CI_COMMIT_SHA" E2E_CANDIDATE_TREE_SHA="$(git -C "$build_root" rev-parse 'HEAD^{tree}')" E2E_WEB_IMAGE_ID="$web_id" E2E_INTERACTION_PROOF_ROOT="$interaction")
-interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.ts --workers=1 --retries=0)
+interaction_args=(test --forbid-only --reporter=json --config=playwright.interaction-proof.config.mts --workers=1 --retries=0)
 env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/selection.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" --list >"$interaction/selection.log" 2>&1
 node "$report_verifier" --selection "$case_manifest" interaction "$interaction/selection.json" >"$interaction/selection-proof.json"
 env "${interaction_env[@]}" PLAYWRIGHT_JSON_OUTPUT_NAME="$interaction/results.json" "$build_root/node_modules/.bin/playwright" "${interaction_args[@]}" >"$interaction/test.log" 2>&1

@@ -1020,7 +1020,7 @@ jobs:
         working-directory: apps/web
         env:
           E2E_CANDIDATE_SHA: ${{ github.sha }}
-        run: npx playwright test --config=playwright.interaction-proof.config.ts
+        run: npx playwright test --config=playwright.interaction-proof.config.mts
       - name: Reject missing or skipped interaction proof cases
         id: interaction-proof-receipt
         working-directory: apps/web

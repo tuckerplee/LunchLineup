@@ -7,7 +7,7 @@
     "predev": "npm run build --workspace @lunchlineup/api-contract",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint \"**/*.{ts,tsx}\"",
+    "lint": "eslint \"**/*.{ts,tsx,mts}\"",
     "typecheck": "tsc --noEmit",
     "storybook": "storybook dev -p 6006",
     "build-storybook": "storybook build",
