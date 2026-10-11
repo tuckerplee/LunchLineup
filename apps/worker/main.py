@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import OrderedDict
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import hashlib
@@ -288,6 +289,14 @@ class ScheduleJobBusyError(RuntimeError):
 
 class ScheduleJobOwnershipLostError(RuntimeError):
     pass
+
+
+class ScheduleDatabaseOutcomeUnknown(RuntimeError):
+    """The operation ended, but its commit outcome requires durable redelivery."""
+
+
+class ScheduleJobExhaustedError(RuntimeError):
+    """The locked job was terminalized/refunded before another solver attempt."""
 
 
 class WorkerDrainTimeout(RuntimeError):
@@ -764,6 +773,35 @@ def solve_failure_reason(response: Any) -> str:
     return f"{reason} ({', '.join(parts)})"
 
 
+async def settle_schedule_database(operation: Callable[..., Any], *args: Any) -> Any:
+    """Retain the actual transaction thread until it finishes, even on cancellation."""
+    # Keep an executor Future rather than a child Task: the process finalizer
+    # cancels all Tasks, which must not mark a running transaction as settled.
+    task = asyncio.get_running_loop().run_in_executor(None, copy_context().run, operation, *args)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        # A cancelled await is not transaction rollback. Do not let the caller
+        # continue broker disposition while this thread can still commit.
+        while not task.done():
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        if task.done() and not task.cancelled():
+            try:
+                task.result()
+            except BaseException:
+                pass  # Preserve cancellation, never infer commit or rollback.
+        raise
+    except RetryableJobError as exc:
+        # Includes connection/commit loss translated by the synchronous stores.
+        # Redelivery re-reads terminal/token/progress before further effects.
+        raise ScheduleDatabaseOutcomeUnknown("Scheduling database outcome requires readback") from exc
+
+
 async def persist_solved_schedule(
     solve_payload: SolvePayload,
     solved_shifts: list[NormalizedShift],
@@ -771,7 +809,7 @@ async def persist_solved_schedule(
     retry_count: int,
     execution_token: str | None,
 ) -> None:
-    await asyncio.to_thread(
+    await settle_schedule_database(
         _persist_solved_schedule_sync,
         solve_payload,
         solved_shifts,
@@ -1116,6 +1154,7 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
     job_type = message.type if message.type in JOB_HANDLERS else "unknown"
     solve_payload: SolvePayload | None = None
     execution_token: str | None = None
+    effective_retry = message.retry_count
     start = time.perf_counter()
     IN_FLIGHT_JOBS.inc()
     try:
@@ -1126,7 +1165,7 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
         if message.type == "schedule.solve":
             solve_payload = validate_solve_payload(message.payload)
             candidate_token = uuid.uuid4().hex
-            claim_status = await claim_schedule_solve_job(
+            claim_status, effective_retry = await claim_schedule_solve_job(
                 solve_payload,
                 message.job_id,
                 message.retry_count,
@@ -1142,10 +1181,12 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
                 return {"skipped": True, "status": claim_status}
             if claim_status == "busy":
                 raise ScheduleJobBusyError("schedule solve job already has an active execution owner")
+            if claim_status == "exhausted":
+                raise ScheduleJobExhaustedError("Durable scheduling retry budget exhausted")
             execution_token = candidate_token
 
         idempotency_key = job_key(message, message_id)
-        if idempotency_key in _COMPLETED_JOB_KEYS:
+        if not solve_payload and idempotency_key in _COMPLETED_JOB_KEYS:
             logger.info("Skipping duplicate completed job job_ref=%s", safe_ref(idempotency_key))
             JOB_TOTAL.labels(type=job_type, status="duplicate").inc()
             return {"skipped": True}
@@ -1154,7 +1195,7 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
             result = await handler(
                 message.payload,
                 message.job_id,
-                message.retry_count,
+                effective_retry,
                 execution_token,
             )
         elif message.type == "pdf.parse":
@@ -1165,17 +1206,19 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
         JOB_TOTAL.labels(type=job_type, status="success").inc()
         logger.info("Job completed type=%s", job_type)
         return result
+    except (ScheduleDatabaseOutcomeUnknown, ScheduleJobExhaustedError):
+        raise
     except ScheduleJobBusyError:
         JOB_TOTAL.labels(type=job_type, status="duplicate").inc()
         raise
     except NonRetryableJobError as exc:
-        if solve_payload:
+        if solve_payload and message.job_id:
             await try_mark_schedule_solve_job_status(
                 solve_payload,
                 message.job_id,
                 "FAILED",
                 job_status_reason(exc),
-                message.retry_count,
+                effective_retry,
                 execution_token,
             )
         JOB_TOTAL.labels(type=job_type, status="non_retryable").inc()
@@ -1183,6 +1226,7 @@ async def _process_message(body: bytes, message_id: str | None = None) -> dict[s
     except Exception as exc:
         if execution_token:
             setattr(exc, "schedule_execution_token", execution_token)
+            setattr(exc, "schedule_effective_retry", effective_retry)
         JOB_TOTAL.labels(type=job_type, status="failed").inc()
         raise
     finally:
@@ -1215,12 +1259,12 @@ async def claim_schedule_solve_job(
     job_id: str | None,
     retry_count: int,
     execution_token: str,
-) -> str:
-    if not os.getenv("DATABASE_URL"):
-        return "claimed"
+) -> tuple[str, int]:
     if not job_id:
         raise NonRetryableJobError("schedule solve job id is required")
-    return await asyncio.to_thread(
+    if not os.getenv("DATABASE_URL"):
+        raise ScheduleDatabaseOutcomeUnknown("DATABASE_URL is required for scheduling")
+    return await settle_schedule_database(
         _claim_schedule_solve_job_sync,
         solve_payload,
         job_id,
@@ -1234,10 +1278,10 @@ def _claim_schedule_solve_job_sync(
     job_id: str,
     retry_count: int,
     execution_token: str,
-) -> str:
+) -> tuple[str, int]:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        return "claimed"
+        raise ScheduleDatabaseOutcomeUnknown("DATABASE_URL is required for scheduling")
 
     try:
         import psycopg
@@ -1291,7 +1335,8 @@ def _claim_schedule_solve_job_sync(
                         (SELECT MIN(refund."reason") FROM "CreditTransaction" refund
                          WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
                         (SELECT MIN(refund."balanceAfter") FROM "CreditTransaction" refund
-                         WHERE refund."id" = 'schedule-credit-refund-' || job."id")
+                         WHERE refund."id" = 'schedule-credit-refund-' || job."id"),
+                        job."retryCount"
                     FROM "ScheduleSolveJob" job
                     WHERE "id" = %s
                       AND "tenantId" = %s
@@ -1328,10 +1373,22 @@ def _claim_schedule_solve_job_sync(
                     error_type=ScheduleCreditProvenanceError,
                 )
                 if status in SCHEDULE_JOB_TERMINAL_STATUSES:
-                    return "terminal"
+                    return "terminal", int(row[15])
                 require_active_paid_scheduling_tenant(tenant)
                 if status == "RUNNING" and bool(row[3]) and str(row[1] or "") != execution_token:
-                    return "busy"
+                    return "busy", int(row[15])
+                stored_retry = row[15]
+                if type(stored_retry) is not int or stored_retry < 0:
+                    raise RetryableJobError("Invalid durable scheduling retry progress")
+                # RUNNING already consumed its index, even if its owner died.
+                # RETRYING reserves the next index after confirmed publication.
+                effective_retry = max(retry_count, stored_retry + (1 if status == "RUNNING" else 0))
+                if effective_retry > MAX_RETRIES:
+                    _terminalize_schedule_solve_job_with_refund(
+                        cursor, solve_payload, job_id, "DEAD_LETTERED",
+                        "Schedule retry budget exhausted", stored_retry, None, row[1],
+                    )
+                    return "exhausted", stored_retry
                 cursor.execute(
                     '''
                     UPDATE "ScheduleSolveJob"
@@ -1347,17 +1404,25 @@ def _claim_schedule_solve_job_sync(
                     WHERE "id" = %s
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
+                      AND "locationId" = %s
+                      AND "status" = %s AND "retryCount" = %s
+                      AND "executionToken" IS NOT DISTINCT FROM %s
+                    RETURNING "executionToken", "retryCount"
                     ''',
                     (
-                        retry_count,
+                        effective_retry,
                         execution_token,
                         SCHEDULE_SOLVE_EXECUTION_LEASE_SECONDS,
                         job_id,
                         solve_payload.tenant_id,
                         solve_payload.schedule_id,
+                        solve_payload.location_id, status, stored_retry, row[1],
                     ),
                 )
-                return "claimed"
+                claimed = cursor.fetchone()
+                if cursor.rowcount != 1 or claimed != (execution_token, effective_retry):
+                    raise RetryableJobError("Scheduling claim readback differs")
+                return "claimed", effective_retry
     except (RetryableJobError, NonRetryableJobError):
         raise
     except Exception as exc:
@@ -1373,8 +1438,8 @@ async def try_mark_schedule_solve_job_status(
     execution_token: str | None = None,
 ) -> None:
     if not job_id or not os.getenv("DATABASE_URL"):
-        return
-    await asyncio.to_thread(
+        raise ScheduleDatabaseOutcomeUnknown("Scheduling identity and DATABASE_URL are required")
+    await settle_schedule_database(
         _update_schedule_solve_job_status_sync,
         solve_payload,
         job_id,
@@ -1393,10 +1458,10 @@ async def terminalize_schedule_solve_job_by_id(
     retry_count: int,
 ) -> None:
     if not os.getenv("DATABASE_URL"):
-        return
+        raise ScheduleDatabaseOutcomeUnknown("DATABASE_URL is required for scheduling")
     if not ID_RE.fullmatch(job_id):
         raise NonRetryableJobError("schedule solve job id is invalid")
-    await asyncio.to_thread(
+    await settle_schedule_database(
         _terminalize_schedule_solve_job_by_id_sync,
         job_id,
         status,
@@ -1629,7 +1694,7 @@ def _terminalize_schedule_solve_job_with_refund(
             SET
                 "status" = %s,
                 "statusReason" = %s,
-                "retryCount" = %s,
+                "retryCount" = GREATEST(job."retryCount", %s),
                 "resultShiftCount" = %s,
                 "executionToken" = NULL,
                 "executionLeaseUntil" = NULL,
@@ -1715,7 +1780,7 @@ def _terminalize_schedule_solve_job_by_id_sync(
 ) -> None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        return
+        raise ScheduleDatabaseOutcomeUnknown("DATABASE_URL is required for scheduling")
     if status not in {"FAILED", "DEAD_LETTERED"}:
         raise ValueError("unsupported terminal schedule solve job status")
     capability = os.getenv("PLATFORM_ADMIN_DB_CONTEXT_SECRET", "").strip()
@@ -1784,7 +1849,7 @@ def _update_schedule_solve_job_status_sync(
 ) -> None:
     database_url = os.getenv("DATABASE_URL")
     if not database_url:
-        return
+        raise ScheduleDatabaseOutcomeUnknown("DATABASE_URL is required for scheduling")
     if status not in {"RETRYING", "SUCCEEDED", "FAILED", "DEAD_LETTERED"}:
         raise ValueError("unsupported schedule solve job status")
 
@@ -1831,13 +1896,10 @@ def _update_schedule_solve_job_status_sync(
                     WHERE "id" = %s
                       AND "tenantId" = %s
                       AND "scheduleId" = %s
-                      AND "status" NOT IN ('SUCCEEDED', 'FAILED', 'DEAD_LETTERED')
-                      AND CASE
-                          WHEN %s::text IS NULL THEN
-                              "executionToken" IS NULL
-                              OR "executionLeaseUntil" <= CURRENT_TIMESTAMP
-                          ELSE "executionToken" = %s
-                      END
+                      AND "status" = 'RUNNING'
+                      AND "executionToken" = %s
+                      AND "retryCount" = %s
+                    RETURNING "id"
                     ''',
                     (
                         status,
@@ -1853,9 +1915,12 @@ def _update_schedule_solve_job_status_sync(
                         solve_payload.tenant_id,
                         solve_payload.schedule_id,
                         execution_token,
-                        execution_token,
+                        retry_count - 1 if status == "RETRYING" else retry_count,
                     ),
                 )
+                changed = cursor.fetchone()
+                if cursor.rowcount != 1 or changed != (job_id,):
+                    raise ScheduleJobOwnershipLostError("Scheduling successor ownership changed")
     except (RetryableJobError, ScheduleJobOwnershipLostError):
         raise
     except Exception as exc:
@@ -2617,6 +2682,13 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
     """Settle one source message only after durable replacement ownership is known."""
     try:
         await process_message(message.body, message_id=message.message_id)
+    except ScheduleDatabaseOutcomeUnknown:
+        await asyncio.sleep(RETRY_PUBLISH_FAILURE_REQUEUE_DELAY_SECONDS)
+        await message.nack(requeue=True)
+        return
+    except ScheduleJobExhaustedError:
+        await reject_to_solver_dlq(message, "retries_exhausted")
+        return
     except ScheduleJobOwnershipLostError:
         logger.info("Stale schedule solve delivery discarded after ownership changed")
         await message.ack()
@@ -2671,7 +2743,7 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
-        retry_count = read_retry_count(message.body)
+        retry_count = max(read_retry_count(message.body), getattr(exc, "schedule_effective_retry", 0))
         if isinstance(exc, AvailabilityImportRetryable) and exc.effective_retry_count is not None:
             retry_count = max(retry_count, exc.effective_retry_count)
         job_type = read_job_type(message.body)
@@ -2721,6 +2793,11 @@ async def handle_queue_message(channel: Any, message: Any) -> None:
                 exc,
                 replacement_retry_count,
             )
+        except ScheduleDatabaseOutcomeUnknown:
+            # A confirmed replacement may exist, but no commit/rollback is inferred.
+            # Both deliveries re-read the same monotone durable progress on claim.
+            await message.nack(requeue=True)
+            return
         except Exception as state_error:
             logger.error(
                 "Confirmed retry state update failed; replacement still owns delivery operation=retry_schedule_state_update type=%s status=RETRYING failure_class=%s",
