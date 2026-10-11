@@ -31,6 +31,18 @@ validatePublicBrowserUrl(process.env.NEXT_PUBLIC_API_URL);
 const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY_API_URL
     ? serverHttpUrl(process.env.LUNCHLINEUP_E2E_LEGACY_API_URL, 'LUNCHLINEUP_E2E_LEGACY_API_URL')
     : null;
+
+// Preserve the synchronous config object used by existing consumers. The fixed
+// lane pins Node 22.23.2, whose require(esm) supports this synchronous module graph.
+// QA/env flags select inspection only; protected source/physical admission grants
+// the alias before either compiler reads this config. Failures remain fatal.
+const mock = process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1'
+    ? require('../../scripts/fixed-mock-ux.mjs') : null;
+const fixedMockUx = mock?.mockUxConfiguration();
+if (fixedMockUx && Object.entries(mock.MOCK_WEB_ENV).some(([name, value]) => process.env[name] !== value)) {
+    throw new Error('Fixed mock web build/server environment mismatch.');
+}
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
     reactStrictMode: true,
@@ -100,14 +112,6 @@ const nextConfig = {
     // API v2 owns browser traffic. Ordinary production has no v1 rewrite;
     // only explicit local E2E or the authenticated fixed mock lane admits it.
     async rewrites() {
-        // Only the protected fixed source/physical phase can admit these loopback
-        // mock rewrites in a production build. QA/env flags alone grant nothing.
-        const mock = process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1'
-            ? await import('../../scripts/fixed-mock-ux.mjs') : null;
-        const fixedMockUx = mock?.mockUxConfiguration();
-        if (fixedMockUx && Object.entries(mock.MOCK_WEB_ENV).some(([name, value]) => process.env[name] !== value)) {
-            throw new Error('Fixed mock web build/server environment mismatch.');
-        }
         const legacyApiUrl = fixedMockUx ? mock.MOCK_WEB_ENV.LUNCHLINEUP_E2E_LEGACY_API_URL : localE2eLegacyApiUrl;
         return [
             {
@@ -125,5 +129,22 @@ const nextConfig = {
         ];
     },
 };
+
+if (fixedMockUx) {
+    // A literal UI choice, shared by SSR and the browser, never a public env gate.
+    // This compiled mock artifact remains disposable and must not be promoted.
+    nextConfig.turbopack = {
+        resolveAlias: {
+            '@/lib/fixed-mock-onboarding-ui': './lib/fixed-mock-onboarding-ui.mock.ts',
+        },
+    };
+    nextConfig.webpack = (config) => {
+        config.resolve.alias = {
+            ...config.resolve.alias,
+            '@/lib/fixed-mock-onboarding-ui$': require('node:path').resolve(__dirname, 'lib/fixed-mock-onboarding-ui.mock.ts'),
+        };
+        return config;
+    };
+}
 
 module.exports = nextConfig;

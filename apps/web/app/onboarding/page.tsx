@@ -5,6 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchPublicApi } from '@/lib/client-api';
+import { FIXED_MOCK_ONBOARDING_UI } from '@/lib/fixed-mock-onboarding-ui';
 import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import {
     buildOnboardingOtpPayload,
@@ -23,7 +24,9 @@ import { provisionPendingFirstLocation } from './first-location-transport';
 import { TurnstileChallenge } from './TurnstileChallenge';
 import { rememberWorkspaceSlug } from '@/lib/workspace-slug';
 
-const PUBLIC_SIGNUP_MODE = normalizePublicSignupMode(process.env.NEXT_PUBLIC_SIGNUP_MODE);
+const PUBLIC_SIGNUP_MODE = FIXED_MOCK_ONBOARDING_UI
+    ? 'open'
+    : normalizePublicSignupMode(process.env.NEXT_PUBLIC_SIGNUP_MODE);
 const TURNSTILE_SITE_KEY = process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim() ?? '';
 const SUPPORT_EMAIL = process.env.NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL?.trim() ?? '';
 const FIRST_LOCATION_RESUME_PATH = '/onboarding?resume=first-location';
