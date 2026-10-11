@@ -76,7 +76,14 @@ def select_phase():
     spec = importlib.util.spec_from_file_location('fixed_storage', Path(__file__).with_name('check-internal-ci-storage.py'))
     guard = importlib.util.module_from_spec(spec); spec.loader.exec_module(guard)
     phase = guard.read_finite_attestation(record)
-    if phase.get('kind') == 'fixed-mock-ux-runtime':
+    mock_kinds = {
+        'fixed-mock-ux-runtime': ('.ci/development-mock-ux.pipeline.json',
+            '.ci/development-mock-ux-cases.json', 'fixed-mock-ux-sandbox'),
+        'fixed-mock-ux-next-nine-runtime': ('.ci/development-mock-ux-next-nine.pipeline.json',
+            '.ci/development-mock-ux-next-nine-cases.json', 'fixed-mock-ux-next-nine-sandbox'),
+    }
+    if phase.get('kind') in mock_kinds:
+        pipeline_path, selection_path, sandbox_kind = mock_kinds[phase['kind']]
         expected = {'version', 'kind', 'phase', 'runId', 'sourceSha', 'pipelineSha256',
                     'selectionSha256', 'deadlineMonotonic', 'networkNamespaceInode',
                     'mountNamespaceInode', 'cgroup', 'sandboxAdmissionSha256'}
@@ -92,7 +99,7 @@ def select_phase():
                 type(phase['deadlineMonotonic']) not in (int, float) or
                 phase['runId'] != run or phase['sourceSha'] != source or
                 not 0 < phase['deadlineMonotonic'] - time.monotonic() <= 1800 or
-                profile.get('pipelinePath') != '.ci/development-mock-ux.pipeline.json' or
+                profile.get('pipelinePath') != pipeline_path or
                 profile.get('sourceSha') != source or profile.get('sourceRef') != os.environ.get('CI_REF') or
                 profile.get('pipelineSha256') != phase['pipelineSha256'] or
                 source_record.get('runId') != run or os.environ.get('CI_REPOSITORY') != 'lunchlineup' or
@@ -102,13 +109,13 @@ def select_phase():
                 Path('/proc/self/ns/mnt').stat().st_ino != phase['mountNamespaceInode'] or
                 Path('/proc/self/cgroup').read_text().strip() != phase['cgroup']):
             raise ValueError('fixed mock UX source/physical invocation mismatch')
-        for relative, digest in [('.ci/development-mock-ux.pipeline.json', phase['pipelineSha256']),
-                                 ('.ci/development-mock-ux-cases.json', phase['selectionSha256'])]:
+        for relative, digest in [(pipeline_path, phase['pipelineSha256']),
+                                 (selection_path, phase['selectionSha256'])]:
             if not re.fullmatch('[a-f0-9]{64}', digest) or hashlib.sha256((build / relative).read_bytes()).hexdigest() != digest:
                 raise ValueError('fixed mock UX pinned input differs')
         admission = root / 'browser-mock-sandbox.json'
         attestation = guard.read_finite_attestation(admission)
-        if (attestation.get('kind') != 'fixed-mock-ux-sandbox' or
+        if (attestation.get('kind') != sandbox_kind or
                 attestation.get('runId') != run or attestation.get('sourceSha') != source or
                 attestation.get('preEntrySignalWait') is not True or
                 hashlib.sha256(admission.read_bytes()).hexdigest() != phase['sandboxAdmissionSha256']):
@@ -187,12 +194,16 @@ if __name__ == '__main__':
         if value.get('kind') != 'fixed-mock-ux-runtime':
             raise ValueError('Mock UX requires an authenticated fixed phase')
         print(json.dumps(value, sort_keys=True))
+    elif sys.argv[1:] == ['--mock-ux-next-nine-json']:
+        if value.get('kind') != 'fixed-mock-ux-next-nine-runtime':
+            raise ValueError('Next nine requires its own authenticated fixed phase')
+        print(json.dumps(value, sort_keys=True))
     elif sys.argv[1:] == ['--c08-json']:
         if value.get('cohort') != 'c08':
             raise ValueError('C08 requires an authenticated fixed phase')
         print(json.dumps(value, sort_keys=True))
     elif len(sys.argv) == 1:
-        if value.get('cohort') == 'c08' or value.get('kind') == 'fixed-mock-ux-runtime':
+        if value.get('cohort') == 'c08' or value.get('kind') in ('fixed-mock-ux-runtime', 'fixed-mock-ux-next-nine-runtime'):
             raise ValueError('C08 phase cannot enter browser wrapper')
         print(value['phase'])
         print(value['runtimeDirectory'])

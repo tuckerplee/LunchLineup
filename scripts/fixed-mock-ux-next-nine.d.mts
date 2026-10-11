@@ -1,0 +1,2 @@
+export const MOCK_WEB_ENV: Readonly<Record<string, string>>;
+export function mockNextNineConfiguration(): null | { kind: string; sourceSha: string; runId: string; selectionSha256: string; servers: Array<{ command: string; url: string; reuseExistingServer: boolean; timeout: number }>; traces: string; chromiumSandbox: boolean; servingMode: string; concurrency: number; expectedWorkerLifetimes: number };

@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "releaseQualified": false,
+  "lanes": {
+    "mock-ux-next-nine": [
+      {
+        "file": "lunch-break-recovery.spec.ts",
+        "titlePath": [
+          "lunch-break-recovery.spec.ts",
+          "Lunch/break durable recovery",
+          "shows and searches every scheduled staff member beyond the former 24-person cap"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "lunch-break-recovery.spec.ts",
+        "titlePath": [
+          "lunch-break-recovery.spec.ts",
+          "Lunch/break durable recovery",
+          "reuses one generation A key and debit across A-to-B-to-A, lost response, and reload"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "payroll-control-surface.spec.ts",
+        "titlePath": [
+          "payroll-control-surface.spec.ts",
+          "Payroll control surface",
+          "keeps audit evidence collapsed and keyboard-reachable at 375px and 768px"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "time-card-target-safety.spec.ts",
+        "titlePath": [
+          "time-card-target-safety.spec.ts",
+          "Time Card target safety",
+          "keeps My Time bound to the session user and sends no delegated user id"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "time-card-target-safety.spec.ts",
+        "titlePath": [
+          "time-card-target-safety.spec.ts",
+          "Time Card target safety",
+          "requires an explicit Team Time person and location and clears person-specific drafts"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "scheduling-editor-custody.spec.ts",
+        "titlePath": [
+          "scheduling-editor-custody.spec.ts",
+          "Calendar pending-save editor custody",
+          "keeps a replacement shift editor when an older update is acknowledged"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "scheduling-editor-custody.spec.ts",
+        "titlePath": [
+          "scheduling-editor-custody.spec.ts",
+          "Calendar pending-save editor custody",
+          "keeps the newer editor and avoids an old-scope reload after a delayed stale update refusal"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "time-card-correction-browser-custody.spec.ts",
+        "titlePath": [
+          "time-card-correction-browser-custody.spec.ts",
+          "Time Card correction browser custody",
+          "keeps competing actions blocked through a delayed correction acknowledgement and exact readback"
+        ],
+        "project": "chromium"
+      },
+      {
+        "file": "time-card-correction-browser-custody.spec.ts",
+        "titlePath": [
+          "time-card-correction-browser-custody.spec.ts",
+          "Time Card correction browser custody",
+          "preserves newer correction inputs accepted while an earlier save acknowledgement is pending"
+        ],
+        "project": "chromium"
+      }
+    ]
+  }
+}

@@ -4,6 +4,12 @@ umask 077
 [[ "${1:-}" == --source-context && -n "${2:-}" && $# == 2 ]] || { echo 'Usage: run-internal-ci-mock-playwright.sh --source-context <context.json>' >&2; exit 64; }
 context=$2; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"
 test "$context" = "$source_root/source-context.json"; node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build >/dev/null
+if node "$build_root/scripts/fixed-mock-ux-next-nine.mjs" --selected; then
+  exec node "$build_root/scripts/fixed-mock-ux-next-nine.mjs" --run
+else
+  fixed_status=$?
+  [[ "$fixed_status" == 77 ]] || exit "$fixed_status"
+fi
 if node "$build_root/scripts/fixed-mock-ux.mjs" --selected; then
   exec node "$build_root/scripts/fixed-mock-ux.mjs" --run
 else

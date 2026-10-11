@@ -38,7 +38,9 @@ const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY
 // the alias before either compiler reads this config. Failures remain fatal.
 const mock = process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1'
     ? require('../../scripts/fixed-mock-ux.mjs') : null;
-const fixedMockUx = mock?.mockUxConfiguration();
+const nextNine = process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1'
+    ? require('../../scripts/fixed-mock-ux-next-nine.mjs') : null;
+const fixedMockUx = mock?.mockUxConfiguration() ?? nextNine?.mockNextNineConfiguration();
 if (fixedMockUx && Object.entries(mock.MOCK_WEB_ENV).some(([name, value]) => process.env[name] !== value)) {
     throw new Error('Fixed mock web build/server environment mismatch.');
 }

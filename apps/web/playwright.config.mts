@@ -3,12 +3,13 @@ import { defineConfig, devices } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { mockUxConfiguration, MOCK_WEB_ENV } from '../../scripts/fixed-mock-ux.mjs';
+import { mockNextNineConfiguration } from '../../scripts/fixed-mock-ux-next-nine.mjs';
 
 // This dependency remains CommonJS under Playwright; do not depend on synthesized named ESM exports.
 const { requireQaBaseUrl } = createRequire(import.meta.url)(
     './tests/e2e/qa-isolation-policy',
 ) as typeof import('./tests/e2e/qa-isolation-policy');
-const fixedMockUx = mockUxConfiguration();
+const fixedMockUx = mockUxConfiguration() ?? mockNextNineConfiguration();
 
 const AUTOMATIC_PORT_BASE = 4300;
 const AUTOMATIC_PORT_PAIR_COUNT = 300;
