@@ -1,9 +1,13 @@
 // Explicit ESM keeps the protected .mjs helper graph out of Playwright's CommonJS require hook.
 import { defineConfig, devices } from '@playwright/test';
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { requireQaBaseUrl } from './tests/e2e/qa-isolation-policy';
 import { mockUxConfiguration } from '../../scripts/fixed-mock-ux.mjs';
 
+// This dependency remains CommonJS under Playwright; do not depend on synthesized named ESM exports.
+const { requireQaBaseUrl } = createRequire(import.meta.url)(
+    './tests/e2e/qa-isolation-policy',
+) as typeof import('./tests/e2e/qa-isolation-policy');
 const fixedMockUx = mockUxConfiguration();
 
 const AUTOMATIC_PORT_BASE = 4300;
