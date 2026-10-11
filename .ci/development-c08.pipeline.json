@@ -28,7 +28,7 @@
     },
     {
       "name": "Install locked JavaScript dependencies",
-      "run": "set -euo pipefail; source_context=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/source-context.json\"; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; test -f \"$source_context\"; test -d \"$build_root\"; bash \"$build_root/scripts/install-internal-ci-dependencies.sh\" --source-context \"$source_context\"",
+      "run": "/usr/bin/python3 -I -B /run/c08-installed/c08-acquisition-gate.py",
       "timeout_seconds": 1800
     },
     {
@@ -38,7 +38,7 @@
     },
     {
       "name": "Acquire or execute exact C08 cases under authenticated owner phase",
-      "run": "set -euo pipefail; build_root=\"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build\"; cd \"$build_root\"; export PATH=\"$build_root/scripts/ci-container-bin:$PATH\"; node scripts/run-migration-tests.mjs --fixed-container-selection .ci/development-c08-cases.json",
+      "run": "/usr/bin/python3 -I -B /run/c08-installed/c08-phase-entry.py",
       "timeout_seconds": 1200
     }
   ]
