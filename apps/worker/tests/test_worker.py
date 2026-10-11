@@ -84,11 +84,13 @@ class FakePersistenceCursor:
         schedule_job_credit_consumption=None,
         schedule_job_debit_balance_after=None,
         schedule_job_refund_balance_after=None,
+        schedule_job_retry_count=0,
     ):
         self.calls = []
         self.fail_on_break_insert = fail_on_break_insert
         self.fail_on_schedule_revision_update = fail_on_schedule_revision_update
         self.schedule_job_status = schedule_job_status
+        self.schedule_job_retry_count = schedule_job_retry_count
         self.schedule_job_execution_token = schedule_job_execution_token
         self.schedule_job_lease_active = schedule_job_lease_active
         self.schedule_revision = 0 if schedule_revision is None else schedule_revision
@@ -129,6 +131,7 @@ class FakePersistenceCursor:
             else schedule_job_refund_balance_after
         )
         self.fetchone_result = None
+        self.rowcount = -1
         self.fetchall_result = []
 
     def __enter__(self):
@@ -140,6 +143,8 @@ class FakePersistenceCursor:
     def execute(self, sql, params=None):
         compact_sql = " ".join(sql.split())
         self.calls.append((compact_sql, params))
+        self.fetchone_result = None
+        self.rowcount = -1
         if compact_sql.startswith("WITH locked_job AS MATERIALIZED"):
             self.fetchone_result = (
                 self.schedule_job_status,
@@ -206,7 +211,8 @@ class FakePersistenceCursor:
                 *claim_result[5:],
             )
             self.fetchone_result = (
-                (claim_result if '"executionLeaseUntil"' in compact_sql else persistence_result)
+                (claim_result + (self.schedule_job_retry_count,)
+                 if 'job."retryCount"' in compact_sql else persistence_result)
                 if self.schedule_job_status
                 else None
             )
@@ -223,8 +229,37 @@ class FakePersistenceCursor:
                 raise OverflowError("integer out of range")
             self.schedule_revision += 1
             self.fetchone_result = (self.schedule_revision,)
+        elif compact_sql.startswith('UPDATE "ScheduleSolveJob"') and 'RETURNING "executionToken", "retryCount"' in compact_sql:
+            matches = params[3:] == (
+                "job-1", "tenant-1", "sch-1", "loc-1", self.schedule_job_status,
+                self.schedule_job_retry_count, self.schedule_job_execution_token,
+            )
+            self.rowcount = 1 if matches else 0
+            if matches:
+                self.schedule_job_status = "RUNNING"
+                self.schedule_job_retry_count = params[0]
+                self.schedule_job_execution_token = params[1]
+                self.schedule_job_lease_active = True
+                self.fetchone_result = (params[1], params[0])
         elif compact_sql.startswith('UPDATE "ScheduleSolveJob"') and 'RETURNING "id"' in compact_sql:
-            self.fetchone_result = ("job-1",)
+            if '"status" = %s' in compact_sql:
+                matches = (
+                    self.schedule_job_status == "RUNNING"
+                    and params[12] is not None
+                    and params[9:] == (
+                        "job-1", "tenant-1", "sch-1", self.schedule_job_execution_token,
+                        self.schedule_job_retry_count,
+                    )
+                )
+                self.rowcount = 1 if matches else 0
+                if matches:
+                    self.schedule_job_status = params[0]
+                    self.schedule_job_retry_count = params[2]
+                    self.schedule_job_execution_token = None
+                    self.schedule_job_lease_active = False
+                    self.fetchone_result = ("job-1",)
+            else:
+                self.fetchone_result = ("job-1",)
 
     def fetchone(self):
         return self.fetchone_result
@@ -253,6 +288,7 @@ class FakePersistenceConnection:
         schedule_job_credit_consumption=None,
         schedule_job_debit_balance_after=None,
         schedule_job_refund_balance_after=None,
+        schedule_job_retry_count=0,
     ):
         self.cursor_obj = FakePersistenceCursor(
             fail_on_break_insert=fail_on_break_insert,
@@ -272,6 +308,7 @@ class FakePersistenceConnection:
             schedule_job_credit_consumption=schedule_job_credit_consumption,
             schedule_job_debit_balance_after=schedule_job_debit_balance_after,
             schedule_job_refund_balance_after=schedule_job_refund_balance_after,
+            schedule_job_retry_count=schedule_job_retry_count,
         )
         self.exit_exc_type = None
 
@@ -328,12 +365,12 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock(return_value={"status": "SUCCESS"})
 
         with patch.dict(main.JOB_HANDLERS, {"schedule.solve": handler}), \
-                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value="claimed")):
+                patch.object(main, "claim_schedule_solve_job", AsyncMock(side_effect=[("claimed", 0), ("terminal", 0)])):
             first = await main.process_message(body, message_id="msg-1")
             duplicate = await main.process_message(body, message_id="msg-1")
 
         self.assertEqual(first, {"status": "SUCCESS"})
-        self.assertEqual(duplicate, {"skipped": True})
+        self.assertEqual(duplicate, {"skipped": True, "status": "terminal"})
         handler.assert_awaited_once()
 
     def test_email_idempotency_uses_durable_outbox_id_without_generic_ids(self):
@@ -407,7 +444,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock()
 
         with patch.dict(main.JOB_HANDLERS, {"schedule.solve": handler}), \
-                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value="busy")):
+                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value=("busy", 0))):
             with self.assertRaises(main.ScheduleJobBusyError):
                 await main.process_message(body, message_id="msg-busy")
 
@@ -1293,7 +1330,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock(side_effect=main.NonRetryableJobError(secret))
 
         with patch.dict(main.JOB_HANDLERS, {"schedule.solve": handler}), \
-                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value="claimed")), \
+                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value=("claimed", 0))), \
                 patch.object(main, "try_mark_schedule_solve_job_status", AsyncMock()) as mark_status:
             with self.assertRaises(main.NonRetryableJobError):
                 await main.process_message(body, message_id="msg-secret")
@@ -1360,7 +1397,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         handler = AsyncMock(side_effect=main.RetryableJobError("engine unavailable"))
 
         with patch.dict(main.JOB_HANDLERS, {"schedule.solve": handler}), \
-                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value=True)), \
+                patch.object(main, "claim_schedule_solve_job", AsyncMock(return_value=("claimed", 0))), \
                 patch.object(main, "try_mark_schedule_solve_job_status", AsyncMock()) as mark_status:
             with self.assertRaises(main.RetryableJobError):
                 await main.process_message(body, message_id="msg-1")
@@ -2246,7 +2283,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 execution_token=EXECUTION_TOKEN,
             )
 
-        self.assertEqual(claimed, "claimed")
+        self.assertEqual(claimed, ("claimed", 2))
         statements = [sql for sql, _ in fake_connection.cursor_obj.calls]
         sql_text = "\n".join(statements)
         tenant_lock_index = next(index for index, sql in enumerate(statements) if 'FROM "Tenant"' in sql)
@@ -2404,7 +2441,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 main._claim_schedule_solve_job_sync(
                     solve_payload(), "job-1", retry_count=0, execution_token=EXECUTION_TOKEN
                 ),
-                "terminal",
+                ("terminal", 0),
             )
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: invalid)}):
@@ -2438,7 +2475,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                             retry_count=0,
                             execution_token=EXECUTION_TOKEN,
                         ),
-                        "terminal",
+                        ("terminal", 0),
                     )
 
                 statements = [sql for sql, _ in fake_connection.cursor_obj.calls]
@@ -2470,7 +2507,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 execution_token=EXECUTION_TOKEN,
             )
 
-        self.assertEqual(claimed, "busy")
+        self.assertEqual(claimed, ("busy", 0))
         self.assertFalse(any(
             sql.startswith('UPDATE "ScheduleSolveJob"')
             for sql, _ in fake_connection.cursor_obj.calls
@@ -2492,7 +2529,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 execution_token=EXECUTION_TOKEN,
             )
 
-        self.assertEqual(claimed, "claimed")
+        self.assertEqual(claimed, ("claimed", 1))
         update_params = next(
             params for sql, params in fake_connection.cursor_obj.calls
             if sql.startswith('UPDATE "ScheduleSolveJob"')
@@ -2545,7 +2582,9 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('UPDATE "Schedule"', sql_text)
 
     def test_schedule_solve_job_success_marks_terminal_with_shift_count(self):
-        fake_connection = FakePersistenceConnection()
+        fake_connection = FakePersistenceConnection(
+            schedule_job_status="RUNNING", schedule_job_retry_count=1,
+        )
 
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: fake_connection)}):
@@ -2556,6 +2595,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 None,
                 retry_count=1,
                 result_shift_count=8,
+                execution_token=EXECUTION_TOKEN,
             )
 
         update_params = next(params for sql, params in fake_connection.cursor_obj.calls if 'UPDATE "ScheduleSolveJob"' in sql)
@@ -2566,7 +2606,9 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(update_params[4])
 
     def test_schedule_status_storage_collapses_raw_reasons_to_internal_code(self):
-        fake_connection = FakePersistenceConnection()
+        fake_connection = FakePersistenceConnection(
+            schedule_job_status="RUNNING", schedule_job_retry_count=1,
+        )
         raw_reason = (
             "Traceback at /srv/worker/main.py: postgresql://worker:super-secret@db.internal/tenant-42"
             "?token=secret-token"
@@ -2581,6 +2623,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 raw_reason,
                 retry_count=2,
                 result_shift_count=None,
+                execution_token=EXECUTION_TOKEN,
             )
 
         update_params = next(
@@ -2592,7 +2635,9 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
         for sensitive in ("super-secret", "db.internal", "tenant-42", "secret-token", "/srv/worker"):
             self.assertNotIn(sensitive, serialized)
     def test_retrying_status_refreshes_confirmed_outbox_ownership(self):
-        fake_connection = FakePersistenceConnection()
+        fake_connection = FakePersistenceConnection(
+            schedule_job_status="RUNNING", schedule_job_retry_count=1,
+        )
 
         with patch.dict(os.environ, {"DATABASE_URL": "postgresql://unit-test"}), \
                 patch.dict(sys.modules, {"psycopg": SimpleNamespace(connect=lambda _: fake_connection)}):
@@ -2603,6 +2648,7 @@ class WorkerMessageTests(unittest.IsolatedAsyncioTestCase):
                 "temporary",
                 retry_count=2,
                 result_shift_count=None,
+                execution_token=EXECUTION_TOKEN,
             )
 
         sql_text = "\n".join(sql for sql, _ in fake_connection.cursor_obj.calls)
