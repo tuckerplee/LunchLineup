@@ -42,11 +42,87 @@ async function bounded<T>(promise: Promise<T>, label: string): Promise<T> {
   })]); } finally { if (timer) clearTimeout(timer); }
 }
 
+type TenantBodyReceipt = {
+  requestUrl: string; method: string; probe: string | null; hasBody: boolean;
+  responseUrl: string | null; status: number | null; wire: string | null;
+  bytes: number | null; bodyBase64: string | null; complete: boolean; error: string | null;
+};
+type TenantBodySnapshot = { receipts: TenantBodyReceipt[]; errors: string[]; pending: number };
+type TenantBodyWindow = Window & { __tenantBodyObserver?: {
+  snapshot(): TenantBodySnapshot;
+  drain(stop: boolean): Promise<TenantBodySnapshot>;
+} };
+
+async function installTenantBodyObserver(page: Page) {
+  await page.addInitScript(({ root, probe, wire }) => {
+    const receipts: TenantBodyReceipt[] = [], errors: string[] = [];
+    const pending = new Set<Promise<void>>();
+    const originalFetch = window.fetch;
+    let stopped = false;
+    const snapshot = (): TenantBodySnapshot => ({
+      receipts: receipts.map(receipt => ({ ...receipt })), errors: [...errors], pending: pending.size,
+    });
+    const observedFetch: typeof window.fetch = (input, init) => {
+      // Return the original Promise and Response unchanged. Only a clone is read.
+      const result = originalFetch.call(window, input, init);
+      if (stopped) return result;
+      try {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(request ? request.url : String(input), window.location.href);
+        const method = (init?.method ?? request?.method ?? 'GET').toUpperCase();
+        if (url.origin === window.location.origin && url.pathname + url.search === `${root}?limit=50` && method === 'GET') {
+          const receipt: TenantBodyReceipt = {
+            requestUrl: url.href, method, probe: new Headers(init?.headers ?? request?.headers).get(probe),
+            hasBody: init?.body != null || request?.body != null,
+            responseUrl: null, status: null, wire: null, bytes: null, bodyBase64: null, complete: false, error: null,
+          };
+          receipts.push(receipt);
+          const task = result.then(async response => {
+            receipt.responseUrl = response.url; receipt.status = response.status; receipt.wire = response.headers.get(wire);
+            const bytes = new Uint8Array(await response.clone().arrayBuffer());
+            receipt.bytes = bytes.length;
+            receipt.bodyBase64 = btoa(Array.from(bytes, value => String.fromCharCode(value)).join(''));
+          }).catch(error => { receipt.error = String(error); }).finally(() => { receipt.complete = true; });
+          pending.add(task);
+          void task.then(() => { pending.delete(task); });
+        }
+      } catch (error) { errors.push(String(error)); }
+      return result;
+    };
+    window.fetch = observedFetch;
+    (window as TenantBodyWindow).__tenantBodyObserver = {
+      snapshot,
+      async drain(stop) {
+        if (stop) {
+          stopped = true;
+          if (window.fetch === observedFetch) window.fetch = originalFetch;
+          else errors.push('Tenant fetch observer was replaced before cleanup.');
+        }
+        while (pending.size) await Promise.allSettled([...pending]);
+        return snapshot();
+      },
+    };
+  }, { root: ROOT, probe: PROBE, wire: WIRE });
+}
+
 async function fixture(page: Page) {
   const requests: Array<{ sequence: number; method: string; path: string; body: string | null; probe: boolean; delivered: boolean }> = [];
   const failures: unknown[] = [], pending: Promise<unknown>[] = [], pageErrors: string[] = [];
   const onError = (error: Error) => pageErrors.push(String(error));
   page.on('pageerror', onError);
+  const browserBodies: Array<{ phase: string; snapshot: TenantBodySnapshot }> = [];
+  const expectedBodies: TenantBodyReceipt[] = [];
+  await installTenantBodyObserver(page);
+  const retainBrowserBodies = async (phase: string, stop: boolean) => {
+    const snapshot = await bounded(page.evaluate(async stop => {
+      const observer = (window as TenantBodyWindow).__tenantBodyObserver;
+      if (!observer) throw new Error('Tenant browser body observer was not installed.');
+      return observer.drain(stop);
+    }, stop), 'tenant browser body drain');
+    browserBodies.push({ phase, snapshot });
+    expect(snapshot.pending).toBe(0); expect(snapshot.errors).toEqual([]);
+    expect(snapshot.receipts.every(receipt => receipt.complete && receipt.error === null)).toBe(true);
+  };
   const handler = (route: Route) => {
     const task = (async () => {
       const request = route.request(), url = new URL(request.url());
@@ -71,6 +147,8 @@ async function fixture(page: Page) {
   return {
     requests,
     async load() {
+      // Settle the old document's initial/probe clones before navigation destroys it.
+      await retainBrowserBodies('before list navigation', false);
       const expectedSequence = requests.length + 1;
       const response = page.waitForResponse(value => value.headers()[WIRE] === String(expectedSequence) && value.request().headers()[PROBE] !== 'readback', { timeout: 5000 });
       // Retain waiter failures even if navigation fails before it can be awaited.
@@ -79,8 +157,36 @@ async function fixture(page: Page) {
       const native = await response;
       expect(native.request().method()).toBe('GET');
       expect(new URL(native.url()).pathname + new URL(native.url()).search).toBe(`${ROOT}?limit=50`);
-      expect(native.status()).toBe(200); expect(await bounded(native.finished(), 'native list completion')).toBeNull();
-      expect(await bounded(native.text(), 'native list body')).toBe(BODY);
+      expect(native.status()).toBe(200);
+      const expected: TenantBodyReceipt = {
+        requestUrl: native.url(), method: 'GET', probe: null, hasBody: false,
+        responseUrl: native.url(), status: 200, wire: String(expectedSequence),
+        bytes: Buffer.byteLength(BODY, 'utf8'), bodyBase64: Buffer.from(BODY, 'utf8').toString('base64'),
+        complete: true, error: null,
+      };
+      expectedBodies.push(expected);
+      // Routed responses can render while Playwright's terminal signal stays
+      // pending. Observe the SAME browser fetch clone, never the separate probe.
+      const observation = (async () => {
+        const ready = await page.waitForFunction(sequence => {
+          const observer = (window as TenantBodyWindow).__tenantBodyObserver;
+          if (!observer) throw new Error('Tenant browser body observer was not installed.');
+          const snapshot = observer.snapshot();
+          const matching = snapshot.receipts.filter(receipt => receipt.wire === sequence && receipt.probe === null);
+          return snapshot.errors.length || snapshot.receipts.some(receipt => receipt.error !== null)
+            || matching.length > 1 || (matching.length === 1 && matching[0].complete);
+        }, String(expectedSequence), { timeout: 5000 });
+        try {
+          return await page.evaluate(() => (window as TenantBodyWindow).__tenantBodyObserver!.snapshot());
+        } finally { await ready.dispose(); }
+      })();
+      pending.push(observation); void observation.catch(() => undefined);
+      const observed = await bounded(observation, 'native list completion');
+      browserBodies.push({ phase: 'selected list response', snapshot: observed });
+      expect(observed.errors).toEqual([]);
+      expect(observed.receipts.filter(receipt => receipt.error !== null)).toEqual([]);
+      expect(observed.receipts.filter(receipt => receipt.wire === String(expectedSequence) && receipt.probe === null))
+        .toEqual([expected]);
       const sequence = Number(native.headers()[WIRE]);
       await expect.poll(() => requests.find(row => row.sequence === sequence)?.delivered).toBe(true);
       expect(requests.find(row => row.sequence === sequence)).toMatchObject({ method: 'GET', probe: false, delivered: true });
@@ -108,9 +214,22 @@ async function fixture(page: Page) {
       try { await drain(); } catch (error) { failures.push(error); }
       try { await page.unroute('**/api/v2/admin/tenants**', handler); } catch (error) { failures.push(error); }
       try { await drain(); } catch (error) { failures.push(error); }
+      // Even a failed observation must settle before this page is released.
+      // Capture pending/error state first; destroying a stuck page cancels all
+      // document-owned clone readers rather than leaving an orphan observer.
+      try {
+        const snapshot = await bounded(page.evaluate(() => (window as TenantBodyWindow).__tenantBodyObserver?.snapshot()),
+          'tenant browser body snapshot');
+        if (snapshot) browserBodies.push({ phase: 'before cleanup', snapshot });
+        await retainBrowserBodies('cleanup', true);
+      } catch (error) {
+        failures.push(error);
+        try { await bounded(page.close(), 'tenant browser body disposal'); } catch (closeError) { failures.push(closeError); }
+      }
       page.off('pageerror', onError);
       try { await test.info().attach('tenant-long-content-native-custody', { contentType: 'application/json',
-        body: JSON.stringify({ bodySha256: SHA, body: BODY, backingRows: backing.length, requests, pageErrors, failures: failures.map(String) }) }); }
+        body: JSON.stringify({ bodySha256: SHA, body: BODY, backingRows: backing.length, requests, pageErrors, browserBodies, expectedBodies,
+          bodyObservation: 'Original browser fetch clone decoded bytes; protocol loadingFinished is not claimed.', failures: failures.map(String) }) }); }
       catch (error) { failures.push(error); }
       if (pageErrors.length) failures.push(new Error(pageErrors.join('\n')));
       if (failures.length) throw new AggregateError(failures, 'Read-only tenant fixture failed');
