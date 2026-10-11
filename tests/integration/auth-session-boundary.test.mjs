@@ -390,6 +390,12 @@ test('AuthService serializes session ownership, prunes inactive rows, and retain
   try {
     await createFixture(ownerPrisma, target, targetFixtureRows);
     await createFixture(ownerPrisma, control, controlFixtureRows);
+    const passwordHash = bcrypt.hashSync(`session-cap-${runId}`, 4);
+    await ownerPrisma.user.update({
+      where: { id: target.userId },
+      data: { passwordHash },
+    });
+    const passwordProof = Object.freeze({ passwordHash });
     const controlBefore = normalizedSessions(await ownerPrisma.session.findMany({
       where: { userId: control.userId },
       orderBy: { id: 'asc' },
@@ -397,7 +403,15 @@ test('AuthService serializes session ownership, prunes inactive rows, and retain
 
     const tenantDb = new TenantPrismaService(appPrisma);
     const lockTenantDb = new TenantPrismaService(lockPrisma);
-    const service = createAuthService(tenantDb);
+    const service = createAuthService(tenantDb, {
+      rbac: {
+        getEffectiveAccess: async () => ({
+          primaryRole: 'STAFF',
+          roles: ['STAFF'],
+          permissions: ['auth:login_password'],
+        }),
+      },
+    });
     const user = authenticatedUser(target);
     const sessionAudit = {
       loginMethod: 'USERNAME_PASSWORD',
@@ -418,7 +432,7 @@ test('AuthService serializes session ownership, prunes inactive rows, and retain
 
     await userLockReady;
     let firstAttemptState = 'pending';
-    const firstAttempt = service.createSessionTokens(user, sessionAudit)
+    const firstAttempt = service.createSessionTokens(user, sessionAudit, true, null, undefined, passwordProof)
       .then((result) => {
         firstAttemptState = 'fulfilled';
         return result;
@@ -441,7 +455,7 @@ test('AuthService serializes session ownership, prunes inactive rows, and retain
     await firstAttempt;
 
     await Promise.all(Array.from({ length: 6 }, () => (
-      service.createSessionTokens(user, sessionAudit)
+      service.createSessionTokens(user, sessionAudit, true, null, undefined, passwordProof)
     )));
 
     const targetAfter = await ownerPrisma.session.findMany({
@@ -755,7 +769,10 @@ test('MFA disable and PIN mutation remain database-authoritative across Redis an
     userName: 'Auth PIN User',
   };
   const tenantIds = [mfa.tenantId, pin.tenantId];
-  const userIds = [mfa.userId, pin.userId];
+  const adminUserId = `user-auth-pin-admin-${runId}`;
+  const adminSessionId = `session-auth-pin-admin-${runId}`;
+  const adminRoleId = `role-auth-pin-admin-${runId}`;
+  const userIds = [mfa.userId, pin.userId, adminUserId];
   const mfaSessionId = `session-auth-mfa-${runId}`;
   const pinSessionId = `session-auth-pin-${runId}`;
   const backupCode = 'ABCD-EFGH-IJKL';
@@ -792,6 +809,10 @@ test('MFA disable and PIN mutation remain database-authoritative across Redis an
           mfaEnabled: false,
           mfaBackupCodes: [],
         },
+        {
+          id: adminUserId, tenantId: pin.tenantId, name: 'PIN Reset Administrator',
+          role: 'ADMIN', pinResetRequired: false, mfaEnabled: false,
+        },
       ],
     });
     await ownerPrisma.session.createMany({
@@ -814,8 +835,33 @@ test('MFA disable and PIN mutation remain database-authoritative across Redis an
           userAgent: 'auth-atomicity-test',
           expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
         },
+        {
+          id: adminSessionId, userId: adminUserId,
+          selectorHash: `selector-pin-admin-${runId}`,
+          refreshToken: `refresh-pin-admin-${runId}`,
+          ipAddress: '127.0.0.1', userAgent: 'auth-atomicity-test',
+          expiresAt: new Date(now.getTime() + 60 * 60 * 1000),
+        },
       ],
     });
+
+    const adminPermission = await ownerPrisma.permission.upsert({
+      where: { key: 'users:admin' }, update: {},
+      create: {
+        key: 'users:admin', label: 'Integration users:admin',
+        description: 'Disposable auth transaction integration permission', category: 'USERS',
+      },
+    });
+    await ownerPrisma.role.create({ data: {
+      id: adminRoleId, tenantId: pin.tenantId, name: `PIN Admin ${runId}`,
+      slug: `pin-admin-${runId}`, isSystem: true, legacyRole: 'ADMIN',
+    } });
+    await ownerPrisma.rolePermission.create({ data: {
+      roleId: adminRoleId, permissionId: adminPermission.id,
+    } });
+    await ownerPrisma.roleAssignment.create({ data: {
+      tenantId: pin.tenantId, userId: adminUserId, roleId: adminRoleId,
+    } });
 
     const tenantDb = new TenantPrismaService(appPrisma);
     const mfaAudits = [];
@@ -882,19 +928,32 @@ test('MFA disable and PIN mutation remain database-authoritative across Redis an
     assert.equal(pinSessionAfterFailure.revokedAt?.toISOString() ?? null, pinSessionBefore.revokedAt?.toISOString() ?? null);
 
     const pinAudits = [];
-    const resetService = createAuthService(tenantDb, {
-      redis: { get: async () => null, del: async () => 1 },
-      auditCreate: async ({ data }) => {
-        pinAudits.push(data);
-        return { id: randomUUID(), ...data };
+    const adminMfaDeadline = Date.now() + 60_000;
+    const adminMfaKey = `session_mfa:${adminSessionId}`;
+    const adminMarkerRedis = {
+      status: 'ready',
+      get: async (key) => key === adminMfaKey && adminMfaDeadline > Date.now() ? '1' : null,
+      eval: async (_script, keyCount, key) => {
+        const remaining = adminMfaDeadline - Date.now();
+        return keyCount === 1 && key === adminMfaKey && remaining > 0 ? remaining : -2;
       },
+      del: async () => 0,
+    };
+    const pinAuditCreate = async ({ data }) => {
+      pinAudits.push(data);
+      return { id: randomUUID(), ...data };
+    };
+    const resetService = createAuthService(tenantDb, {
+      rbac: new RbacService(authBoundaryTenantDb(tenantDb, pinAuditCreate)),
+      redis: adminMarkerRedis,
+      auditCreate: pinAuditCreate,
     });
     await resetService.resetUserPinAsAdmin(
       pin.userId,
       resetPin,
       pin.tenantId,
-      pin.userId,
-      pinSessionId,
+      adminUserId,
+      adminSessionId,
       { ipAddress: '127.0.0.1', userAgent: 'auth-atomicity-test' },
     );
     const pinAfterReset = await ownerPrisma.user.findUniqueOrThrow({ where: { id: pin.userId } });
@@ -938,6 +997,18 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
   let actorSessionSequence = 0;
   const resetAudits = [];
 
+  let roleMfaObserver;
+  const mfaDeadlines = new Map();
+  const verifiedMarkerRedis = {
+    status: 'ready',
+    get: async (key) => (mfaDeadlines.get(key) ?? 0) > Date.now() ? '1' : null,
+    eval: async (_script, keyCount, key) => {
+      const remaining = (mfaDeadlines.get(key) ?? 0) - Date.now();
+      return keyCount === 1 && remaining > 0 ? remaining : -2;
+    },
+    del: async (key) => Number(mfaDeadlines.delete(key)),
+  };
+
   async function issueActorSession() {
     actorSessionSequence += 1;
     actorSessionId = `session-pin-admin-actor-${actorSessionSequence}-${runId}`;
@@ -952,6 +1023,7 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
         expiresAt: new Date(Date.now() + 60 * 60 * 1000),
       },
     });
+    mfaDeadlines.set(`session_mfa:${actorSessionId}`, Date.now() + 60_000);
   }
 
   async function targetCredentialState(userId) {
@@ -972,16 +1044,19 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
 
   async function replaceRoleWithGate(targetUserId, legacyRole, gate) {
     const mutationDb = new TenantPrismaService(mutationPrisma);
-    const roleService = new RbacService(gatedTenantDb(
+    const roleService = new RbacService(authBoundaryTenantDb(
       mutationDb,
-      async ({ data }) => ({ id: randomUUID(), ...data }),
-      gate.holdAfterOperation,
+      async ({ data }) => {
+        await gate.holdAfterOperation();
+        return { id: randomUUID(), ...data };
+      },
     ));
     return roleService.replaceUserRolesAsActor(tenantId, {
       actorUserId: superId,
       actorSessionId: superSessionId,
       targetUserId,
       requiredPermission: 'roles:assign',
+      mfaObserver: roleMfaObserver,
       selfMutationMessage: 'Cannot change own role',
       auditAction: 'USER_ROLE_UPDATED',
       legacyRole,
@@ -1018,13 +1093,14 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
     }
 
     const tenantDb = new TenantPrismaService(appPrisma);
+    const resetAuditCreate = async ({ data }) => {
+      resetAudits.push(data);
+      return { id: randomUUID(), ...data };
+    };
     const resetService = createAuthService(tenantDb, {
-      rbac: new RbacService(tenantDb),
-      redis: { get: async () => null, del: async () => 1 },
-      auditCreate: async ({ data }) => {
-        resetAudits.push(data);
-        return { id: randomUUID(), ...data };
-      },
+      rbac: new RbacService(authBoundaryTenantDb(tenantDb, resetAuditCreate)),
+      redis: verifiedMarkerRedis,
+      auditCreate: resetAuditCreate,
     });
     let resetState = 'pending';
     const resetAttempt = resetService.resetUserPinAsAdmin(
@@ -1200,16 +1276,19 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
       ],
     });
 
+    mfaDeadlines.set(`session_mfa:${superSessionId}`, Date.now() + 60_000);
+    mfaDeadlines.set(`session_mfa:${actorSessionId}`, Date.now() + 60_000);
     const tenantDb = new TenantPrismaService(appPrisma);
-    const liveRbac = new RbacService(tenantDb);
+    const resetAuditCreate = async ({ data }) => {
+      resetAudits.push(data);
+      return { id: randomUUID(), ...data };
+    };
     const malformedService = createAuthService(tenantDb, {
-      rbac: liveRbac,
-      redis: { get: async () => null, del: async () => 1 },
-      auditCreate: async ({ data }) => {
-        resetAudits.push(data);
-        return { id: randomUUID(), ...data };
-      },
+      rbac: new RbacService(authBoundaryTenantDb(tenantDb, resetAuditCreate)),
+      redis: verifiedMarkerRedis,
+      auditCreate: resetAuditCreate,
     });
+    roleMfaObserver = malformedService;
     const rollbackBefore = await targetCredentialState(rollbackTargetId);
     await assert.rejects(
       malformedService.resetUserPinAsAdmin(
@@ -1225,13 +1304,14 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
     assert.equal(resetAudits.length, 0);
 
     let forcedAuditCalls = 0;
+    const forcedAuditCreate = async () => {
+      forcedAuditCalls += 1;
+      throw new Error('forced admin PIN audit failure');
+    };
     const forcedAuditService = createAuthService(tenantDb, {
-      rbac: liveRbac,
-      redis: { get: async () => null, del: async () => 1 },
-      auditCreate: async () => {
-        forcedAuditCalls += 1;
-        throw new Error('forced admin PIN audit failure');
-      },
+      rbac: new RbacService(authBoundaryTenantDb(tenantDb, forcedAuditCreate)),
+      redis: verifiedMarkerRedis,
+      auditCreate: forcedAuditCreate,
     });
     await assert.rejects(
       forcedAuditService.resetUserPinAsAdmin(
@@ -1263,6 +1343,7 @@ test('admin PIN reset locks live RBAC state and rolls back username bootstrap on
       actorSessionId: superSessionId,
       targetUserId: actorId,
       requiredPermission: 'roles:assign',
+      mfaObserver: roleMfaObserver,
       selfMutationMessage: 'Cannot change own role',
       auditAction: 'USER_ROLE_UPDATED',
       legacyRole: 'ADMIN',
