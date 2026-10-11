@@ -26,8 +26,8 @@ const internalApiV2Url = serverHttpUrl(
     'INTERNAL_API_V2_URL',
 );
 validatePublicBrowserUrl(process.env.NEXT_PUBLIC_API_URL);
-// Legacy rewrites exist only in the explicit local E2E fixture. Production
-// never reads this value, so a public v1 route cannot be re-enabled by env.
+// Ordinary production ignores the legacy env value. The authenticated fixed
+// mock lane below uses its immutable loopback value instead.
 const localE2eLegacyApiUrl = !isProduction && process.env.LUNCHLINEUP_E2E_LEGACY_API_URL
     ? serverHttpUrl(process.env.LUNCHLINEUP_E2E_LEGACY_API_URL, 'LUNCHLINEUP_E2E_LEGACY_API_URL')
     : null;
@@ -97,17 +97,26 @@ const nextConfig = {
         ];
     },
 
-    // API v2 owns browser traffic. v1 is reachable only inside an explicitly
-    // configured local E2E fixture; no production server rewrite exists.
+    // API v2 owns browser traffic. Ordinary production has no v1 rewrite;
+    // only explicit local E2E or the authenticated fixed mock lane admits it.
     async rewrites() {
+        // Only the protected fixed source/physical phase can admit these loopback
+        // mock rewrites in a production build. QA/env flags alone grant nothing.
+        const mock = process.env.LUNCHLINEUP_DEVELOPMENT_QA === '1'
+            ? await import('../../scripts/fixed-mock-ux.mjs') : null;
+        const fixedMockUx = mock?.mockUxConfiguration();
+        if (fixedMockUx && Object.entries(mock.MOCK_WEB_ENV).some(([name, value]) => process.env[name] !== value)) {
+            throw new Error('Fixed mock web build/server environment mismatch.');
+        }
+        const legacyApiUrl = fixedMockUx ? mock.MOCK_WEB_ENV.LUNCHLINEUP_E2E_LEGACY_API_URL : localE2eLegacyApiUrl;
         return [
             {
                 source: '/api/v2/:path*',
                 destination: `${internalApiV2Url}/:path*`,
             },
-            ...(localE2eLegacyApiUrl ? [{
+            ...(legacyApiUrl ? [{
                 source: '/api/v1/:path*',
-                destination: `${localE2eLegacyApiUrl}/:path*`,
+                destination: `${legacyApiUrl}/:path*`,
             }, {
                 // The local server runs without Caddy’s production health mapping.
                 source: '/api/health',

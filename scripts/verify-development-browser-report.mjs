@@ -61,7 +61,8 @@ function verifyMockWorkerLifecycles(executions, stats) {
 }
 function mockServerContract(report) {
   const value = report.config?.metadata?.fixedMockUx;
-  requireProof(value?.kind === 'fixed-eight-mock-ux' && value.expectedWorkers === 2 &&
+  requireProof(value?.kind === 'fixed-eight-mock-ux' && value.concurrency === 1 && value.expectedWorkerLifetimes === 2 &&
+    value.servingMode === 'production' &&
     value.traces === 'on' && value.chromiumSandbox === true &&
     JSON.stringify(value.servers) === JSON.stringify(MOCK_SERVERS),
     'mock fixed server/worker contract');
@@ -79,7 +80,7 @@ function cases(report, executed, mockUx = false) {
     report.config?.shard == null && (mockUx || report.config?.webServer == null), 'worker/focus/shard/server policy');
   if (mockUx) mockServerContract(report);
   requireProof(Array.isArray(report.config.projects), 'project configuration');
-  if (executed) requireProof(report.config.metadata?.actualWorkers === (mockUx ? 2 : 1), 'actual worker count');
+  if (executed) requireProof(report.config.metadata?.actualWorkers === 1, 'actual concurrent worker count');
   const rows = [];
   const executions = [];
   const ids = new Set();
@@ -163,7 +164,8 @@ export function verifyDevelopmentBrowserReport(manifest, lane, selection, report
   requireProof(stats?.expected === selected.length && stats.unexpected === 0 && stats.skipped === 0 && stats.flaky === 0, 'incomplete summary');
   return { kind: 'exact-disposable-development-browser-report', releaseQualified: false, lane,
     passed: true, selected: selected.length, executed: actual.length, workers: 1, retries: 0,
-    ...(lane === 'mock-ux' ? { actualWorkers: 2, fixedServerContract: report.config.metadata.fixedMockUx } : {}),
+    ...(lane === 'mock-ux' ? { actualWorkers: 1, workerLifetimes: 2,
+      fixedServerContract: report.config.metadata.fixedMockUx } : {}),
     cases: actual.map(({ tags: _tags, ...value }) => value) };
 }
 

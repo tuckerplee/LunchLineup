@@ -2,7 +2,7 @@
 import { defineConfig, devices } from '@playwright/test';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
-import { mockUxConfiguration } from '../../scripts/fixed-mock-ux.mjs';
+import { mockUxConfiguration, MOCK_WEB_ENV } from '../../scripts/fixed-mock-ux.mjs';
 
 // This dependency remains CommonJS under Playwright; do not depend on synthesized named ESM exports.
 const { requireQaBaseUrl } = createRequire(import.meta.url)(
@@ -61,7 +61,7 @@ const modeGrepInvert = [
 ];
 const excludedFor = (...patterns: RegExp[]): RegExp[] => [...modeGrepInvert, ...patterns];
 const webCommand = process.env.E2E_WEB_COMMAND
-    ?? (useNextDevServer
+    ?? (fixedMockUx ? fixedMockUx.servers[1].command : useNextDevServer
         ? `npm run dev -- -H 127.0.0.1 -p ${e2ePort}`
         : `npm run build && npm run start -- -H 127.0.0.1 -p ${e2ePort}`);
 const webServer = process.env.BASE_URL
@@ -85,7 +85,7 @@ const webServer = process.env.BASE_URL
             reuseExistingServer: false,
             cwd: '.',
             timeout: 240000,
-            env: useMockApi
+            env: fixedMockUx ? MOCK_WEB_ENV : useMockApi
                 ? {
                     NODE_ENV: 'development',
                     INTERNAL_API_V2_URL: `${mockApiBaseUrl}/v2`,
