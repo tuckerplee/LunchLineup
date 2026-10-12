@@ -1,3 +1,5 @@
+import { validateDeploymentContractBundle } from './validate-deployment-contract-bundle.mjs';
+import { validateRetainedDeploymentContract, snapshotDeploymentContractJson } from './write-deployment-contract.mjs';
 import { validatePrivateTargetProfile } from './private-target-profile.mjs';
 // Offline definition only: caller supplies independent expectations, not acceptance authority.
 import { createHash } from 'node:crypto';
@@ -11,9 +13,13 @@ const pathName=p=>typeof p==='string' && /^[^\\\0]+$/.test(p) && !p.startsWith('
 const object=v=>v!==null && typeof v==='object' && !Array.isArray(v);
 
 export async function validateDisposableReleaseInventory({ evidenceRoot, manifestPath, artifactManifestPath,
- expectedSource, expectedRunId, expectedPrivateTargetProfile, expectedRuntimeContract, expectedCompose }) {
+ expectedSource, expectedRunId, expectedPrivateTargetProfile, expectedRuntimeContract, expectedCompose, expectedDeploymentContract }) {
  const profile=selectInternalCiSourceProfile(expectedSource);
  need(profile.version===2,'Explicit disposable source selection required.');
+ need(expectedDeploymentContract!==undefined,'Independent deployment contract required.');
+ const expectedSchemaContract=snapshotDeploymentContractJson(expectedDeploymentContract);
+ validateRetainedDeploymentContract(expectedSchemaContract);
+
  need(typeof expectedRunId==='string' && /^[A-Za-z0-9._-]+$/.test(expectedRunId),'Independent run ID required.');
  const privateTarget=validatePrivateTargetProfile(expectedPrivateTargetProfile),expectedPrivateTarget=privateTarget.binding;
  need(object(expectedRuntimeContract?.services) && object(expectedCompose?.services),'Independent runtime and Compose expectations required.');
@@ -41,6 +47,18 @@ export async function validateDisposableReleaseInventory({ evidenceRoot, manifes
   if(json){const snapshot=readRegularEvidenceSnapshot(path,evidenceRoot);need(snapshot.bytes.length===item.bytes && digest(snapshot.bytes)===item.sha256,'JSON evidence bytes differ.');return JSON.parse(snapshot.bytes);}
   need(await sha256File(path,evidenceRoot)===item.sha256,'Archive bytes differ.');
  }
+ // Preserve insertion order for retention validation before canonical stable equality.
+ const schemaContract=manifest.deploymentContract;
+ validateRetainedDeploymentContract(schemaContract);
+ need(equal(schemaContract,expectedSchemaContract),'Independent full deployment contract differs.');
+ const schemaClaim=manifest.deploymentContractArtifact;
+ need(object(schemaClaim) && equal(Object.keys(schemaClaim).sort(),['bytes','path','sha256']) && pathName(schemaClaim.path) && /^[a-f0-9]{64}$/.test(schemaClaim.sha256??'') && Number.isSafeInteger(schemaClaim.bytes) && schemaClaim.bytes>0,'Invalid deployment contract artifact claim.');
+ need(schemaClaim.sha256===schemaContract.bundle.sha256 && schemaClaim.bytes===schemaContract.bundle.bytes,'Contract/artifact bundle pin differs.');
+ const schemaItem=files.get(schemaClaim.path);
+ need(schemaItem && schemaItem.sha256===schemaClaim.sha256 && schemaItem.bytes===schemaClaim.bytes,'Schema bundle is not artifact-bound.');
+ const schemaSnapshot=readRegularEvidenceSnapshot(resolve(evidenceRoot,schemaClaim.path),evidenceRoot);
+ need(schemaSnapshot.path===schemaClaim.path && schemaSnapshot.bytes.length===schemaClaim.bytes && digest(schemaSnapshot.bytes)===schemaClaim.sha256,'Actual schema bundle bytes differ.');
+ const schemaValidation=validateDeploymentContractBundle(schemaContract,schemaSnapshot.bytes);
  const compose=await bound(manifest.composeConfig,true),publicContract=await bound(manifest.publicBuildConfig?.contract,true);
  need(equal(compose,expectedCompose),'Rendered Compose differs from independent expectation.');
  const names=Object.keys(expectedRuntimeContract.services).sort();
@@ -69,5 +87,5 @@ export async function validateDisposableReleaseInventory({ evidenceRoot, manifes
  const listedArchives=[...files.keys()].filter(x=>x.startsWith('images/')&&x.endsWith('.tar.gz')).sort();
  const actualArchives=sortedDirectoryInventory(resolve(evidenceRoot,'images')).filter(x=>x.path.endsWith('.tar.gz')).map(x=>'images/'+x.path).sort();
  need(equal([...archives].sort(),listedArchives) && equal([...archives].sort(),actualArchives),'Unreferenced or missing archive.');
- return {kind:'disposable-release-inventory-validation',sourceProfile:profile,runId:expectedRunId,manifestSha256:digest(manifestBytes),artifactManifestSha256:digest(artifactBytes),serviceCount:names.length,imageCount:refs.size,acceptance:false,admission:false};
+ return {kind:'disposable-release-inventory-validation',deploymentContractBundleSha256:schemaValidation.bundleSha,deploymentContractFileCount:schemaValidation.materializedFiles.size,sourceProfile:profile,runId:expectedRunId,manifestSha256:digest(manifestBytes),artifactManifestSha256:digest(artifactBytes),serviceCount:names.length,imageCount:refs.size,acceptance:false,admission:false};
 }

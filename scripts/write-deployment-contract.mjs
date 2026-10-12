@@ -158,6 +158,46 @@ function inventoryGroups(paths) {
   };
 }
 
+// Copy only explicit JSON data, preserving insertion order and rejecting lossy coercion.
+export function snapshotDeploymentContractJson(value) {
+  const active = new Set();
+  function copy(item) {
+    if (item === null || typeof item === 'string' || typeof item === 'boolean') return item;
+    if (typeof item === 'number' && Number.isFinite(item)) return item;
+    if (typeof item !== 'object' || active.has(item)) throw new Error('Deployment contract must be acyclic JSON data.');
+    const array = Array.isArray(item);
+    if (!array && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw new Error('Deployment contract requires plain JSON records.');
+    const keys = Reflect.ownKeys(item);
+    if (keys.some(key => typeof key !== 'string')) throw new Error('Deployment contract symbol keys are not JSON data.');
+    const dataKeys = array ? keys.filter(key => key !== 'length') : keys;
+    if (array && (dataKeys.length !== item.length || dataKeys.some((key, index) => key !== String(index)))) throw new Error('Deployment contract arrays must have only dense indexed values.');
+    active.add(item);
+    const output = array ? [] : {};
+    for (const key of dataKeys) {
+      const descriptor = Object.getOwnPropertyDescriptor(item, key);
+      if (!descriptor.enumerable || !Object.hasOwn(descriptor, 'value')) throw new Error('Deployment contract requires enumerable JSON data properties.');
+      Object.defineProperty(output, key, { value: copy(descriptor.value), enumerable: true, writable: false, configurable: false });
+    }
+    active.delete(item);
+    return Object.freeze(output);
+  }
+  return copy(value);
+}
+
+// These two records contain only named ordered string arrays. Object key order
+// is immaterial; file-inventory canonical order is checked separately below.
+function equalStringArrayRecord(actual, expected) {
+  if (!actual || typeof actual !== 'object' || Array.isArray(actual)
+      || ![Object.prototype, null].includes(Object.getPrototypeOf(actual))) return false;
+  const actualKeys = Object.keys(actual), expectedKeys = Object.keys(expected);
+  if (actualKeys.length !== expectedKeys.length || expectedKeys.some(key => !Object.prototype.propertyIsEnumerable.call(actual, key))) return false;
+  return expectedKeys.every(key => {
+    const value = actual[key], wanted = expected[key];
+    return Array.isArray(value) && value.length === wanted.length
+      && wanted.every((item, index) => Object.hasOwn(value, index) && typeof value[index] === 'string' && value[index] === item);
+  });
+}
+
 export function validateRetainedDeploymentContract(contract) {
   if (!contract || typeof contract !== 'object' || Array.isArray(contract) || contract.algorithm !== 'sha256') {
     throw new Error('Retained deployment contract must use SHA-256.');
@@ -185,8 +225,8 @@ export function validateRetainedDeploymentContract(contract) {
     || retention.profile !== retainedContractProfile
     || retention.pathCount !== paths.length
     || retention.pathsSha256 !== pathInventorySha256(paths)
-    || JSON.stringify(retention.selection) !== JSON.stringify({ exactFiles: retainedExactFiles, directoryRoots: retainedDirectoryRoots })
-    || JSON.stringify(retention.groups) !== JSON.stringify(inventoryGroups(paths))
+    || !equalStringArrayRecord(retention.selection, { exactFiles: retainedExactFiles, directoryRoots: retainedDirectoryRoots })
+    || !equalStringArrayRecord(retention.groups, inventoryGroups(paths))
   ) throw new Error('Retained deployment contract selection or generated path inventory is invalid.');
   if (retention.groups.integrationTests.length === 0 || retention.groups.systemdUnits.length === 0 || retention.groups.workspaceManifests.length === 0) {
     throw new Error('Retained deployment contract generated groups must not be empty.');
