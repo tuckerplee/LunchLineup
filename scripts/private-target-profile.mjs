@@ -10,6 +10,11 @@ export function readPrivateTargetProfile(path = process.env.LUNCHLINEUP_PRIVATE_
   const stat = lstatSync(path);
   if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 16384) throw new Error('Private target profile must be a bounded regular file.');
   const value = JSON.parse(readFileSync(path, 'utf8'));
+  return validatePrivateTargetProfile(value);
+}
+
+// Pure contract validation: no path, environment or installed-state access.
+export function validatePrivateTargetProfile(value) {
   const keys = ['version', 'kind', 'targetId', 'origin', 'expectedHostname', 'machineId'];
   if (!value || Array.isArray(value) || Object.keys(value).sort().join() !== keys.sort().join()
       || ['targetId', 'origin', 'expectedHostname', 'machineId'].some(key => typeof value[key] !== 'string')
