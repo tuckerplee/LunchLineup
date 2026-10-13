@@ -41,7 +41,7 @@ export async function produceDisposableReleaseArtifacts(options) {
  readRegularEvidenceSnapshot(publicConfig,root);
  mkdirSync(images,{mode:0o700});mkdirSync(logs,{mode:0o700});
  const exclusive=(path,bytes)=>{const fd=openSync(path,'wx',0o600);try{writeFileSync(fd,bytes);fsyncSync(fd);}finally{closeSync(fd);}};
- const compose=['compose','--project-name',selected.projectName,'--env-file',buildEnv,'-f',resolve(context.buildSourcePath,'docker-compose.yml'),'--profile','ops'];
+ const compose=['compose','--project-name',selected.projectName,'--env-file',buildEnv,'-f',resolve(context.buildSourcePath,'docker-compose.yml'),'--profile','ops','--profile','recovery'];
  let sequence=0,totalArchiveBytes=0;
  const run=async(tool,args,{stdoutPath=null,stdoutCap=limits.maxStdoutBytes,inputPath=null}={})=>{
   check();pinned(selected.tools[tool]);pinned(selected.buildEnvironment);if(tool==='engine'&&Object.hasOwn(selected,'enginePython'))pinned(selected.enginePython);

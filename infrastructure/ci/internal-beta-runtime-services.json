@@ -83,6 +83,10 @@
       "state": "one-shot",
       "requiredOnVm107": false
     },
+    "pitr-restore": {
+      "state": "one-shot",
+      "requiredOnVm107": false
+    },
     "alertmanager": {
       "state": "healthy",
       "requiredOnVm107": true

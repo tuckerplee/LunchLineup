@@ -82,7 +82,7 @@ release-image-build)
   node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build --require-clean >/dev/null
   node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-context "$context" --output "$env_file" --public-build-config "$artifact_root/public-build-config.json" --secrets-dir "$secrets_dir"
   chmod -R a-w "$build_root"
-  "${compose[@]}" --profile ops config --format json >"$artifact_root/compose-config.json"
+  "${compose[@]}" --profile ops --profile recovery config --format json >"$artifact_root/compose-config.json"
   python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
   node "$build_root/scripts/compose-image-inventory.mjs" --source-context "$context" --compose-config "$artifact_root/compose-config.json" --runtime-contract "$build_root/infrastructure/ci/internal-beta-runtime-services.json" --output "$artifact_root/compose-image-inventory.json"
   node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const v of Object.values(x.images))process.stdout.write([v.source,v.composeServices[0],v.resolvedRef].join("\t")+"\n")' "$artifact_root/compose-image-inventory.json" | while IFS=$'\t' read -r source service ref; do if [[ "$source" == first-party ]]; then "${compose[@]}" --profile ops build "$service"; else docker pull "$ref"; fi; docker image inspect --format '{{.Id}}' "$ref"; done >"$artifact_root/images/build.log" 2>&1
