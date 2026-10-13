@@ -175,7 +175,7 @@ class Adapter:
             pass  # Reporting must never replace an already known start failure.
 
     def start_detached(self, entry):
-        observation = self.capture_start_command(['start', entry['id']], 40)
+        observation = self.capture_start_command(['--log-level=debug', 'start', entry['id']], 40)
         if observation['error'] is not None or observation['returncode'] != 0:
             try:
                 self.retain_start_failure(entry, observation)
