@@ -232,14 +232,13 @@ function normalizeToolResult(result) {
   };
 }
 
-function resultOutput(result) {
-  return [result.stderr, result.stdout]
+function resultOutput(result, abbreviated = false) {
+  const lines = [result.stderr, result.stdout]
     .filter((value) => value.trim().length > 0)
     .join('\n')
     .trim()
-    .split(/\r?\n/)
-    .slice(0, 8)
-    .join(' | ');
+    .split(/\r?\n/);
+  return (abbreviated ? lines.slice(0, 8) : lines).join(' | ');
 }
 
 function missingExecutable(result) {
@@ -316,10 +315,35 @@ function prepareHostToolCommand(root, check) {
 }
 
 function commandFailure(check, command, result) {
-  const output = resultOutput(result);
-  const suffix = output ? `: ${output}` : '';
+  let retained = '';
+  let retentionFailure = '';
+  const directory = process.env.LUNCHLINEUP_OBSERVABILITY_DIAGNOSTICS_DIR;
+  if (directory) {
+    try {
+      // The fixed owner harness supplies its existing preserved evidence directory.
+      const destination = mkdtempSync(join(directory, 'observability-tool-'));
+      writeFileSync(join(destination, 'stdout.log'), result.stdout, { flag: 'wx', mode: 0o600 });
+      writeFileSync(join(destination, 'stderr.log'), result.stderr, { flag: 'wx', mode: 0o600 });
+      writeFileSync(join(destination, 'result.json'), JSON.stringify({
+        version: 1, check: check.id, command: command.command, args: command.args,
+        status: result.status, captureError: result.error ? {
+          name: result.error.name, code: result.error.code, message: result.error.message,
+        } : null,
+        scope: 'unabridged captured UTF-8 output; upstream runner limits unchanged',
+      }, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
+      retained = destination;
+    } catch (error) {
+      retentionFailure = `; diagnostic retention failed: ${error.message}`;
+    }
+  }
+  // Never abbreviate unless both captured streams and their result were retained.
+  const output = resultOutput(result, Boolean(retained));
+  const suffix = (output ? `: ${output}` : '')
+    + (retained ? `; captured output: ${retained}` : '')
+    + (result.error ? `; capture error: ${result.error.code ?? result.error.name}: ${result.error.message}` : '')
+    + retentionFailure;
   if (missingExecutable(result)) {
-    return `${check.id}: ${command.command} was not found on PATH`;
+    return `${check.id}: ${command.command} was not found on PATH${suffix}`;
   }
   return `${check.id}: ${formatCommand(command)} exited ${result.status}${suffix}`;
 }

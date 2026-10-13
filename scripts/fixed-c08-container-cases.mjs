@@ -114,6 +114,7 @@ export async function runFixedC08(args) {
   assert.equal(digest(readFileSync(join(qualification, 'c08-selection.json'))), phase.selectionSha256);
   const evidence = join(env.CI_WORKSPACE, '.release/internal-ci', profile.sourceSha, 'c08');
   mkdirSync(evidence, { mode: 0o700, recursive: true });
+  env.LUNCHLINEUP_OBSERVABILITY_DIAGNOSTICS_DIR = evidence;
   const result = { version: 1, runId: env.CI_RUN_ID, sourceSha: profile.sourceSha,
     pipelineSha256: phase.pipelineSha256, selectionSha256: phase.selectionSha256,
     cases: [], applicationPassed: false, cleanupPassed: false, releaseQualified: false };

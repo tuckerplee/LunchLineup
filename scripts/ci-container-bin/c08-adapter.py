@@ -60,7 +60,7 @@ def run_plan(args, images, project, build):
         require(not detached and alias is None and not publish and rest, 'unexpected validator invocation')
         options += ['--network=none']
     return {'key': key, 'name': name, 'alias': alias, 'detached': detached,
-            'argv': ['create', '--pull=never', '--name', name,
+            'argv': ['create', '--pull=never', '--image-volume=ignore', '--name', name,
                      '--label', 'com.docker.compose.project=' + project,
                      '--label', 'com.docker.compose.service=' + key,
                      '--group-add', 'keep-groups', '--memory=1g', '--pids-limit=128', '--cpus=1.5',
