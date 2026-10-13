@@ -222,6 +222,8 @@ def archive_mapping(open_archive, archive, expected, budget):
     docker_tags, config_ids, tops = {}, set(), {}
     parents, config_layers = {}, {}
     platform_records = {}
+    docker_rows_needing_oci = []
+    validated_oci_rows = set()
     if 'manifest.json' in files:
         manifests = document('manifest.json')
         require(isinstance(manifests, list) and 0 < len(manifests) <= 256, "invalid Docker image manifest")
@@ -238,6 +240,11 @@ def archive_mapping(open_archive, archive, expected, budget):
             require(isinstance(conf, dict), "invalid config object")
             diffids = conf.get('rootfs', {}).get('diff_ids', [])
             require(isinstance(diffids, list) and len(diffids) == len(layers) and all(re.fullmatch('sha256:' + HEX, x) for x in diffids), "invalid config layer identities")
+            # Classic Docker-save layers are raw payloads. Hybrid exporters may
+            # instead reference stored OCI blobs; defer only the complete row.
+            if not all('sha256:' + files[layer][0] == diffid
+                       for layer, diffid in zip(layers, diffids)):
+                docker_rows_needing_oci.append((identity, tuple(layers)))
             platform_records[identity] = {'configImageId': identity, 'os': conf.get('os'), 'architecture': conf.get('architecture'), 'variant': conf.get('variant')}
             validate_platform(platform_records[identity])
             config_layers[identity] = diffids
@@ -330,9 +337,13 @@ def archive_mapping(open_archive, archive, expected, budget):
             identities = {identity}
             config_ids.add(identity)
             require(isinstance(doc.get('layers'), list) and len(doc['layers']) <= 256, "invalid OCI layers")
+            layer_paths = []
             for layer in doc['layers']:
                 require(isinstance(layer.get('mediaType'), str) and ('image.layer.' in layer['mediaType'] or 'image.rootfs.' in layer['mediaType']), "unsupported OCI layer media type")
-                role(blob(layer), 'layer')
+                layer_path = blob(layer)
+                role(layer_path, 'layer')
+                layer_paths.append(layer_path)
+            validated_oci_rows.add((identity, tuple(layer_paths)))
         graph_configs[dg] = identities
         graph_types[dg] = media
         oci_ids.add(dg)
@@ -365,6 +376,12 @@ def archive_mapping(open_archive, archive, expected, budget):
         require(index.get('schemaVersion') == 2 and isinstance(index.get('manifests'), list) and 0 < len(index['manifests']) <= 256, "invalid OCI root index")
         for desc in index['manifests']:
             visit(desc)
+    # Every unresolved Docker row must match one whole reachable OCI manifest:
+    # same config identity and complete ordered stored-blob paths. This proves
+    # stored descriptor integrity, not compressed layer expansion to diff_ids.
+    for row in docker_rows_needing_oci:
+        require(row in validated_oci_rows,
+                "Docker layers lack raw diff ID or complete OCI manifest binding")
     require(config_ids and expected in config_ids | oci_ids, "expected image absent from archive")
     # Exact targets are distinct from their platform/config descendants.
     # Never turn a set containing expected into an assignment to expected.
