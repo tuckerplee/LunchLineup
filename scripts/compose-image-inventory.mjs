@@ -6,6 +6,8 @@ import { readInternalCiSourceContext, selectInternalCiSourceProfile } from './in
 import { readRegularEvidenceSnapshot, writeExclusiveJson } from './internal-ci-evidence.mjs';
 import { snapshotDeploymentContractJson, validateRetainedDeploymentContract } from './write-deployment-contract.mjs';
 import { validatePrivateTargetProfile } from './private-target-profile.mjs';
+import { writeDisposableReleaseArtifactManifest } from './build-internal-ci-artifact-manifest.mjs';
+import { validateDisposableReleaseInventoryDescriptors } from './disposable-release-inventory.mjs';
 import { writeInternalCiReleaseManifest } from './write-internal-ci-release-manifest.mjs';
 
 // expectedSource comes from the authenticated caller, never the context JSON.
@@ -37,6 +39,38 @@ const inventory=await writeInternalCiComposeImageInventory({sourceContext,compos
 const manifest=await writeInternalCiReleaseManifest({sourceContext,composeConfig,publicBuildContract,imageDirectory,outputPath:manifestOutput,expectedSource:profile,env:ownerEnv,privateTargetProfile:privateProfile,deploymentContract:schema,deploymentContractBundlePath});
 if(inventory.sourceSha!==manifest.sourceSha||inventory.treeSha!==manifest.treeSha||inventory.composeConfig.path!==manifest.composeConfig.path||inventory.composeConfig.sha256!==manifest.composeConfig.sha256)throw new Error('Paired producer metadata differs.');
 return {inventory,manifest,acceptance:false,admission:false};
+}
+
+
+// Complete post-export producer join. Caller owns stable source/output custody;
+// this performs no image build, gate synthesis, installed admission or dispatch.
+export async function writeDisposableReleaseProducerArtifacts(options) {
+ const selected=snapshotDeploymentContractJson(options);
+ const keys=['sourceContext','composeConfig','composeInventoryOutput','publicBuildContract','imageDirectory','manifestOutput','expectedSource','env','privateTargetProfile','deploymentContract','deploymentContractBundlePath','artifactManifestOutput','evidenceLimits'];
+ if(!selected||typeof selected!=='object'||Array.isArray(selected)||Object.keys(selected).length!==keys.length||keys.some(key=>!Object.hasOwn(selected,key)))throw new Error('Exact complete producer inputs required.');
+ const profile=selectInternalCiSourceProfile(selected.expectedSource);
+ if(profile.version!==2)throw new Error('Disposable producer profile required.');
+ const context=readInternalCiSourceContext(resolve(selected.sourceContext),{expectedSource:profile,env:selected.env});
+ if(resolve(selected.manifestOutput)!==resolve(context.evidenceRoot,'release-manifest.json')||resolve(selected.artifactManifestOutput)!==resolve(context.evidenceRoot,'artifact-manifest.json'))throw new Error('Fixed held-consumer bootstrap paths required.');
+ if(resolve(selected.imageDirectory)!==resolve(context.evidenceRoot,'images'))throw new Error('Complete export metadata directory must be images.');
+ if(new Set([selected.composeInventoryOutput,selected.manifestOutput,selected.artifactManifestOutput].map(path=>resolve(path))).size!==3)throw new Error('Distinct producer output paths required.');
+ // Pin the same selected Compose and source service roster for consumer readback.
+ const composeSnapshot=readRegularEvidenceSnapshot(resolve(selected.composeConfig),context.evidenceRoot);
+ const runtimePath=resolve(context.buildSourcePath,'infrastructure/ci/internal-beta-runtime-services.json');
+ const runtimeBytes=readFileSync(runtimePath),runtimeContract=JSON.parse(runtimeBytes);
+ const produced=await writeDisposableReleaseProducerMetadata(selected);
+ const {artifactManifest}=await writeDisposableReleaseArtifactManifest({sourceContext:selected.sourceContext,outputPath:selected.artifactManifestOutput,expectedSource:profile,env:selected.env,evidenceLimits:selected.evidenceLimits});
+ const files=new Map(artifactManifest.files.map(file=>[file.path,file]));
+ // All export metadata is retained, including shared/deferred service artifacts.
+ for(const name of Object.keys(produced.manifest.images))if(!files.has(`images/${name}.image.json`))throw new Error('Export metadata absent from artifact union.');
+ const manifestBytes=readRegularEvidenceSnapshot(resolve(selected.manifestOutput),context.evidenceRoot).bytes;
+ const manifestClaim=files.get('release-manifest.json');
+ if(!manifestClaim||manifestClaim.bytes!==manifestBytes.length||manifestClaim.sha256!==createHash('sha256').update(manifestBytes).digest('hex'))throw new Error('Release bootstrap absent from artifact union.');
+ if(!readRegularEvidenceSnapshot(resolve(selected.composeConfig),context.evidenceRoot).bytes.equals(composeSnapshot.bytes)||!readFileSync(runtimePath).equals(runtimeBytes))throw new Error('Producer expectations changed.');
+ // Existing consumer proves exact schema bundle, all claimed Compose/public data,
+ // complete service/archive equality and artifact root; it does not grant rights.
+ const validated=await validateDisposableReleaseInventoryDescriptors({evidenceRoot:context.evidenceRoot,manifestPath:resolve(selected.manifestOutput),artifactManifestPath:resolve(selected.artifactManifestOutput),expectedSource:profile,expectedRunId:context.runId,expectedPrivateTargetProfile:selected.privateTargetProfile,expectedRuntimeContract:runtimeContract,expectedCompose:JSON.parse(composeSnapshot.bytes),expectedDeploymentContract:selected.deploymentContract});
+ return {...produced,artifactManifest,validation:validated.summary,acceptance:false,admission:false};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href){
