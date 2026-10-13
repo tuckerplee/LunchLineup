@@ -16,7 +16,7 @@ import { verifyInternalBetaPublicBuild } from './verify-internal-beta-public-bui
 export async function produceDisposableReleaseArtifacts(options) {
  const selected=snapshotDeploymentContractJson(options);
  const exact=(value,keys)=>{if(!value||Array.isArray(value)||typeof value!=='object'||Object.keys(value).length!==keys.length||keys.some(key=>!Object.hasOwn(value,key)))throw new Error('Exact producer input keys required.');};
- exact(selected,['sourceContext','expectedSource','env','privateTargetProfile','buildEnvironment','publicBuildConfig','tools','projectName','limits','evidenceLimits']);
+ exact(selected,['sourceContext','expectedSource','env','privateTargetProfile','buildEnvironment','publicBuildConfig','tools','projectName','limits','evidenceLimits',...(Object.hasOwn(selected,'enginePython')?['enginePython']:[])]);
  const {limits}=selected;
  exact(limits,['issuedEpoch','expiresEpoch','commandMilliseconds','maxStdoutBytes','maxStderrBytes','maxArchiveBytes','maxUncompressedArchiveBytes','maxTotalArchiveBytes']);
  for(const value of Object.values(limits))if(!Number.isSafeInteger(value)||value<=0)throw new Error('Explicit positive finite producer limits required.');
@@ -35,7 +35,7 @@ export async function produceDisposableReleaseArtifacts(options) {
  exact(selected.tools,['engine','gzip']);
  // Stable regular-file reads supplement independently admitted immutable custody.
  const pinned=(pin)=>{exact(pin,['path','bytes','sha256']);if(typeof pin.path!=='string'||!isAbsolute(pin.path)||realpathSync(pin.path)!==pin.path||!Number.isSafeInteger(pin.bytes)||pin.bytes<=0||!/^([a-f0-9]{64})$/.test(pin.sha256))throw new Error('Invalid independent file pin.');const fd=openSync(pin.path,constants.O_RDONLY|constants.O_NOFOLLOW|constants.O_NONBLOCK);try{const before=fstatSync(fd,{bigint:true});if(!before.isFile()||before.size!==BigInt(pin.bytes))throw new Error('Pinned file type/length differs.');let count=0;const h=createHash('sha256'),buffer=Buffer.alloc(65536);while(count<pin.bytes){check();const n=readSync(fd,buffer,0,Math.min(buffer.length,pin.bytes-count),count);if(!n)throw new Error('Truncated pinned file.');h.update(buffer.subarray(0,n));count+=n;}const after=fstatSync(fd,{bigint:true}),named=lstatSync(pin.path,{bigint:true});for(const k of ['dev','ino','size','mtimeNs','ctimeNs'])if(before[k]!==after[k]||after[k]!==named[k])throw new Error('Pinned file changed.');if(h.digest('hex')!==pin.sha256)throw new Error('Pinned file digest differs.');}finally{closeSync(fd);}};
- for(const pin of [selected.buildEnvironment,selected.publicBuildConfig,...Object.values(selected.tools)])pinned(pin);
+ for(const pin of [selected.buildEnvironment,selected.publicBuildConfig,...Object.values(selected.tools),...(Object.hasOwn(selected,'enginePython')?[selected.enginePython]:[])])pinned(pin);
  // Never synthesize private settings or borrow the C08/browser environment writer.
  const buildEnv=selected.buildEnvironment.path,publicConfig=selected.publicBuildConfig.path;
  readRegularEvidenceSnapshot(publicConfig,root);
@@ -44,7 +44,7 @@ export async function produceDisposableReleaseArtifacts(options) {
  const compose=['compose','--project-name',selected.projectName,'--env-file',buildEnv,'-f',resolve(context.buildSourcePath,'docker-compose.yml'),'--profile','ops'];
  let sequence=0,totalArchiveBytes=0;
  const run=async(tool,args,{stdoutPath=null,stdoutCap=limits.maxStdoutBytes,inputPath=null}={})=>{
-  check();pinned(selected.tools[tool]);pinned(selected.buildEnvironment);
+  check();pinned(selected.tools[tool]);pinned(selected.buildEnvironment);if(tool==='engine'&&Object.hasOwn(selected,'enginePython'))pinned(selected.enginePython);
   const id=String(++sequence).padStart(3,'0'),out=stdoutPath??resolve(logs,`${id}.stdout`),err=resolve(logs,`${id}.stderr`);
   let outFd=null,errFd=null,inputFd=null,child,timer,primaryError=null;
   let outputBytes=0,errorBytes=0,reason=null,exitCode=null,signal=null;
@@ -54,11 +54,12 @@ export async function produceDisposableReleaseArtifacts(options) {
   // Path strings never enter persistent command JSON. Bind substituted logical
   // roles to independent pins/source identity; argv hash retains exact correlation.
   const logicalArgs=args.map(arg=>arg===buildEnv?'input:build-environment':arg===resolve(context.buildSourcePath,'docker-compose.yml')?'source:docker-compose.yml':arg);
-  const outcome={tool,args:logicalArgs,argvSha256:createHash('sha256').update(JSON.stringify(args)).digest('hex'),toolPin:{bytes:selected.tools[tool].bytes,sha256:selected.tools[tool].sha256},buildEnvironmentPin:{bytes:selected.buildEnvironment.bytes,sha256:selected.buildEnvironment.sha256},sourceSha:profile.sourceSha,treeSha:profile.treeSha};
+  const outcome={tool,args:logicalArgs,...(tool==='engine'&&selected.enginePython?{enginePythonPin:{bytes:selected.enginePython.bytes,sha256:selected.enginePython.sha256},invocation:['selected-python','-I','-B','selected-engine-adapter']}:{}),argvSha256:createHash('sha256').update(JSON.stringify(args)).digest('hex'),toolPin:{bytes:selected.tools[tool].bytes,sha256:selected.tools[tool].sha256},buildEnvironmentPin:{bytes:selected.buildEnvironment.bytes,sha256:selected.buildEnvironment.sha256},sourceSha:profile.sourceSha,treeSha:profile.treeSha};
   try{
    outFd=openSync(out,'wx',0o600);errFd=openSync(err,'wx',0o600);
    if(inputPath!==null)inputFd=openSync(inputPath,constants.O_RDONLY|constants.O_NOFOLLOW);
-   child=spawn(selected.tools[tool].path,args,{cwd:context.buildSourcePath,env:selected.env,stdio:[inputFd??'ignore','pipe','pipe']});
+   const python=tool==='engine'&&Object.hasOwn(selected,'enginePython')?selected.enginePython:null;
+   child=spawn(python?python.path:selected.tools[tool].path,python?['-I','-B',selected.tools[tool].path,...args]:args,{cwd:context.buildSourcePath,env:selected.env,stdio:[inputFd??'ignore','pipe','pipe']});
    const stop=why=>{reason??=why;for(const [stage,action] of [['kill',()=>child.kill('SIGKILL')],['stdout-destroy',()=>child.stdout.destroy()],['stderr-destroy',()=>child.stderr.destroy()]])try{action();}catch(error){diagnose(stage,error);}};
    const consume=(fd,chunk,count,cap)=>{const keep=Math.min(chunk.length,Math.max(0,cap-count));let offset=0;while(offset<keep){const n=writeSync(fd,chunk,offset,keep-offset);if(n<=0)throw new Error('Zero output write.');offset+=n;}return count+chunk.length;};
    child.stdout.on('data',chunk=>{try{outputBytes=consume(outFd,chunk,outputBytes,stdoutCap);if(outputBytes>stdoutCap)stop('stdout-limit');}catch(error){diagnose('stdout-write',error);stop('stdout-write');}});
