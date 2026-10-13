@@ -7,6 +7,9 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import selectors
+import tempfile
+import time
 import sys
 
 
@@ -82,6 +85,113 @@ class Adapter:
     def podman(self, args, *, capture=True, timeout=40):
         return subprocess.run([self.adapter, *args], capture_output=capture, text=True, timeout=timeout)
 
+    def capture_start_command(self, args, timeout):
+        """Finite diagnostic capture; no new process-group or network authority."""
+        command = [self.adapter, *args]
+        output = {'stdout': bytearray(), 'stderr': bytearray()}
+        issue = None
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        deadline = time.monotonic() + timeout
+        selector = None
+        try:
+            selector = selectors.DefaultSelector()
+            for key, pipe in (('stdout', process.stdout), ('stderr', process.stderr)):
+                os.set_blocking(pipe.fileno(), False)
+                selector.register(pipe, selectors.EVENT_READ, key)
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    issue = subprocess.TimeoutExpired(command, timeout)
+                    break
+                for event, _ in selector.select(min(remaining, 0.1)):
+                    chunk = os.read(event.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(event.fileobj)
+                        continue
+                    target = output[event.data]
+                    available = 1048576 - len(target)
+                    target.extend(chunk[:available])
+                    if len(chunk) > available:
+                        issue = ValueError('C08 diagnostic capture exceeded 1 MiB per stream; output incomplete')
+                        break
+                if issue is not None:
+                    break
+            if issue is None:
+                try:
+                    process.wait(timeout=max(0.001, deadline - time.monotonic()))
+                except subprocess.TimeoutExpired:
+                    issue = subprocess.TimeoutExpired(command, timeout)
+        except Exception as capture_error:
+            if issue is None:
+                issue = capture_error
+        finally:
+            # Preserve a known timeout/capture error through cleanup failures.
+            for action in (lambda: selector.close() if selector is not None else None,
+                           lambda: process.kill() if process.poll() is None else None,
+                           process.wait, process.stdout.close, process.stderr.close):
+                try:
+                    action()
+                except Exception as cleanup_error:
+                    if issue is None:
+                        issue = cleanup_error
+        return {'command': command, 'returncode': process.returncode,
+                'stdout': bytes(output['stdout']), 'stderr': bytes(output['stderr']),
+                'error': issue, 'timeoutSeconds': timeout}
+
+    def retain_start_failure(self, entry, start):
+        # Caller keeps the original failure even if any diagnostic operation fails.
+        destination = Path(os.environ['LUNCHLINEUP_OBSERVABILITY_DIAGNOSTICS_DIR'])
+        require(destination.is_dir() and not destination.is_symlink(), 'C08 diagnostic directory unavailable')
+        directory = Path(tempfile.mkdtemp(prefix='container-start-', dir=destination))
+        records = []
+        for label, observation in [('start', start), ('inspect', None), ('logs', None)]:
+            if observation is None:
+                try:
+                    observation = self.capture_start_command([label, entry['id']], 3)
+                except Exception as error:
+                    records.append({'operation': label, 'captureError': repr(error)})
+                    continue
+            for stream in ('stdout', 'stderr'):
+                with (directory / (label + '.' + stream + '.log')).open('xb') as target:
+                    target.write(observation[stream])
+            records.append({'operation': label, 'command': observation['command'],
+                            'returncode': observation['returncode'],
+                            'timeoutSeconds': observation['timeoutSeconds'],
+                            'captureError': repr(observation['error']) if observation['error'] else None,
+                            'stdoutBytes': len(observation['stdout']), 'stderrBytes': len(observation['stderr']),
+                            'captureComplete': observation['error'] is None})
+            with (directory / (label + '.json')).open('x') as target:
+                json.dump(records[-1], target, sort_keys=True)
+        with (directory / 'result.json').open('x') as target:
+            json.dump({'runId': self.phase['runId'], 'ownedEntry': entry,
+                       'maxBytesPerStream': 1048576, 'observations': records}, target, sort_keys=True)
+        self.report_start_diagnostic('C08 container start diagnostics: ' + str(directory))
+
+    @staticmethod
+    def report_start_diagnostic(message):
+        try:
+            print(message, file=sys.stderr)
+        except Exception:
+            pass  # Reporting must never replace an already known start failure.
+
+    def start_detached(self, entry):
+        observation = self.capture_start_command(['start', entry['id']], 40)
+        if observation['error'] is not None or observation['returncode'] != 0:
+            try:
+                self.retain_start_failure(entry, observation)
+            except Exception as diagnostic_error:
+                self.report_start_diagnostic('C08 start diagnostic retention failed: ' + repr(diagnostic_error))
+        for stream, target in (('stdout', sys.stdout), ('stderr', sys.stderr)):
+            try:
+                target.buffer.write(observation[stream]); target.buffer.flush()
+            except Exception as replay_error:
+                self.report_start_diagnostic('C08 start output replay failed: ' + repr(replay_error))
+                if observation['error'] is None and observation['returncode'] == 0:
+                    raise  # Preserve output failure on an otherwise successful start.
+        if observation['error'] is not None:
+            raise observation['error']
+        return observation['returncode']
+
     def save(self):
         temporary = self.store.with_suffix('.pending')
         temporary.write_text(json.dumps(self.state, sort_keys=True))
@@ -143,8 +253,7 @@ class Adapter:
             entry = {key: plan[key] for key in ('key', 'name', 'alias')}; entry['id'] = result.stdout.strip()
             self.state[entry['id']] = entry; self.save(); self.inspect(entry)
             if plan['detached']:
-                result = self.podman(['start', entry['id']], capture=False)
-                return result.returncode
+                return self.start_detached(entry)
             try:
                 return self.podman(['start', '--attach', entry['id']], capture=False, timeout=100).returncode
             finally:
