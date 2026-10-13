@@ -367,10 +367,10 @@ tests:
         values: "1+0x420"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
-        values: "0+90x420"
+        values: "0+540x420"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
-        values: "0+10x420"
+        values: "0+60x420"
       -
         series: "http_requests_total{job=\"api\",route=\"/v1/locations\",status=\"500\"}"
         values: "0+9999x420"
@@ -519,7 +519,7 @@ tests:
         values: "0+10000x420"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
-        values: "0+0x417 200 400 600"
+        values: "0+0x417 300 600 900"
     alert_rule_test:
       -
         eval_time: "7h"
@@ -733,13 +733,13 @@ tests:
         values: "1+0x420"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
-        values: "0+90x210 0+90x209"
+        values: "0+540x210 0+540x209"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
-        values: "0+10x210 0+10x209"
+        values: "0+60x210 0+60x209"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"2xx\"}"
-        values: "0+900x210 0+900x209"
+        values: "0+5400x210 0+5400x209"
       -
         series: "lunchlineup_api_v2_http_requests_total{job=\"api-v2\",instance=\"api-v2-other:3002\",method=\"GET\",route=\"/v2/locations\",scope=\"application\",status_class=\"5xx\"}"
         values: "0+0x420"
