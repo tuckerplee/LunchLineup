@@ -6,6 +6,7 @@ import { selectInternalCiSourceProfile } from './internal-ci-source-context.mjs'
 import { snapshotDeploymentContractJson, validateRetainedDeploymentContract } from './write-deployment-contract.mjs';
 import { validatePrivateTargetProfile } from './private-target-profile.mjs';
 import { stableJson } from './internal-ci-evidence.mjs';
+import { validateDisposableReleaseInventoryFromFds } from './disposable-release-inventory.mjs';
 export const RELEASE_INVENTORY_HARD_MAX = 64 * 1024 * 1024;
 const AUTHORITY = '/etc/custom-ci/disposable-release-inventory-authority.json';
 const OPERATION = 'validate-inventory-and-retained-schema';
@@ -83,4 +84,45 @@ export function readFixedReleaseInventorySelection(runId,maximumRecordBytes){
  const path=`/var/lib/custom-ci/release-inventory/${runId}/selection.json`,selectionBytes=protectedBytes(path,0o444,maximumRecordBytes),selection=validateReleaseInventorySelection(JSON.parse(selectionBytes),authority,Date.now()/1000);
  need(selection.runId===runId,'Run selector differs.');
  return {authority,selection,authoritySha256:digest(authorityBytes),selectionSha256:digest(selectionBytes),installedAdmission:false};
+}
+
+// Pure semantic join only. The caller must supply one independently authenticated
+// owner context; this function does not install or establish that custody.
+export async function validateSelectedDisposableReleaseInventoryFromFds(input) {
+ const active=new Set();
+ function inspect(value){
+  if(value===null||typeof value!=='object')return;
+  need(!active.has(value),'Cyclic selected held-input data.');active.add(value);
+  if(Array.isArray(value))need(Object.getPrototypeOf(value)===Array.prototype,'Custom array prototype rejected.');
+  for(const key of Reflect.ownKeys(value)){
+   const descriptor=Object.getOwnPropertyDescriptor(value,key);
+   need(Object.hasOwn(descriptor,'value'),'Selected held-input accessors rejected.');
+   inspect(descriptor.value);
+  }
+  active.delete(value);
+ }
+ inspect(input);
+ const copied=snapshotDeploymentContractJson(input);
+ need(exact(copied,['authority','selection','borrowedFds','expectedInputPins','limits']),'Exact selected held-input arguments required.');
+ const selected=validateReleaseInventorySelection(copied.selection,copied.authority,Date.now()/1000);
+ const limits=copied.limits;
+ need(exact(limits,['maxFiles','maxFileBytes','maxInputBytes','maxJsonBytes','maxResultBytes','issuedEpoch','expiresEpoch'])&&Object.values(limits).every(positive),'Explicit lower held-input limits required.');
+ need(limits.issuedEpoch===selected.envelope.issuedEpoch&&limits.expiresEpoch===selected.envelope.expiresEpoch,'Original selected window differs.');
+ need(limits.maxFiles<=selected.envelope.maxInputFiles&&limits.maxInputBytes<=selected.envelope.maxInputBytes&&limits.maxResultBytes<=selected.envelope.maxResultBytes,'Held-input limits exceed selected envelope.');
+ need(limits.maxFileBytes<=limits.maxInputBytes&&limits.maxJsonBytes<=limits.maxFileBytes&&limits.maxJsonBytes<=RELEASE_INVENTORY_HARD_MAX,'Held-input limit hierarchy differs.');
+ const pins=copied.expectedInputPins;
+ need(pins!==null&&typeof pins==='object'&&!Array.isArray(pins),'Complete independent held-input pins required.');
+ for(const key of ['manifest','artifactManifest']){
+  const name=selected.paths[key],pin=pins[name],expected=selected.inputPins[key];
+  need(Object.hasOwn(pins,name)&&pin!==null&&typeof pin==='object'&&!Array.isArray(pin)&&pin.bytes===expected.bytes&&pin.sha256===expected.sha256,'Selected bootstrap pin differs.');
+ }
+ return validateDisposableReleaseInventoryFromFds({
+  manifestPath:selected.paths.manifest,artifactManifestPath:selected.paths.artifactManifest,
+  borrowedFds:copied.borrowedFds,expectedInputPins:pins,limits,
+  expectedSource:selected.sourceProfile,expectedRunId:selected.runId,
+  expectedPrivateTargetProfile:selected.expectations.privateTargetProfile,
+  expectedRuntimeContract:selected.expectations.runtimeContract,
+  expectedCompose:selected.expectations.compose,
+  expectedDeploymentContract:selected.expectations.deploymentContract
+ });
 }
