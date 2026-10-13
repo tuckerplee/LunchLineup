@@ -514,6 +514,129 @@ def validate_effect(raw_plan, effect):
             'retryAuthorized': False, 'cleanupAuthorized': False}
 
 
+def _binding_json(value):
+    """Canonical strict JSON data; reject Python coercions and cyclic inputs."""
+    active = set()
+    def check(item):
+        if item is None or type(item) in (str, bool, int):
+            return
+        require(type(item) in (dict, list), 'strict JSON binding data required')
+        identity = id(item)
+        require(identity not in active, 'cyclic binding data')
+        active.add(identity)
+        if type(item) is dict:
+            require(all(type(key) is str for key in item), 'JSON binding string keys')
+            children = item.values()
+        else:
+            children = item
+        for child in children:
+            check(child)
+        active.remove(identity)
+    check(value)
+    return canonical(value)
+
+
+def bind_load_plan(raw_plan, *, expected_plan_bindings, expected_services,
+                   expected_inputs, expected_resources, expected_images,
+                   expected_manifest_services, resource_images, archive_roles,
+                   spec_bytes):
+    """Pure independent-data binding, not input custody or image/backend proof."""
+    obligations = validate_plan(raw_plan)
+    plan = parse_plan(raw_plan)
+    require(plan['action'] == 'load', 'load plan required')
+    binding_keys = ('requestSha256', 'selectionSha256', 'authorityPolicySha256',
+                    'ownerDecisionSha256', 'target')
+    closed(expected_plan_bindings, binding_keys)
+    require(_binding_json({k: plan[k] for k in binding_keys}) ==
+            _binding_json(expected_plan_bindings),
+            'independent plan binding differs')
+    for key, expected in (('services', expected_services), ('inputs', expected_inputs),
+                          ('resources', expected_resources)):
+        require(_binding_json(plan[key]) == _binding_json(expected),
+                'independent '+key+' differs')
+    require(type(expected_manifest_services) is dict and
+            set(expected_manifest_services) == SERVICES, 'full manifest service roster')
+    require(type(expected_images) is dict and 0 < len(expected_images) <= len(SERVICES),
+            'finite complete image roster')
+    consumers = set(); archives = set(); refs = set()
+    for name, row in expected_images.items():
+        identifier(name)
+        closed(row, ('composeServices', 'resolvedRef', 'localImageId', 'archive', 'source'))
+        require(type(row['localImageId']) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', row['localImageId']), 'immutable image ID')
+        ref = row['resolvedRef']
+        require(type(ref) is str and ref and ref not in refs, 'unique image reference')
+        refs.add(ref)
+        first = ref.startswith('lunchlineup-internal-ci/')
+        require(row['source'] == ('first-party' if first else 'third-party') and
+                (first or re.search(r'@sha256:[a-f0-9]{64}$', ref)), 'image source classification')
+        archive = row['archive'];closed(archive, ('path', 'sha256', 'bytes'))
+        require(type(archive['path']) is str and re.fullmatch(r'images/[a-z0-9-]+\.tar\.gz', archive['path']) and archive['path'] not in archives, 'unique archive path')
+        archives.add(archive['path']);sha(archive['sha256']);integer(archive['bytes'], 1, 64*1024**3)
+        names = row['composeServices']
+        require(type(names) is list and names and all(type(n) is str and n in SERVICES for n in names) and len(names) == len(set(names)), 'image consumer roster')
+        for service in names:
+            require(service not in consumers, 'duplicate image consumer');consumers.add(service)
+            item = expected_manifest_services[service]
+            closed(item, ('imageArtifact', 'resolvedRef', 'oneShot', 'hasHealthCheck'))
+            require(item['imageArtifact'] == name and item['resolvedRef'] == ref and
+                    type(item['oneShot']) is bool and type(item['hasHealthCheck']) is bool,
+                    'bidirectional image service binding')
+    require(consumers == SERVICES, 'complete 28-service image union')
+    resources = plan['resources'];inputs = plan['inputs']
+    require(type(resource_images) is dict and type(archive_roles) is dict and
+            set(resource_images) == set(archive_roles) == set(resources), 'exact resource maps')
+    required = {name for name, row in expected_images.items() if any(
+        expected_services[n]['disposition'] == 'required' for n in row['composeServices'])}
+    require(all(type(v) is str for v in resource_images.values()) and
+            len(set(resource_images.values())) == len(resource_images) and
+            set(resource_images.values()) == required, 'exact required shared-image resources')
+    used_roles = set();expected_spec_roles = set()
+    for name, resource in resources.items():
+        image = expected_images[resource_images[name]]
+        require(resource['kind'] == 'image' and resource['service'] in image['composeServices'] and
+                expected_services[resource['service']]['disposition'] == 'required',
+                'required representative image service')
+        spec = resource['specInput'];role = archive_roles[name]
+        require(type(role) is str and role in inputs and role != spec, 'independent archive role')
+        raw = spec_bytes.get(spec) if type(spec_bytes) is dict else None
+        require(type(raw) is bytes and raw == canonical({resource_images[name]: image}),
+                'exact canonical image specification')
+        require(inputs[spec]['sha256'] == hashlib.sha256(raw).hexdigest() and
+                inputs[spec]['bytes'] == len(raw), 'spec input byte binding')
+        require(inputs[role]['sha256'] == image['archive']['sha256'] and
+                inputs[role]['bytes'] == image['archive']['bytes'], 'archive input binding')
+        used_roles.update((spec, role));expected_spec_roles.add(spec)
+    require(type(spec_bytes) is dict and set(spec_bytes) == expected_spec_roles and
+            used_roles == set(inputs), 'no extra specification/input authority')
+    imports = {};tags = set();ancestors = []
+    for index, step in enumerate(plan['steps']):
+        prior = set(step['dependsOn'])
+        for dependency in step['dependsOn']:prior.update(ancestors[dependency])
+        ancestors.append(prior)
+        resource = step['resource'];row = resources[resource]
+        image = expected_images[resource_images[resource]]
+        if step['operation'] == 'image-import':
+            require(resource not in imports, 'shared image imported only once')
+            require(step['inputRoles'] == sorted((row['specInput'], archive_roles[resource])) and
+                    step['requestBytes'] >= image['archive']['bytes'], 'exact import inputs/request bound')
+            imports[resource] = index
+        else:
+            require(step['operation'] == 'image-tag' and resource not in tags and
+                    resource in imports and imports[resource] in prior, 'unique tag after same-resource import')
+            require(image['source'] == 'first-party' and re.fullmatch(
+                r'lunchlineup-internal-ci/[a-z0-9]+(?:[._-][a-z0-9]+)*(?:/[a-z0-9]+(?:[._-][a-z0-9]+)*)*:[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', image['resolvedRef']), 'exact first-party tag reference required')
+            require(step['inputRoles'] == [row['specInput']] and step['requestBytes'] >= len(spec_bytes[row['specInput']]), 'exact tag input/request bound')
+            tags.add(resource)
+    require(set(imports) == set(resources), 'every required image imported exactly once')
+    return obligations
+
+
+def validate_bound_load_effect(raw_plan, effect, **independent):
+    """Repeat pure binding, then validate effect data without observing truth."""
+    bind_load_plan(raw_plan, **independent)
+    return validate_effect(raw_plan, effect)
+
+
 def dispatch(*_args, **_kwargs):
     # Validation never turns data into an authenticated owner or mutation grant.
     raise Refusal('mutation refused: executor, host admission and confinement are not implemented')

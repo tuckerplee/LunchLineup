@@ -12,7 +12,7 @@ const digest=b=>createHash('sha256').update(b).digest('hex');
 const pathName=p=>typeof p==='string' && /^[^\\\0]+$/.test(p) && !p.startsWith('/') && !p.split('/').some(x=>!x||x==='.'||x==='..');
 const object=v=>v!==null && typeof v==='object' && !Array.isArray(v);
 
-export async function validateDisposableReleaseInventory({ evidenceRoot, manifestPath, artifactManifestPath,
+async function validateInventory({ evidenceRoot, manifestPath, artifactManifestPath,
  expectedSource, expectedRunId, expectedPrivateTargetProfile, expectedRuntimeContract, expectedCompose, expectedDeploymentContract }) {
  const profile=selectInternalCiSourceProfile(expectedSource);
  need(profile.version===2,'Explicit disposable source selection required.');
@@ -87,5 +87,16 @@ export async function validateDisposableReleaseInventory({ evidenceRoot, manifes
  const listedArchives=[...files.keys()].filter(x=>x.startsWith('images/')&&x.endsWith('.tar.gz')).sort();
  const actualArchives=sortedDirectoryInventory(resolve(evidenceRoot,'images')).filter(x=>x.path.endsWith('.tar.gz')).map(x=>'images/'+x.path).sort();
  need(equal([...archives].sort(),listedArchives) && equal([...archives].sort(),actualArchives),'Unreferenced or missing archive.');
- return {kind:'disposable-release-inventory-validation',deploymentContractBundleSha256:schemaValidation.bundleSha,deploymentContractFileCount:schemaValidation.materializedFiles.size,sourceProfile:profile,runId:expectedRunId,manifestSha256:digest(manifestBytes),artifactManifestSha256:digest(artifactBytes),serviceCount:names.length,imageCount:refs.size,acceptance:false,admission:false};
+ const summary={kind:'disposable-release-inventory-validation',deploymentContractBundleSha256:schemaValidation.bundleSha,deploymentContractFileCount:schemaValidation.materializedFiles.size,sourceProfile:profile,runId:expectedRunId,manifestSha256:digest(manifestBytes),artifactManifestSha256:digest(artifactBytes),serviceCount:names.length,imageCount:refs.size,acceptance:false,admission:false};
+ return {summary,images:manifest.images,services:manifest.services};
+}
+
+export async function validateDisposableReleaseInventory(options) {
+ return (await validateInventory(options)).summary;
+}
+
+export async function validateDisposableReleaseInventoryDescriptors(options) {
+ const result=await validateInventory(options);
+ const freeze=value=>{if(value!==null&&typeof value==='object'){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;};
+ return freeze(result);
 }
