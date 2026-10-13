@@ -637,6 +637,168 @@ def validate_bound_load_effect(raw_plan, effect, **independent):
     return validate_effect(raw_plan, effect)
 
 
+# Exact definition-only mirrors of the existing archive preflight relation and
+# tag normalization; no parser imports, IO, or independent permission roster.
+ARCHIVE_SERVICE_ARTIFACTS = {
+    'proxy': 'proxy', 'web': 'web', 'api': 'api', 'webhook-replay': 'api',
+    'migrate': 'migrate', 'engine': 'engine', 'pdf-parser': 'worker',
+    'worker': 'worker', 'pgbouncer': 'pgbouncer', 'pitr-wal-provider': 'backup',
+    'api-v2': 'api-v2', 'pitr-lifecycle-audit': 'backup', 'postgres': 'postgres',
+    'redis': 'redis', 'rabbitmq': 'rabbitmq', 'control': 'control',
+    'autoheal': 'autoheal', 'prometheus': 'prometheus', 'backup': 'backup',
+    'pitr-base-backup': 'backup', 'pitr-restore': 'backup',
+    'alertmanager': 'alertmanager', 'node-exporter': 'node-exporter',
+    'loki': 'loki', 'promtail': 'otel-collector', 'otel-collector': 'otel-collector',
+    'tempo': 'tempo', 'grafana': 'grafana',
+}
+
+
+def _archive_canonical_tag(tag):
+    require(isinstance(tag, str) and ':' in tag, "explicit image tag required")
+    repository, version = tag.rsplit(':', 1)
+    require(len(repository) <= 255 and re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}', version), "invalid repository/tag length or tag")
+    parts = repository.split('/')
+    component = r'[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*'
+    first = parts[0]
+    explicit = len(parts) > 1 and ('.' in first or ':' in first or first == 'localhost' or first.lower() != first)
+    if explicit:
+        host = first.lower()
+        require(re.fullmatch(r'(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*|\[[a-f0-9:]+\])(?::[0-9]+)?', host), "invalid registry")
+        path = parts[1:]
+    else:
+        host, path = 'docker.io', parts
+    require(path and all(re.fullmatch(component, x) for x in path), "invalid repository path")
+    if host == 'index.docker.io':
+        host = 'docker.io'
+    if host == 'docker.io' and len(path) == 1:
+        path.insert(0, 'library')
+    return host + '/' + '/'.join(path) + ':' + version
+
+
+
+def bind_load_plan_with_archive_preflight(raw_plan, *, preflight_result,
+        expected_preflight_pin, expected_archive_policy, expected_input_identities,
+        expected_source_binding, **independent_load_bindings):
+    """Pure retained-result joins; caller must authenticate every independent input."""
+    obligations = bind_load_plan(raw_plan, **independent_load_bindings)
+    # Reject Python coercions and non-JSON values before comparing supplied data.
+    for value in (preflight_result, expected_preflight_pin, expected_archive_policy,
+                  expected_input_identities, expected_source_binding):
+        _binding_json(value)
+    def same(left, right):
+        return _binding_json(left) == _binding_json(right)
+    def identity(value, maximum):
+        closed(value, ('bytes', 'sha256', 'veritySha256', 'device', 'inode'))
+        integer(value['bytes'], 1, maximum)
+        sha(value['sha256']); sha(value['veritySha256'])
+        integer(value['device'], 0, 2**53-1); integer(value['inode'], 0, 2**53-1)
+    def ids(value, maximum):
+        require(type(value) is list and len(value) <= maximum and
+                all(type(x) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', x) for x in value) and
+                value == sorted(set(value)), 'canonical unique archive identity list')
+    def platform(value):
+        closed(value, ('configImageId', 'os', 'architecture', 'variant'))
+        require(type(value['configImageId']) is str and re.fullmatch(r'sha256:[a-f0-9]{64}', value['configImageId']), 'platform config identity')
+        require(all(type(value[k]) is str and re.fullmatch(r'[a-z0-9][a-z0-9._-]{0,63}', value[k]) for k in ('os', 'architecture')), 'platform OS/architecture')
+        require(value['variant'] is None or type(value['variant']) is str and re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}', value['variant']), 'platform variant')
+    closed(preflight_result, ('receipt', 'sha256', 'bytes'))
+    closed(expected_preflight_pin, ('sha256', 'bytes'))
+    receipt = preflight_result['receipt']; raw = _binding_json(receipt)
+    require(0 < len(raw) <= 1024**2, 'preflight receipt byte bound')
+    actual = {'bytes': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
+    require(same(actual, expected_preflight_pin) and
+            same(actual, {k: preflight_result[k] for k in actual}), 'independent preflight receipt pin differs')
+    closed(receipt, ('version', 'kind', 'sourceSha', 'treeSha', 'manifest', 'helper',
+                    'services', 'archives', 'tags', 'chargedWork', 'inventoryStatus', 'loadAuthorized'))
+    require(type(receipt['version']) is int and receipt['version'] == 1 and
+            receipt['kind'] == 'immutable-fd-archive-preflight' and receipt['loadAuthorized'] is False and
+            receipt['inventoryStatus'] == 'pending-live-owner-custody', 'preflight identity/authority differs')
+    source_keys = ('sourceSha', 'treeSha', 'manifestSha256', 'helperSha256')
+    closed(expected_source_binding, source_keys)
+    policy = expected_archive_policy
+    closed(policy, (*source_keys, 'prefix', 'artifacts'))
+    for key in ('sourceSha', 'treeSha'):
+        require(type(expected_source_binding[key]) is str and re.fullmatch('[a-f0-9]{40}', expected_source_binding[key]), 'source/tree binding')
+        require(receipt[key] == policy[key] == expected_source_binding[key], 'preflight source differs')
+    for key in ('manifestSha256', 'helperSha256'):
+        sha(expected_source_binding[key]); require(policy[key] == expected_source_binding[key], 'independent bootstrap source pin differs')
+    require(type(policy['prefix']) is str and re.fullmatch('[a-z0-9][a-z0-9._/-]*', policy['prefix']), 'independent candidate prefix')
+    images = independent_load_bindings['expected_images']
+    services = independent_load_bindings['expected_manifest_services']
+    names = set(ARCHIVE_SERVICE_ARTIFACTS.values())
+    require(set(ARCHIVE_SERVICE_ARTIFACTS) == SERVICES and len(names) == 21 and
+            set(images) == names and set(services) == set(ARCHIVE_SERVICE_ARTIFACTS), 'fixed complete 28-service/21-artifact relation')
+    closed(policy['artifacts'], names); closed(receipt['archives'], names)
+    closed(receipt['services'], ARCHIVE_SERVICE_ARTIFACTS)
+    closed(expected_input_identities, ('manifest', 'helper', *('archive:'+n for n in names)))
+    for role, wanted in expected_input_identities.items():
+        identity(wanted, 32*1024**3 if role.startswith('archive:') else 16*1024**2)
+    for role in ('manifest', 'helper'):
+        identity(receipt[role], 16*1024**2)
+        require(same(receipt[role], expected_input_identities[role]) and
+                receipt[role]['sha256'] == policy[role+'Sha256'], 'preflight bootstrap custody differs')
+    tags = {}; compressed = 0
+    for name in sorted(names):
+        image = images[name]; item = receipt['archives'][name]; approved = policy['artifacts'][name]
+        closed(approved, ('localImageId', 'resolvedRef', 'archiveSha256', 'archiveBytes', 'platforms'))
+        closed(item, ('tags', 'configImageIds', 'ociDescriptorIds', 'platforms', 'resolvedReference', 'inputIdentity', 'expectedImageId'))
+        require(image['localImageId'] == approved['localImageId'] == item['expectedImageId'] and
+                image['resolvedRef'] == approved['resolvedRef'], 'archive image/reference differs')
+        require(sorted(image['composeServices']) == sorted(s for s, n in ARCHIVE_SERVICE_ARTIFACTS.items() if n == name), 'fixed shared consumers differ')
+        ids(item['configImageIds'], 256+4096); ids(item['ociDescriptorIds'], 4096)
+        require(item['expectedImageId'] in item['configImageIds'], 'disposable config image missing')
+        require(type(item['platforms']) is list and item['platforms'] and len(item['platforms']) <= 256+4096, 'complete platforms required')
+        for row in item['platforms']: platform(row)
+        require([row['configImageId'] for row in item['platforms']] == item['configImageIds'] and
+                same(item['platforms'], approved['platforms']), 'full independent platform set differs')
+        identity(item['inputIdentity'], 32*1024**3)
+        require(same(item['inputIdentity'], expected_input_identities['archive:'+name]), 'archive immutable identity differs')
+        archive = image['archive']; observed = item['inputIdentity']
+        require(archive['path'] == 'images/'+name+'.tar.gz' and
+                archive['sha256'] == approved['archiveSha256'] == observed['sha256'] and
+                same(archive['bytes'], approved['archiveBytes']) and archive['bytes'] == observed['bytes'], 'archive content pin differs')
+        compressed += observed['bytes']; integer(compressed, 1, 64*1024**3)
+        exported = item['tags']
+        require(type(exported) is list and len(exported) <= 4096 and
+                all(type(t) is str and _archive_canonical_tag(t) == t for t in exported) and
+                exported == sorted(set(exported)), 'canonical unique exported tags')
+        reference = image['resolvedRef']; status = item['resolvedReference']
+        if '@' in reference:
+            closed(status, ('resolvedRef', 'status', 'descriptorPresent'))
+            require(status['resolvedRef'] == reference and status['status'] == 'pending-live-repodigest-association' and
+                    type(status['descriptorPresent']) is bool and status['descriptorPresent'] ==
+                    (reference.rsplit('@', 1)[1] in item['ociDescriptorIds']), 'pending digest association differs')
+        else:
+            closed(status, ('resolvedRef', 'normalizedRef', 'status', 'expectedImageId'))
+            normalized = _archive_canonical_tag(reference)
+            candidate = _archive_canonical_tag(policy['prefix']+'/'+name+':'+policy['sourceSha'])
+            require(normalized in exported or normalized == candidate, 'unbound preflight tag')
+            require(same(status, {'resolvedRef': reference, 'normalizedRef': normalized,
+                    'status': 'exported-tag' if normalized in exported else 'planned-candidate-tag',
+                    'expectedImageId': image['localImageId']}), 'tag reference status differs')
+        candidate = _archive_canonical_tag(policy['prefix']+'/'+name+':'+policy['sourceSha'])
+        for tag in [*exported, candidate]:
+            require(tag not in tags or tags[tag] == image['localImageId'], 'conflicting receipt tag')
+            tags[tag] = image['localImageId']
+        require(len(tags) <= 4096, 'complete receipt tag bound')
+    require(same(receipt['tags'], dict(sorted(tags.items()))), 'complete preflight tag inventory differs')
+    for service, name in ARCHIVE_SERVICE_ARTIFACTS.items():
+        require(services[service]['imageArtifact'] == name and
+                same(receipt['services'][service], {'artifact': name,
+                     'resolvedReference': receipt['archives'][name]['resolvedReference']}), 'full preflight service relation differs')
+    work = receipt['chargedWork']
+    closed(work, ('compressed', 'expanded', 'archiveIntegrityHashBytes', 'manifestHelperIntegrityHashBytes'))
+    for key in work: integer(work[key], 0, 128*1024**3)
+    require(work['compressed'] == work['archiveIntegrityHashBytes'] == compressed and
+            work['manifestHelperIntegrityHashBytes'] == sum(expected_input_identities[k]['bytes'] for k in ('manifest', 'helper')), 'preflight accounting differs')
+    for resource, name in independent_load_bindings['resource_images'].items():
+        role = independent_load_bindings['archive_roles'][resource]
+        plan_pin = independent_load_bindings['expected_inputs'][role]
+        observed = receipt['archives'][name]['inputIdentity']
+        require(all(same(plan_pin[k], observed[k]) for k in ('bytes', 'sha256', 'veritySha256')), 'load archive input differs from preflight')
+    return obligations
+
+
 def dispatch(*_args, **_kwargs):
     # Validation never turns data into an authenticated owner or mutation grant.
     raise Refusal('mutation refused: executor, host admission and confinement are not implemented')
