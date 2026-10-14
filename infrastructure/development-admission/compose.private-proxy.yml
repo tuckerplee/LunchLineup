@@ -27,6 +27,6 @@ services:
   backup:
     environment:
       # The backup container root is read-only; gpg needs a writable home on the /tmp tmpfs.
-      GNUPGHOME: /tmp/gnupg
+      GNUPGHOME: /tmp
       # Private pilot keeps encrypted backups locally on VM107 until an offsite target exists.
       BACKUP_OFFSITE_ENABLED: "false"
