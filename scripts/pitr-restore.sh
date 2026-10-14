@@ -186,10 +186,15 @@ JS
 then
   pitr_fail "Base backup control-file identity is untrusted or differs from PITR_EXPECTED_SYSTEM_IDENTIFIER."
 fi
+# PostgreSQL's recovery_target_time GUC rejects the RFC3339 "Z" suffix
+# ("invalid value for parameter"), so the server would refuse to start. The
+# value was validated above as an exact UTC timestamp; hand it to PostgreSQL as
+# the equivalent "YYYY-MM-DD HH:MM:SS[.f]+00" form.
+PITR_RECOVERY_TARGET_TIME_PG="$(printf '%s' "${PITR_RECOVERY_TARGET_TIME}" | sed 's/T/ /; s/Z$/+00/')"
 touch "${PITR_RESTORE_DATA_DIR}/recovery.signal"
 cat >>"${PITR_RESTORE_DATA_DIR}/postgresql.auto.conf" <<EOF
 restore_command = 'sh /opt/lunchlineup/pitr/restore-wal.sh "%f" "%p"'
-recovery_target_time = '${PITR_RECOVERY_TARGET_TIME}'
+recovery_target_time = '${PITR_RECOVERY_TARGET_TIME_PG}'
 recovery_target_inclusive = true
 recovery_target_timeline = '${PITR_RECOVERY_TARGET_TIMELINE}'
 recovery_target_action = 'pause'

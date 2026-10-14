@@ -645,7 +645,8 @@ esac
     const recoveryConfig = readFileSync(join(restoreData, 'postgresql.auto.conf'), 'utf8');
     assert.match(recoveryConfig, new RegExp(`^recovery_target_timeline = '${timeline}'$`, 'm'));
     assert.match(recoveryConfig, /^recovery_target_action = 'pause'$/m);
-    assert.match(recoveryConfig, /^recovery_target_time = '2026-07-16T12:30:00Z'$/m);
+    // PostgreSQL rejects the RFC3339 'Z' suffix in recovery_target_time; it must be written as +00.
+    assert.match(recoveryConfig, /^recovery_target_time = '2026-07-16 12:30:00\+00'$/m);
     assert.ok(existsSync(join(restoreData, 'recovery.signal')));
     const source = readFileSync(join(restoreData, 'lunchlineup-pitr-restore-source'), 'utf8');
     assert.match(source, new RegExp(`^recovery_target_timeline=${timeline}$`, 'm'));
