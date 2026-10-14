@@ -1,4 +1,4 @@
-import { resolveCookieSecure } from '@lunchlineup/config';
+import { isInternalBetaHostname, resolveCookieSecure } from '@lunchlineup/config';
 import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
 
@@ -239,8 +239,8 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         } catch {
             // The primary origin and domain checks report their own validation errors.
         }
-        if (appHostname !== BETA_DEMO_HOST || domainHostname !== BETA_DEMO_HOST) {
-            errors.push('INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for beta.lunchlineup.com.');
+        if (!isInternalBetaHostname(appHostname) || domainHostname !== appHostname) {
+            errors.push('INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for beta.lunchlineup.com or dev.lunchlineup.com.');
         }
     }
 

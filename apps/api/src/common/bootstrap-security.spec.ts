@@ -140,6 +140,25 @@ describe('bootstrap security policy', () => {
         }))).not.toThrow();
     });
 
+    it('allows internal beta entitlements on the private dev pilot origin only with a matching domain', () => {
+        const dev = {
+            DOMAIN: 'dev.lunchlineup.com',
+            APP_ORIGIN: 'https://dev.lunchlineup.com',
+            ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
+            MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x73).toString('base64'),
+            INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+        };
+        expect(() => validateProductionEnvironment(productionEnv(dev))).not.toThrow();
+        expect(() => validateProductionEnvironment(productionEnv({ ...dev, DOMAIN: 'beta.lunchlineup.com' })))
+            .toThrow(/INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
+        expect(() => validateProductionEnvironment(productionEnv({
+            ...dev,
+            DOMAIN: 'lunchlineup.com',
+            APP_ORIGIN: 'https://lunchlineup.com',
+            ALLOWED_ORIGINS: 'https://lunchlineup.com',
+        }))).toThrow(/INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
+    });
+
     it('accepts current-only MFA encryption in production', () => {
         expect(() => validateProductionEnvironment(productionEnv({
             MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x11).toString('base64'),

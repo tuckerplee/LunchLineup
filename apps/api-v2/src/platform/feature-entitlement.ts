@@ -1,3 +1,4 @@
+import { isInternalBetaOrigin } from '@lunchlineup/config';
 import { Prisma } from '@prisma/client';
 import type { TenantTransaction } from './database';
 import { ProblemError } from './problem';
@@ -17,7 +18,6 @@ const DEFAULT_FEATURES: Record<string, readonly BillableFeature[]> = {
 };
 
 const INTERNAL_BETA_ENTITLEMENT_KEY = 'internal_beta_entitlement';
-const INTERNAL_BETA_ORIGIN = 'https://beta.lunchlineup.com';
 const INTERNAL_BETA_MAX_CREDITS = 1_000;
 
 type InternalBetaSchedulingEntitlement = {
@@ -34,17 +34,7 @@ type InternalBetaSchedulingEntitlement = {
 
 function internalBetaRuntimeEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   if (env.INTERNAL_BETA_ENTITLEMENTS_ENABLED?.trim().toLowerCase() !== 'true') return false;
-  try {
-    const origin = new URL(env.APP_ORIGIN ?? '');
-    return origin.origin === INTERNAL_BETA_ORIGIN
-      && origin.pathname === '/'
-      && !origin.search
-      && !origin.hash
-      && !origin.username
-      && !origin.password;
-  } catch {
-    return false;
-  }
+  return isInternalBetaOrigin(env.APP_ORIGIN);
 }
 
 function boundedPrintable(value: unknown, maximum: number): value is string {

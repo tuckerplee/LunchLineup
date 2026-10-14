@@ -73,6 +73,22 @@ describe('API v2 runtime configuration', () => {
     expect(() => config('10.0.0.0/99')).toThrow(/TRUST_PROXY/);
   });
 
+  it('allows internal beta entitlements only on approved private origins', () => {
+    const base = {
+      LEGACY_API_BASE_URL: 'http://api:3000/v1',
+      JWT_SECRET: 'test-api-v2-jwt-secret',
+      NODE_ENV: 'test',
+      METRICS_TOKEN: 'synthetic-config-metrics-token-00000000000000000000',
+      INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+    };
+    for (const origin of ['https://beta.lunchlineup.com', 'https://dev.lunchlineup.com']) {
+      expect(() => loadConfig({ ...base, APP_ORIGIN: origin })).not.toThrow();
+    }
+    for (const origin of ['https://lunchlineup.com', 'https://www.lunchlineup.com', 'http://dev.lunchlineup.com']) {
+      expect(() => loadConfig({ ...base, APP_ORIGIN: origin })).toThrow('INTERNAL_BETA_ENTITLEMENTS_ENABLED');
+    }
+  });
+
   it('requires the shared access-token secret and validates the MFA session-store URL', () => {
     expect(() => loadConfig({
       APP_ORIGIN: 'https://beta.lunchlineup.com',

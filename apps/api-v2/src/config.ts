@@ -1,4 +1,4 @@
-import { resolveCookieSecure } from '@lunchlineup/config';
+import { isInternalBetaOrigin, resolveCookieSecure } from '@lunchlineup/config';
 import { isIP } from 'node:net';
 import { resolveNativeMetricsToken, type MetricsTokenReader } from './platform/metrics-token.js';
 
@@ -135,9 +135,9 @@ export function loadConfig(
     false,
     'INTERNAL_BETA_ENTITLEMENTS_ENABLED',
   );
-  if (internalBetaEntitlementsEnabled && appOrigin !== 'https://beta.lunchlineup.com') {
+  if (internalBetaEntitlementsEnabled && !isInternalBetaOrigin(appOrigin)) {
     throw new Error(
-      'INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for https://beta.lunchlineup.com.',
+      'INTERNAL_BETA_ENTITLEMENTS_ENABLED may only be enabled for an approved private origin (https://beta.lunchlineup.com or https://dev.lunchlineup.com).',
     );
   }
   const origins = new Set<string>([appOrigin]);

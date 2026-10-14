@@ -1,3 +1,4 @@
+import { isInternalBetaOrigin } from '@lunchlineup/config';
 import { Prisma } from '@prisma/client';
 
 export const FEATURE_KEYS = ['scheduling', 'lunch_breaks', 'time_cards', 'webhooks'] as const;
@@ -47,7 +48,6 @@ export interface TenantFeatureConfig {
 
 export const INTERNAL_BETA_ENTITLEMENT_KEY = 'internal_beta_entitlement';
 export const INTERNAL_BETA_ENTITLEMENTS_ENABLED_ENV = 'INTERNAL_BETA_ENTITLEMENTS_ENABLED';
-export const INTERNAL_BETA_ORIGIN = 'https://beta.lunchlineup.com';
 export const INTERNAL_BETA_MAX_CREDITS = 1_000;
 export const INTERNAL_BETA_MAX_DAYS = 90;
 
@@ -84,17 +84,7 @@ export function internalBetaEntitlementsRuntimeEnabled(
     env: Partial<Pick<NodeJS.ProcessEnv, 'INTERNAL_BETA_ENTITLEMENTS_ENABLED' | 'APP_ORIGIN'>> = process.env,
 ): boolean {
     if (env.INTERNAL_BETA_ENTITLEMENTS_ENABLED?.trim().toLowerCase() !== 'true') return false;
-    try {
-        const origin = new URL(env.APP_ORIGIN ?? '');
-        return origin.origin === INTERNAL_BETA_ORIGIN
-            && origin.pathname === '/'
-            && !origin.search
-            && !origin.hash
-            && !origin.username
-            && !origin.password;
-    } catch {
-        return false;
-    }
+    return isInternalBetaOrigin(env.APP_ORIGIN);
 }
 
 export function parseActiveInternalBetaSchedulingEntitlement(
