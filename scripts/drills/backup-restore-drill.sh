@@ -479,6 +479,11 @@ phase_pitr() {
   result "recovered primary is writable; new timeline $(vq -c 'select timeline_id from pg_control_checkpoint()')"
   rm_container ll-drill-pitr-validation
 
+}
+
+phase_lifecycle() {
+  # The verifier only canonicalises the endpoint string and insists on https; the real
+  # export below still runs against the local http MinIO.
   log "lifecycle policy proof (lifecycle-audit identity -> scripts/verify-pitr-lifecycle-policy.mjs)"
   toolbox -v "${W_WORK}/secrets/pitr-lifecycle-audit-object-store:/run/secrets/audit:ro" \
     -e PITR_ENABLED=true -e "PITR_S3_ENDPOINT=${PITR_ENDPOINT}" -e PITR_ALLOW_INSECURE_ENDPOINT=true \
@@ -486,8 +491,8 @@ phase_pitr() {
     -e PITR_ACCESS_KEY_FILE=/run/secrets/audit/access_key -e PITR_SECRET_KEY_FILE=/run/secrets/audit/secret_key \
     -e PITR_MC_BIN=/opt/lunchlineup/tools/mc -e PITR_PROVIDER_OWNERSHIP_MODE=container-job "${TOOLBOX_IMG}" sh -ec "
       sh /opt/lunchlineup/infrastructure/postgres/pitr-export-lifecycle-policy.sh >/tmp/live.json
-      node scripts/verify-pitr-lifecycle-policy.mjs --policy-file /tmp/live.json --endpoint ${PITR_ENDPOINT} \
-        --bucket ${PITR_BUCKET} --prefix ${PITR_PREFIX}/ --immutable-days 14 --maximum-days 90 --canonical-output /tmp/canonical.json" \
+      node scripts/verify-pitr-lifecycle-policy.mjs --policy-file /tmp/live.json --endpoint https://ll-drill-minio:9000\
+        --bucket ${PITR_BUCKET} --prefix ${PITR_PREFIX} --immutable-days 14 --maximum-days 90 --canonical-output /tmp/canonical.json" \
     2>&1 | tee "${WORK}/results/pitr-lifecycle.txt" | tail -3
   psql_src -c "select 'archived_count='||archived_count||' failed_count='||failed_count from pg_stat_archiver" | sed 's/^/RESULT pg_stat_archiver at end: /' | tee -a "${WORK}/results/summary.txt"
 }
@@ -624,6 +629,7 @@ case "${1:-all}" in
   up) phase_up ;;
   logical) phase_logical ;;
   pitr) phase_pitr ;;
+  lifecycle) phase_lifecycle ;;
   alerts) phase_alerts ;;
   systemd) phase_systemd ;;
   down) phase_down ;;
@@ -632,6 +638,7 @@ case "${1:-all}" in
     phase_up
     phase_logical
     phase_pitr
+    phase_lifecycle
     phase_alerts
     phase_systemd
     result "ALL DRILL PHASES PASSED (work dir ${WORK})"
