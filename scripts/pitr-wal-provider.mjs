@@ -170,6 +170,11 @@ const server = createServer((request, response) => {
   void processArchive(request, response, match[1]);
 });
 
+// archive-wal.sh runs in the BusyBox postgres image, where `nc` half-closes its write side as soon
+// as the request body is sent. Node's HTTP server otherwise treats that FIN as an aborted request
+// and drops the connection before the (slow) durable upload can answer.
+server.httpAllowHalfOpen = true;
+
 for (const signal of ['SIGINT', 'SIGTERM']) {
   process.on(signal, () => {
     activeChild?.kill('SIGTERM');

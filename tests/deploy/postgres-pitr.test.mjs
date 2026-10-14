@@ -350,6 +350,8 @@ test('Postgres only acknowledges production WAL after encrypted remote durabilit
   assert.match(providerServer, /PITR_WAL_PROVIDER_MAX_BYTES/);
   assert.match(providerServer, /PITR_WAL_PROVIDER_REQUEST_TIMEOUT_MS/);
   assert.match(providerServer, /PITR_PROVIDER_OWNERSHIP_MODE: 'container-job'/);
+  // nc in the postgres image half-closes after the body; the server must still answer.
+  assert.match(providerServer, /server\.httpAllowHalfOpen = true;/);
   assert.match(providerServer, /exitAfterResponse\(response, 70\)/);
   assert.match(providerServer, /content-length/);
   assert.match(common, /pitr_remote_stat_json/);
