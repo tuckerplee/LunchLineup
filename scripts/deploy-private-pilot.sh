@@ -35,7 +35,7 @@ env_value() { # exactly-once KEY=value lookup in the runtime env
 }
 
 compose() {
-  "$DOCKER" compose --project-name "$PROJECT" --project-directory "$APP_DIR" \
+  COMPOSE_SERVICE_ENV_FILE="$RUNTIME_ENV" "$DOCKER" compose --project-name "$PROJECT" --project-directory "$APP_DIR" \
     --env-file "$RUNTIME_ENV" \
     -f "$APP_DIR/docker-compose.yml" \
     -f "$APP_DIR/infrastructure/development-admission/compose.private-proxy.yml" "$@"
