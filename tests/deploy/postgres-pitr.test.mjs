@@ -335,7 +335,10 @@ test('Postgres only acknowledges production WAL after encrypted remote durabilit
   assert.match(config, /^archive_mode = off$/m);
   assert.match(config, /archive_command = 'sh \/opt\/lunchlineup\/pitr\/archive-wal\.sh/);
   assert.match(config, /^archive_timeout = 60s$/m);
-  assert.match(archive, /--post-file="\$\{SOURCE_PATH\}"/);
+  // BusyBox wget truncates --post-file at the first NUL byte, so the segment is streamed with nc.
+  assert.doesNotMatch(archive, /--output-document|--tries=1|command -v wget/);
+  assert.match(archive, /Content-Length: %s/);
+  assert.match(archive, /\| nc -w "\$\{PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS\}" pitr-wal-provider 8080/);
   assert.match(archive, /PITR_WAL_PROVIDER_URL.*http:\/\/pitr-wal-provider:8080/);
   assert.match(archive, /pitr_wal_provider_uploaded/);
   assert.match(archive, /ARCHIVE_VERSION="\$\{provider_version#version_id=\}"/);

@@ -55,7 +55,7 @@ cleanup() {
   else
     write_wal_metrics failure || true
   fi
-  rm -f "${PITR_WAL_PROVIDER_RESPONSE}"
+  rm -f "${PITR_WAL_PROVIDER_RESPONSE}" "${PITR_WAL_PROVIDER_RESPONSE}.raw"
 }
 trap cleanup EXIT HUP INT TERM
 
@@ -63,18 +63,37 @@ trap cleanup EXIT HUP INT TERM
   || pitr_fail "PITR_WAL_PROVIDER_URL must name the private Compose WAL provider."
 pitr_is_bounded_positive_integer "${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS}" 1200 \
   || pitr_fail "PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS must be an integer from 1 through 1200."
-command -v wget >/dev/null 2>&1 || pitr_fail "Required command is missing: wget"
+for required_command in nc wc tr awk head; do
+  command -v "${required_command}" >/dev/null 2>&1 || pitr_fail "Required command is missing: ${required_command}"
+done
 
-if ! wget \
-  --quiet \
-  --output-document="${PITR_WAL_PROVIDER_RESPONSE}" \
-  --timeout="${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS}" \
-  --tries=1 \
-  --post-file="${SOURCE_PATH}" \
-  "${PITR_WAL_PROVIDER_URL}/archive/${ARCHIVE_NAME}"
+# Send the segment with netcat and an explicit Content-Length. BusyBox wget
+# (the only HTTP client in the postgres image) treats --post-file content as a
+# C string, so a WAL segment was truncated at its first NUL byte (3 bytes) and
+# the provider "durably archived" a corrupt object. The provider rejects any
+# body whose length differs from Content-Length, so a short read here fails.
+SOURCE_BYTES="$(wc -c <"${SOURCE_PATH}" | tr -d ' \t')"
+[ "${SOURCE_BYTES}" -gt 0 ] 2>/dev/null || pitr_fail "WAL source file is empty or unreadable: ${SOURCE_PATH}"
+PITR_WAL_PROVIDER_RAW="${PITR_WAL_PROVIDER_RESPONSE}.raw"
+if ! {
+  printf 'POST /archive/%s HTTP/1.0\r\nHost: pitr-wal-provider:8080\r\nContent-Type: application/octet-stream\r\nContent-Length: %s\r\nConnection: close\r\n\r\n' \
+    "${ARCHIVE_NAME}" "${SOURCE_BYTES}"
+  cat "${SOURCE_PATH}"
+} | nc -w "${PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS}" pitr-wal-provider 8080 >"${PITR_WAL_PROVIDER_RAW}"
 then
+  rm -f "${PITR_WAL_PROVIDER_RAW}"
   pitr_fail "Request-scoped WAL provider did not confirm remote durability."
 fi
+PITR_WAL_PROVIDER_STATUS_LINE="$(head -n 1 "${PITR_WAL_PROVIDER_RAW}" | tr -d '\r')"
+case "${PITR_WAL_PROVIDER_STATUS_LINE}" in
+  'HTTP/1.'[01]' 200 '*) ;;
+  *)
+    rm -f "${PITR_WAL_PROVIDER_RAW}"
+    pitr_fail "Request-scoped WAL provider did not confirm remote durability (${PITR_WAL_PROVIDER_STATUS_LINE:-no response})."
+    ;;
+esac
+tr -d '\r' <"${PITR_WAL_PROVIDER_RAW}" | awk 'body { print } /^$/ { body = 1 }' >"${PITR_WAL_PROVIDER_RESPONSE}"
+rm -f "${PITR_WAL_PROVIDER_RAW}"
 
 provider_line_count="$(wc -l <"${PITR_WAL_PROVIDER_RESPONSE}" | tr -d ' ')"
 [ "${provider_line_count}" -eq 1 ] || pitr_fail "WAL provider returned malformed durability proof."
