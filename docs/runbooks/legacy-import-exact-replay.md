@@ -5,6 +5,11 @@ import, PostgreSQL recovery test or cutover has been qualified. VM4014 remains
 untouched, VM106 is excluded, VM107 remains held, and protected native QA still
 requires its owner and admission. Months of private qualification remain required.
 
+This document covers the identity, receipt and recovery contract shared by both adapters.
+The real cutover path (MySQL exporter, `legacy-combined-v2` with schedules, shifts, breaks,
+templates and settings, per-user password-hash fallback, `--plan-only`, rehearsal and what is not
+migrated) is in `legacy-migration.md`. The `legacy-combined-v1` adapter below is unchanged.
+
 The importer supports one approved, exact export per stable source namespace.
 Its receipts identify companies, locations, users and staff independently of
 mutable names, usernames or email addresses. A user and a staff row with the
@@ -33,7 +38,8 @@ admitting the same exact plan. Descriptor version 1 has exactly `schemaVersion`,
 `rolePlanSha256`, `timezone`, `companySlugs` and `limits`. Its fixed role digest
 is exported by the pure planner. The supported credential adapter preserves
 bcrypt `$2a$`, `$2b$` and `$2y$` hashes with cost 04–14; it rejects Argon2 and
-other formats the retained password verifier does not support.
+other formats the retained password verifier does not support. The v2 adapter instead imports
+such a user without a password and with `pinResetRequired`, and reports only per-reason counts.
 
 The limits object selects positive integer values no greater than the source
 policy: 16 MiB input, 10,000 rows per array, 20,000 total rows, 2,048 code units

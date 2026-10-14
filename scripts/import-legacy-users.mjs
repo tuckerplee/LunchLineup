@@ -7,15 +7,19 @@ import { performance } from 'node:perf_hooks';
 import { pathToFileURL } from 'node:url';
 import { assertLegacyImportTarget } from './data-target-guard.mjs';
 import { buildLegacyImportPlan, DEFAULT_LIMITS } from './legacy-import-plan.mjs';
+import { V2_LIMIT_MAXIMA } from './legacy-import-v2.mjs';
 import { executeLegacyImport, readLegacyImportReport } from './legacy-import-executor.mjs';
 import { publishLegacyImportReport, validateLegacyImportReportPath } from './legacy-import-report.mjs';
 
 function argsOf(argv) {
-  if (!argv.length || argv[0].startsWith('--')) throw new Error('Usage: import-legacy-users.mjs <export.json> --descriptor <reviewed.json> --report <private.csv> [--report-only]');
-  const result = { exportPath: argv[0], reportOnly: false };
+  if (!argv.length || argv[0].startsWith('--')) throw new Error('Usage: import-legacy-users.mjs <export.json> --descriptor <reviewed.json> --report <private.csv> [--report-only | --plan-only]');
+  const result = { exportPath: argv[0], reportOnly: false, planOnly: false };
   for (let index = 1; index < argv.length; index += 1) {
     const flag = argv[index];
-    if (flag === '--report-only' && !result.reportOnly) { result.reportOnly = true; continue; }
+    if (flag === '--report-only' && !result.reportOnly && !result.planOnly) { result.reportOnly = true; continue; }
+    // Admission and planning only: validates the export/descriptor/approvals and prints counts-only
+    // summaries without opening a database connection or writing a report.
+    if (flag === '--plan-only' && !result.planOnly && !result.reportOnly) { result.planOnly = true; continue; }
     const key = flag === '--descriptor' ? 'descriptorPath' : flag === '--report' ? 'reportPath' : null;
     if (!key || result[key] || !argv[index + 1] || argv[index + 1].startsWith('--')) throw new Error('Unsupported, repeated or incomplete import option');
     result[key] = argv[++index];
@@ -27,11 +31,15 @@ function readBounded(filename, maxBytes) {
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile() || stat.size > maxBytes) throw new Error('Import input must be an in-bound regular file');
-    const result = Buffer.alloc(maxBytes + 1);
+    const result = Buffer.alloc(Math.min(maxBytes, stat.size) + 1);
     let used = 0;
     while (used <= maxBytes) {
       const count = fs.readSync(fd, result, used, result.length - used, null);
-      if (!count) return result.subarray(0, used);
+      if (!count) {
+        // A file that grew or shrank while it was read is not the approved byte stream.
+        if (used !== stat.size) throw new Error('Import input must be an in-bound regular file');
+        return result.subarray(0, used);
+      }
       used += count;
     }
     throw new Error('Import input exceeded byte bound while reading');
@@ -40,15 +48,17 @@ function readBounded(filename, maxBytes) {
 export async function main(argv = process.argv.slice(2), env = process.env, { onAdmittedPlan } = {}) {
   const selectedEnv = Object.freeze({ ...env });
   const selected = argsOf(argv);
-  const sourceBytes = readBounded(selected.exportPath, DEFAULT_LIMITS.maxBytes);
+  // The descriptor-admitted limit (16 MiB for v1, up to 256 MiB for v2) is enforced by the planner.
+  const sourceBytes = readBounded(selected.exportPath, V2_LIMIT_MAXIMA.maxBytes);
   const actualSourceSha256 = crypto.createHash('sha256').update(sourceBytes).digest('hex');
   // Preserve target rejection before descriptor/planner validation and Prisma.
   assertLegacyImportTarget({ env: selectedEnv, actualSourceSha256 });
-  if (!selected.descriptorPath || !selected.reportPath) throw new Error('A reviewed descriptor and explicit private report path are mandatory');
+  if (!selected.descriptorPath || (!selected.reportPath && !selected.planOnly)) throw new Error('A reviewed descriptor and explicit private report path are mandatory');
   const descriptorBytes = readBounded(selected.descriptorPath, 1048576);
   const plan = buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDescriptorSha256: selectedEnv.LEGACY_IMPORT_DESCRIPTOR_SHA256, expectedSourceSha256: selectedEnv.LEGACY_SOURCE_EXPORT_SHA256 });
   const validatedDatabaseUrl = selectedEnv.DATABASE_URL;
   onAdmittedPlan?.(plan.limits.maxDurationMs);
+  if (selected.planOnly) return { planOnly: true, namespace: plan.namespace, adapterVersion: plan.adapterVersion, sourceSha256: plan.sourceSha256, targetGenerationId: plan.generationUuid, counts: plan.counts, ...(plan.data ? { data: plan.data.summary } : {}) };
   // Validate output custody before committing any domain effects; publication
   // remains exclusive and can still fail after a successful database commit.
   validateLegacyImportReportPath(selected.reportPath);
@@ -59,7 +69,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, { on
     prisma = new PrismaClient({ datasources: { db: { url: validatedDatabaseUrl } } });
     const report = selected.reportOnly ? await readLegacyImportReport(plan, { db: prisma }) : await executeLegacyImport(plan, { db: prisma });
     const reportPath = publishLegacyImportReport(report, { path: selected.reportPath });
-    return { namespace: plan.namespace, sourceSha256: plan.sourceSha256, targetGenerationId: plan.generationUuid, counts: report.counts, reportPath, reportOnly: selected.reportOnly };
+    return { namespace: plan.namespace, sourceSha256: plan.sourceSha256, targetGenerationId: plan.generationUuid, counts: report.counts, ...(report.data ? { data: report.data } : {}), reportPath, reportOnly: selected.reportOnly };
   } catch (error) { primary = error; throw error; }
   finally {
     if (prisma) {

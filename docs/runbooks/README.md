@@ -6,6 +6,7 @@
 - `2.0-action-acceptance.json`: pending per-action acceptance contracts, source anchors, proposed scenarios and reviewed browser selections; not executed acceptance.
 - `2.0-action-acceptance.md`: full-surface acceptance evidence rules and source inventory limitations for isolated qualification.
 - `legacy-import-exact-replay.md`: prepared exact-export import identity, durable receipt, retry/recovery and read-only report contracts.
+- `legacy-migration.md`: operator steps for the real legacy PHP/MySQL cutover (scratch load, export, descriptor, import, verification, rollback) and the explicit list of what is and is not migrated.
 - `mfa-durable-enrollment-rollout.md`: prepared durable MFA enrollment generation, expiry, migration and future rollout qualification contract.
 - `database-failover.md`: database outage, exact off-host restore, and cleanup-confirmed DR proof response.
 - `data-retention-delete-export.md`: privacy request, data export, account archive, and deletion runbook.
