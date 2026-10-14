@@ -1,112 +1,65 @@
-# Disposable Dev Server
+# Disposable Dev Server (VM107 private pilot)
 
-> **2026-09-08 operating hold:** VM107 stays stopped. The source-building bootstrap below is retired and now refuses execution. Build only on a storage-bounded CI runner, retain current and rollback image digests, and deploy without building. Historical commands below are not authorization to resume launch. See the host storage/retention runbook before any maintenance.
+> **Operating hold:** VM107 stays stopped and under its launch hold until the owner lifts it. Nothing here starts it. `scripts/bootstrap-vm107-dev.sh` is retired (it builds from source and refuses to run). Never build images on VM107.
 
 ## Purpose
 
-VM107 is disposable. If the VM is broken or intentionally removed, restore access by creating a fresh Debian VM on a healthy Proxmox1 host, assigning the same private IP shape, bootstrapping from GitHub, restoring already-available data, and validating private routes. Target restore time is 15 minutes after the VM exists and the data dump is available.
-
-Do not use this runbook for current public production ProxmoxS VM4014. VM106 is the historical legacy PHP source identity, not the production target; VM107 remains disposable development only. VM217 is the repository's future production architecture identifier, not a current live VM.
+VM107 (10.231.10.108) serves the private pilot at `https://dev.lunchlineup.com`. TLS terminates at the CT940 nginx proxy (10.231.10.30), which forwards plain HTTP to Caddy on VM107 with `X-Forwarded-Proto: https` and `X-Forwarded-Host: dev.lunchlineup.com`. VM107 is disposable development only; it is not production (ProxmoxS VM4014) and never serves `lunchlineup.com`, `www`, or `beta`.
 
 ## Files
 
-- `docs/runbooks/disposable-dev-server.md`: this VM107 disposable-server restore runbook.
-- `scripts/bootstrap-vm107-dev.sh`: fresh-VM bootstrap and optional Postgres restore helper.
-- `scripts/internal-beta-lifecycle.sh`: exact-candidate browser-beta launch and readiness owner used after bootstrap.
-- `scripts/verify-deploy-source.sh`: verifies clean GitHub-pushed deploy source and `DEPLOYED_GIT_SHA` alignment.
-- `scripts/backup.sh`: encrypted Postgres backup helper for creating compatible `.sql.zst.gpg` dumps.
-- `scripts/restore.sh`: generic Postgres restore helper; use the VM107 bootstrap script for full fresh-host recovery.
+- `scripts/deploy-private-pilot.sh`: the deploy step (load verified images, backup, migrate, `up --no-build`, health).
+- `scripts/export-internal-ci-release-images.sh`: runs on the VM218 builder; writes `<name>.tar.gz` + `<name>.image.json` per image.
+- `infrastructure/development-admission/compose.private-proxy.yml`: overlay publishing Caddy only on `10.231.10.108:80`.
+- `infrastructure/caddy/Caddyfile.private-pilot`: trusts only `10.231.10.30/32` as a proxy so `X-Forwarded-Proto https` survives.
+- `scripts/backup.sh`, `scripts/restore.sh`, `scripts/apply-db-migrations.mjs`: used through the compose `backup` and `migrate` services.
 
-## Restore Contract
+## Required runtime env (`/opt/lunchlineup-secrets/runtime.env`, root-only, 0600)
 
-Assumptions:
+`APP_ORIGIN`, `NEXT_PUBLIC_APP_ORIGIN`, `NEXT_PUBLIC_APP_URL`, `ALLOWED_ORIGINS` = `https://dev.lunchlineup.com`; `PRIVATE_APP_HOST`, `DOMAIN`, `ALLOWED_HOSTS` = `dev.lunchlineup.com`; `CADDY_SITE_ADDRESSES=http://dev.lunchlineup.com`; `COOKIE_SECURE=true`; `PROXY_HTTP_BIND=10.231.10.108`, `PROXY_HTTP_PORT=80`; `DATA_TARGET_ENV=disposable`; `IMAGE_TAG` = the release tag the images were built with; `TRUST_PROXY` = explicit `/32` list of the Caddy address(es) on the compose network (not the default `loopback,linklocal,uniquelocal`). The deploy script refuses to run if any of these differ.
 
-- Proxmox host is healthy.
-- A fresh Debian VM is reachable by SSH as root or sudo-capable user.
-- The VM has or will receive `10.231.10.108/24`, gateway `10.231.10.1`, and DNS `10.231.10.20`.
-- DNS on CT930 and proxy routing on CT940 still target `10.231.10.108`.
-- Existing data is already available as `.sql`, `.sql.zst`, or `.sql.zst.gpg`.
-- Runtime provider secrets are already in `/opt/lunchlineup-secrets/runtime.env`. Private-dev placeholders are acceptable only for private development origins; `beta.lunchlineup.com` requires a valid Resend API key, provider-issued webhook secret, provider-verified `EMAIL_FROM` sender, and controlled `RESEND_PREFLIGHT_RECIPIENT` inbox.
+## Deploy to private pilot
 
-Recovery objective:
+Images are built on the VM218 builder only, then copied to VM107.
 
-- Restore HTTP access to `dev.lunchlineup.com` and `lunchlineup-dev.proxmox1.lan` within 15 minutes after VM availability and data availability.
-- For private development, leave `/opt/lunchlineup/DEPLOYED_GIT_SHA` matching the GitHub branch used for bootstrap. For `beta.lunchlineup.com`, treat bootstrap as pending and let `internal-beta-lifecycle.sh launch` write the marker only after the stronger beta launch gate passes.
-- Leave the guest hostname set to `lunchlineup-dev` unless `VM_HOSTNAME` is intentionally overridden.
-- Provision every required Compose value with distinct disposable-development secrets, validate the rendered Compose configuration, build each unique runtime image serially, start with `--no-build`, and write `DEPLOYED_GIT_SHA` only after health succeeds.
-- Keep `/opt/lunchlineup-secrets` root-only while making only the files explicitly mounted as Compose secrets readable inside their authorized non-root containers.
-- Reconcile the configured owner and existing application-role passwords through PostgreSQL's local socket before migrations. This preserves a reused VM107 data volume when its original initialization credentials differ from the current runtime env.
+1. On VM218, build and export with the CI flow, ending with
+   `scripts/export-internal-ci-release-images.sh --source-context ... --inventory ... --image-directory <dir>`.
+2. Copy `<dir>` (all `*.tar.gz` and `*.image.json`) to VM107, e.g. `/opt/lunchlineup-release/images/`. Update the `/opt/lunchlineup` checkout to the matching commit and set `IMAGE_TAG` in the runtime env.
+3. Start VM107 from Proxmox **only after** the owner lifts the hold (the pre-start hook and `/etc/lunchlineup/vm107-launch.hold` enforce it; do not bypass them).
+4. On VM107: `sudo /opt/lunchlineup/scripts/deploy-private-pilot.sh /opt/lunchlineup-release/images`
 
-## Fresh VM Steps
+The script, holding `/run/lock/lunchlineup-deploy.lock` for the whole run:
 
-On the fresh VM:
+1. checks hostname `lunchlineup-dev`, the env above, and that neither hold file exists;
+2. verifies each archive's size and sha256 against its metadata, `docker load`s it, checks the loaded image ID equals `localImageId`, and tags first-party images `${IMAGE_PREFIX:-lunchlineup}/<name>:$IMAGE_TAG`; refuses on any mismatch. The previously tagged image is kept as `lunchlineup-rollback/<name>:previous` and listed in `/var/lib/lunchlineup/deploy/previous-images.tsv`;
+3. if the `lunchlineup_postgres_data` volume exists, runs the compose `backup` service (`scripts/backup.sh`); a failed backup aborts before anything changes (`PILOT_SKIP_BACKUP=I_ACCEPT_NO_BACKUP` overrides, for empty/throwaway data only);
+4. starts postgres, runs the `migrate` service, then `compose up -d --no-build --pull never` with the private-proxy overlay;
+5. polls `http://10.231.10.108/health` with `Host: dev.lunchlineup.com` until `"status":"ok"` (default 300 s).
+
+It never builds, prunes, removes volumes, or touches production routes.
+
+## Rollback
+
+Migrations are forward-only, so restore data too if the schema changed.
 
 ```bash
-candidate_sha='<40-character-lowercase-sha>'
-candidate_branch='<github-branch-pointing-at-the-sha>'
-curl -fsSL "https://raw.githubusercontent.com/tuckerplee/LunchLineup/$candidate_branch/scripts/bootstrap-vm107-dev.sh" -o /tmp/bootstrap-vm107-dev.sh
-chmod +x /tmp/bootstrap-vm107-dev.sh
-sudo env \
-  BRANCH="$candidate_branch" \
-  CANDIDATE_SHA="$candidate_sha" \
-  HOST_HEADER=beta.lunchlineup.com \
-  PUBLIC_APP_ORIGIN=https://beta.lunchlineup.com \
-  BACKUP_FILE=/path/to/lunchlineup.sql.zst.gpg \
-  BACKUP_ENCRYPTION_KEY="$(sudo cat /run/secrets/lunchlineup-dev-backup-key)" \
-  VM107_DESTRUCTIVE_CONFIRM=replace-and-restore-disposable-vm107 \
-  /tmp/bootstrap-vm107-dev.sh
-
-sudo env \
-  BETA_CANDIDATE_SHA="$candidate_sha" \
-  BETA_CANDIDATE_REF="origin/$candidate_branch" \
-  BETA_BUILD_IMAGES=false \
-  bash /opt/lunchlineup/scripts/internal-beta-lifecycle.sh launch
+cd /opt/lunchlineup
+# 1. previous images back under the compose tag (names/targets in previous-images.tsv)
+while IFS=$'\t' read -r name target id; do sudo docker tag "$id" "$target"; done < /var/lib/lunchlineup/deploy/previous-images.tsv
+# 2. restart on those images (set IMAGE_TAG in runtime.env back if it changed)
+sudo docker compose --project-name lunchlineup --env-file /opt/lunchlineup-secrets/runtime.env \
+  -f docker-compose.yml -f infrastructure/development-admission/compose.private-proxy.yml up -d --no-build --pull never
+# 3. only if the schema/data must go back: restore the pre-deploy dump (list dumps in the backup_data volume)
+#    RESTORE_TARGET_ENV=disposable RESTORE_CONFIRM=restore-<POSTGRES_DB> RESTORE_ALLOW_NONEMPTY=YES_OVERWRITE \
+#    RESTORE_REQUIRE_CHECKSUM=true scripts/restore.sh <backup.sql.zst.gpg>   # see the script header for required env
 ```
 
-If the data volume is intentionally empty, omit `BACKUP_FILE` and import dev data later.
-
-`PUBLIC_APP_ORIGIN` is the exact browser-visible origin used by CORS, CSRF, redirects, and secure-cookie policy. The bootstrap derives `COOKIE_SECURE=true` for HTTPS. Leave it unset for the private `http://dev.lunchlineup.com` default; set it to `https://beta.lunchlineup.com` when VM107 is the beta origin behind Cloudflare.
-
-Before bootstrapping `beta.lunchlineup.com`, securely provision a valid `RESEND_API_KEY`, `RESEND_WEBHOOK_SECRET`, provider-verified `EMAIL_FROM`, internal `RESEND_PREFLIGHT_RECIPIENT`, real HTTPS Alertmanager route, and backup encryption key in the root-only runtime environment. The beta bootstrap enables schedule-publication email and runs one release-bound Resend acceptance probe before starting the application stack. Each invocation receives a fresh provider idempotency identity so a same-release restart revalidates current provider/domain state instead of reusing an earlier acceptance. It fails closed on a placeholder credential, rejected sender, missing controlled inbox, or provider timeout. Confirm the probe arrives and configure signed bounce, complaint, and suppression events for `/api/webhooks/resend/delivery-events`; the send probe cannot prove webhook registration. Do not rely on disposable-development placeholders for a browser-visible beta host. The lifecycle gate also requires alert, outbox, and encrypted restore proof; see `internal-beta-operations.md`.
+`previous-images.tsv` is overwritten on each deploy, so only one step back is kept.
 
 ## Validation
 
-On the VM:
+On VM107: `curl -fsS -H 'Host: dev.lunchlineup.com' http://10.231.10.108/health`. From a private client: `curl.exe -H "Host: dev.lunchlineup.com" http://10.231.10.30/health` and browse `https://dev.lunchlineup.com` (cookies must be `Secure`).
 
-```bash
-cd /opt/lunchlineup
-cat DEPLOYED_GIT_SHA
-hostname
-docker compose ps
-curl -fsS http://127.0.0.1/health
-curl -fsS -H 'Host: dev.lunchlineup.com' http://127.0.0.1/health
-curl -fsS -H 'Host: beta.lunchlineup.com' http://127.0.0.1/api/v2/live
-curl -fsSI https://beta.lunchlineup.com/health | grep -i '^x-lunchlineup-release:'
-```
+## Failure handling
 
-From a private network client:
-
-```powershell
-curl.exe http://10.231.10.108/health
-curl.exe -H "Host: dev.lunchlineup.com" http://10.231.10.30/health
-curl.exe -H "Host: lunchlineup-dev.proxmox1.lan" http://10.231.10.30/health
-```
-
-Expected result: each health response contains `"status":"ok"`, the public release header and `DEPLOYED_GIT_SHA` equal the exact pushed candidate, and `/var/lib/lunchlineup/proofs/internal-beta-readiness.json` records a passed beta launch gate.
-
-## Failure Handling
-
-If the VM reports QMP `prelaunch` or `io-error`, do not spend time debugging in place. Hard stop/start from Proxmox once; if networking or guest agent does not return, replace the VM and rerun this runbook.
-
-If the bootstrap fails before health is restored, keep the VM disposable:
-
-```bash
-cd /opt/lunchlineup
-docker compose logs --tail=120
-docker compose ps
-df -h /
-```
-
-Fix the GitHub branch or runtime env, then rerun `scripts/bootstrap-vm107-dev.sh`.
-
-The bootstrap does not delete an existing Postgres volume to repair credential drift. It starts only Postgres, reconciles disposable-development role passwords locally, and then reruns the normal migration and health gates. If local socket administration fails or the configured role names are invalid, stop and inspect the volume rather than removing it.
+Check `docker compose ps` and `docker compose logs --tail=120`, and `df -h /`. Do not delete the Postgres volume to repair credential drift. If the VM reports QMP `prelaunch` or `io-error`, hard stop/start from Proxmox once; if it does not recover, stop and escalate to the Proxmox1 owner.
