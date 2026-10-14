@@ -308,7 +308,9 @@ pitr_remote_stat_json() {
     [ -s "${pitr_stat_output}" ] || pitr_fail "PITR provider stat returned empty metadata for ${pitr_stat_target}."
     return 0
   fi
-  if grep -Eqi 'NoSuchKey|NoSuchObject|not found|status code: 404|\b404\b' "${pitr_stat_error}"; then
+  # mc --json reports a missing object as a JSON error on stdout ("Object does not
+  # exist"), so classify absence from both streams, never from stderr alone.
+  if grep -Eqi 'NoSuchKey|NoSuchObject|not found|does not exist|status code: 404|\b404\b' "${pitr_stat_error}" "${pitr_stat_output}"; then
     rm -f "${pitr_stat_error}"
     return 1
   fi
