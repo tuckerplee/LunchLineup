@@ -13,6 +13,7 @@
 - `index.js`: generated JavaScript for the checked-in package barrel compatibility build.
 - `index.js.map`: JavaScript source map for `index.js`.
 - `index.ts`: package barrel for configuration schemas, defaults, headers, rate limits, and the public legal manifest.
+- `legal-launch.json`: single source for owner legal business values (entity, address, governing law, effective date), document versions and the counsel approval switch; `OWNER` placeholders mean unfilled.
 - `legal-manifest.ts`: immutable Terms and Privacy versions plus the fail-closed self-service legal-approval gate shared by API and web.
 - `loader.d.ts`: generated declarations for the checked-in configuration loader compatibility build.
 - `loader.d.ts.map`: declaration source map for `loader.d.ts`.

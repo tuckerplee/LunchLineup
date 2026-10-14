@@ -8,6 +8,7 @@
 - `architecture.md`: platform architecture overview.
 - `brand-bible.md`: public brand, messaging, visual system, SaaS benchmark blend, and beta-homepage design source of truth.
 - `code-organization.md`: current oversized/tangled source hotspot map and extraction routing.
+- `launch/`: production launch owner checklist, legal review packet, signup modes and email setup.
 - `saas-ui-overhaul.md`: SaaS user-interface overhaul notes.
 - `compliance/`: compliance documentation.
 - `legacy/`: non-executable historical automation retained for review.

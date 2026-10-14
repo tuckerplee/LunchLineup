@@ -2,7 +2,7 @@ import Link from 'next/link';
 import type { ReactNode } from 'react';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import type { LegalContact } from './legal-config';
-import { legalContactReadiness } from './legal-config';
+import { legalBusiness, legalBusinessReadiness, legalContactReadiness } from './legal-config';
 
 type LegalSection = {
   title: string;
@@ -26,17 +26,38 @@ export function LegalContactLink({ contact }: { contact: LegalContact }) {
   return <a href={contact.href}>{contact.email}</a>;
 }
 
+export function LegalBusinessDetails() {
+  const fields = [legalBusiness.entity, legalBusiness.address, legalBusiness.governingLaw, legalBusiness.effectiveDate];
+  return (
+    <ul>
+      {fields.map((field) => (
+        <li key={field.label}>
+          <strong>{field.label}</strong>: {field.value}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export function LegalContactReadinessNotice() {
-  if (legalContactReadiness.ready) return null;
+  if (legalContactReadiness.ready && legalBusinessReadiness.ready) return null;
 
   return (
     <section className="public-doc__section" aria-labelledby="legal-contact-readiness-heading">
       <h2 id="legal-contact-readiness-heading">Owner Signoff Required</h2>
-      <p>
-        Production contact routing is pending owner signoff for {legalContactReadiness.missingNames.join(', ')}.
-        Configure monitored public contact values through {legalContactReadiness.missingEnvVars.join(', ')} before
-        treating this public copy as approved production legal, security, status, or DPA routing.
-      </p>
+      {legalContactReadiness.ready ? null : (
+        <p>
+          Production contact routing is pending owner signoff for {legalContactReadiness.missingNames.join(', ')}.
+          Configure monitored public contact values through {legalContactReadiness.missingEnvVars.join(', ')} before
+          treating this public copy as approved production legal, security, status, or DPA routing.
+        </p>
+      )}
+      {legalBusinessReadiness.ready ? null : (
+        <p>
+          Business details are pending owner signoff for {legalBusinessReadiness.missingLabels.join(', ')}.
+          Record them in the shared legal launch configuration before treating this copy as approved.
+        </p>
+      )}
     </section>
   );
 }

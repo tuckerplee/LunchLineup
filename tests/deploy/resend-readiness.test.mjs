@@ -193,3 +193,60 @@ function response(status, body) {
     text: async () => body,
   };
 }
+
+test('Resend readiness dry run validates configuration and never touches the network', async () => {
+  let called = false;
+  const result = await verifyResendReadiness({
+    env: validEnv(),
+    dryRun: true,
+    fetchImpl: async () => {
+      called = true;
+      return response(200, JSON.stringify({ id: 'unexpected' }));
+    },
+  });
+  assert.equal(called, false);
+  assert.deepEqual(result, {
+    ok: true,
+    dryRun: true,
+    sent: false,
+    senderDomain: 'beta.lunchlineup.com',
+    releaseSha: sourceSha,
+  });
+  await assert.rejects(
+    verifyResendReadiness({ env: { ...validEnv(), RESEND_API_KEY: '' }, dryRun: true }),
+    /resend_api_key_required/,
+  );
+});
+
+test('operator command takes the recipient from --to and supports --check-only without a send', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const { mkdtempSync, rmSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const scratch = mkdtempSync(join(tmpdir(), 'll-email-op-'));
+  try {
+    const envPath = join(scratch, 'runtime.env');
+    const env = { ...validEnv() };
+    delete env.RESEND_PREFLIGHT_RECIPIENT;
+    writeFileSync(envPath, `${Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n')}\n`);
+    const script = join(root, 'scripts/verify-resend-readiness.mjs');
+    const missing = spawnSync(process.execPath, [script, envPath, '--check-only'], { encoding: 'utf8' });
+    assert.notEqual(missing.status, 0);
+    assert.match(missing.stderr, /resend_preflight_recipient_required/);
+
+    const ok = spawnSync(process.execPath, [script, envPath, '--check-only', '--to', 'owner@lunchlineup.com'], { encoding: 'utf8' });
+    assert.equal(ok.status, 0, ok.stderr);
+    assert.deepEqual(JSON.parse(ok.stdout), {
+      ok: true,
+      dryRun: true,
+      sent: false,
+      senderDomain: 'beta.lunchlineup.com',
+      releaseSha: sourceSha,
+    });
+
+    const bad = spawnSync(process.execPath, [script, envPath, '--bogus'], { encoding: 'utf8' });
+    assert.notEqual(bad.status, 0);
+    assert.match(bad.stderr, /unknown_argument/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});

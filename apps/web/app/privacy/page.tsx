@@ -1,11 +1,11 @@
 import type { Metadata } from 'next';
 import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
 import { LEGAL_LAST_UPDATED, legalContacts } from '../legal-config';
-import { LegalContactLink, LegalPage } from '../legal-page';
+import { LegalBusinessDetails, LegalContactLink, LegalPage } from '../legal-page';
 
 export const metadata: Metadata = {
   title: 'Privacy | LunchLineup',
-  description: 'LunchLineup privacy commitments for public beta customers.',
+  description: 'LunchLineup privacy commitments for customers.',
 };
 
 export default function PrivacyPage() {
@@ -17,6 +17,10 @@ export default function PrivacyPage() {
       version={PUBLIC_LEGAL_MANIFEST.documents.privacy.version}
       summary="LunchLineup uses workspace and scheduling data to run the service, protect customer accounts, support customers, and maintain reliability."
       sections={[
+        {
+          title: 'Who We Are',
+          body: <LegalBusinessDetails />,
+        },
         {
           title: 'Data We Handle',
           body: (
@@ -77,7 +81,7 @@ export default function PrivacyPage() {
           title: 'Subprocessors and DPA',
           body: (
             <p>
-              The current public beta subprocessor list is published at <a href="/subprocessors">/subprocessors</a>. Customers
+              The current subprocessor list is published at <a href="/subprocessors">/subprocessors</a>. Customers
               who need a Data Processing Addendum can route requests through{' '}
               <LegalContactLink contact={legalContacts.dpa} /> for review.
             </p>

@@ -9,6 +9,7 @@ import {
     resolveRequestBodyLimit,
     resolveTrustProxy,
     validateProductionEnvironment,
+    validatePublicSignupConfiguration,
 } from './bootstrap-security';
 
 describe('bootstrap security policy', () => {
@@ -293,6 +294,59 @@ describe('bootstrap security policy', () => {
             STRIPE_PRICE_CREDIT_PACK_100: 'price_credit_shared',
             STRIPE_PRICE_CREDIT_PACK_500: 'price_credit_shared',
         }))).toThrow(/must be unique/);
+    });
+
+    describe('public signup mode startup gate', () => {
+        const stripePrices = {
+            STRIPE_PRICE_STARTER: 'price_starter123',
+            STRIPE_PRICE_GROWTH: 'price_growth123',
+            STRIPE_PRICE_ENTERPRISE: 'price_enterprise123',
+        };
+        const run = (env: NodeJS.ProcessEnv, legalApproved: boolean) => {
+            const errors: string[] = [];
+            validatePublicSignupConfiguration(env, errors, legalApproved);
+            return errors;
+        };
+
+        it('accepts unset and closed_beta without any approval', () => {
+            expect(run({}, false)).toEqual([]);
+            expect(run({ PUBLIC_SIGNUP_MODE: 'closed_beta', NEXT_PUBLIC_SIGNUP_MODE: 'closed_beta' }, false)).toEqual([]);
+        });
+
+        it('rejects invalid or mismatched modes', () => {
+            expect(run({ PUBLIC_SIGNUP_MODE: 'wide_open' }, true)).toEqual([expect.stringMatching(/PUBLIC_SIGNUP_MODE must be one of/)]);
+            expect(run({ PUBLIC_SIGNUP_MODE: 'closed_beta', NEXT_PUBLIC_SIGNUP_MODE: 'open' }, true))
+                .toEqual([expect.stringMatching(/must match/)]);
+        });
+
+        it('fails open mode closed without legal approval, prices, and a challenge secret', () => {
+            const errors = run({ PUBLIC_SIGNUP_MODE: 'open' }, false);
+            expect(errors.join(' ')).toMatch(/requires current counsel approval/);
+            expect(errors.join(' ')).toMatch(/STRIPE_PRICE_STARTER/);
+            expect(errors.join(' ')).toMatch(/STRIPE_PRICE_ENTERPRISE/);
+            expect(errors.join(' ')).toMatch(/TURNSTILE_SECRET_KEY/);
+        });
+
+        it('accepts open mode only when every prerequisite is present', () => {
+            const env = { PUBLIC_SIGNUP_MODE: 'open', NEXT_PUBLIC_SIGNUP_MODE: 'open', ...stripePrices, TURNSTILE_SECRET_KEY: 'turnstile-key' };
+            expect(run(env, true)).toEqual([]);
+            expect(run(env, false)).toEqual([expect.stringMatching(/counsel approval/)]);
+        });
+
+        it('requires invite codes for invite_only', () => {
+            expect(run({ PUBLIC_SIGNUP_MODE: 'invite_only', ...stripePrices }, true)).toEqual([expect.stringMatching(/PUBLIC_SIGNUP_INVITE_CODES/)]);
+            expect(run({ PUBLIC_SIGNUP_MODE: 'invite_only', ...stripePrices, PUBLIC_SIGNUP_INVITE_CODES: ' , code-1' }, true)).toEqual([]);
+        });
+
+        it('refuses full production startup for open mode while the committed approval switch is off', () => {
+            expect(() => validateProductionEnvironment(productionEnv({
+                MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x56).toString('base64'),
+                PUBLIC_SIGNUP_MODE: 'open',
+                ...stripePrices,
+                TURNSTILE_SECRET_KEY: 'turnstile-key',
+            }))).toThrow(/PUBLIC_SIGNUP_MODE=open requires current counsel approval/);
+            expect(() => validateProductionEnvironment(productionEnv({ PUBLIC_SIGNUP_MODE: 'closed_beta', MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x56).toString('base64') }))).not.toThrow();
+        });
     });
 
     it('rejects invalid production host and OIDC settings', () => {

@@ -1,8 +1,29 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { PLACEHOLDER_RE } from './production-launch-policy-shared.mjs';
 
 const ALLOWED_SIGNUP_MODES = new Set(['closed_beta', 'invite_only', 'open']);
-const SELF_SERVICE_TERMS_COUNSEL_APPROVED = false;
-const SELF_SERVICE_TERMS_VERSION = null;
+
+// Single approval switch shared with the API and web: packages/config/legal-launch.json.
+export const LEGAL_LAUNCH_CONFIG_PATH = resolve(import.meta.dirname, '..', 'packages', 'config', 'legal-launch.json');
+
+export function readLegalLaunchConfig(path = LEGAL_LAUNCH_CONFIG_PATH) {
+  return JSON.parse(readFileSync(path, 'utf8'));
+}
+
+// Mirrors hasCurrentSelfServiceLegalApproval() in packages/config/legal-manifest.ts.
+export function selfServiceLegalApproval(config = readLegalLaunchConfig()) {
+  const approved = config.approval?.approved === true
+    && Boolean(config.approval.termsVersion)
+    && Boolean(config.approval.privacyVersion)
+    && config.approval.termsVersion === config.documents?.terms?.version
+    && config.approval.privacyVersion === config.documents?.privacy?.version;
+  return { approved, termsVersion: approved ? config.approval.termsVersion : null };
+}
+
+const SELF_SERVICE_APPROVAL = selfServiceLegalApproval();
+const SELF_SERVICE_TERMS_COUNSEL_APPROVED = SELF_SERVICE_APPROVAL.approved;
+const SELF_SERVICE_TERMS_VERSION = SELF_SERVICE_APPROVAL.termsVersion;
 
 function assertPaidGaLegalApproval(context) {
   const {

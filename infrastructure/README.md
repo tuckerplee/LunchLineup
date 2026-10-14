@@ -24,6 +24,7 @@
 - `systemd/`: host-level units for encrypted backup, public edge availability, and safe retained-record scheduler installation.
 - `tempo/`: Tempo tracing configuration.
 - `terraform/`: infrastructure-as-code material.
+- `production/`: production runtime env template (`runtime.env.example`, no secrets) validated by `scripts/check-production-env.mjs`.
 
 ## Deploy Notes
 

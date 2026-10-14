@@ -341,7 +341,8 @@ export class AuthService implements OnModuleDestroy {
         }
         const configured = this.configService.get<string>('PUBLIC_SIGNUP_MODE')?.trim().toLowerCase();
         if (!configured) {
-            return 'open';
+            // Fail closed in production; unset only defaults to open for local development.
+            return process.env.NODE_ENV === 'production' ? 'closed_beta' : 'open';
         }
         if (PUBLIC_SIGNUP_MODES.has(configured)) {
             return configured as 'closed_beta' | 'invite_only' | 'open';

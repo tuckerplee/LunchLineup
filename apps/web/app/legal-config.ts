@@ -1,4 +1,8 @@
-import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
+import {
+  PUBLIC_LEGAL_BUSINESS,
+  PUBLIC_LEGAL_MANIFEST,
+  isLegalValueConfigured,
+} from '@lunchlineup/config';
 
 export type LegalContact = {
   displayName: string;
@@ -94,6 +98,32 @@ export const legalContactReadiness = {
       .filter((contact) => !contact.configured)
       .flatMap((contact) => contact.envVars),
   )),
+};
+
+export type LegalBusinessField = {
+  label: string;
+  value: string;
+  configured: boolean;
+};
+
+function businessField(label: string, value: string, pendingText: string): LegalBusinessField {
+  const configured = isLegalValueConfigured(value);
+  return { label, value: configured ? value.trim() : pendingText, configured };
+}
+
+// Single read path for owner-supplied legal values (packages/config/legal-launch.json).
+export const legalBusiness = {
+  entity: businessField('Legal entity', PUBLIC_LEGAL_BUSINESS.legalEntityName, 'Legal entity pending owner signoff'),
+  address: businessField('Mailing address', PUBLIC_LEGAL_BUSINESS.mailingAddress, 'Mailing address pending owner signoff'),
+  governingLaw: businessField('Governing law', PUBLIC_LEGAL_BUSINESS.governingLaw, 'Governing law pending counsel approval'),
+  effectiveDate: businessField('Effective date', PUBLIC_LEGAL_BUSINESS.effectiveDate, 'Effective date pending counsel approval'),
+};
+
+export const legalBusinessReadiness = {
+  ready: Object.values(legalBusiness).every((field) => field.configured),
+  missingLabels: Object.values(legalBusiness)
+    .filter((field) => !field.configured)
+    .map((field) => field.label),
 };
 
 export const publicSubprocessors: PublicSubprocessor[] = [
