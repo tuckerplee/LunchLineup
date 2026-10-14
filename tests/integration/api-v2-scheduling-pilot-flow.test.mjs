@@ -327,8 +327,8 @@ async function pilotFlow(mode) {
       headers: csHeaders(created.data.etag, 'cs-1'),
       body: {
         operations: [
-          { op: 'shift.create', clientId: randomUUID(), userId: publicStaffOne, startTime: at(2, 9), endTime: at(2, betaGrant ? 13 : 17), role: 'Server' },
-          { op: 'shift.create', clientId: randomUUID(), userId: publicStaffTwo, startTime: at(3, 10), endTime: at(3, betaGrant ? 18 : 14), role: 'Cook' },
+          { op: 'shift.create', clientId: randomUUID(), userId: publicStaffOne, startTime: at(2, 9), endTime: at(2, 17), role: 'Server' },
+          { op: 'shift.create', clientId: randomUUID(), userId: publicStaffTwo, startTime: at(3, 10), endTime: at(3, 14), role: 'Cook' },
           { op: 'shift.create', clientId: randomUUID(), userId: publicStaffOne, startTime: at(4, 9), endTime: at(4, 13), role: 'Server' },
         ],
       },
@@ -356,14 +356,14 @@ async function pilotFlow(mode) {
     // edit one shift (manager) ...
     const edited = expectStatus(await v2(base, manager, 'POST', `/schedules/${scheduleId}/change-sets`, {
       headers: csHeaders(created1.data.etag, 'cs-2'),
-      body: { operations: [{ op: 'shift.update', shiftId: staffOneMonday.id, startTime: at(2, 8), endTime: at(2, betaGrant ? 12 : 16) }] },
+      body: { operations: [{ op: 'shift.update', shiftId: staffOneMonday.id, startTime: at(2, 8), endTime: at(2, 16) }] },
     }), 200, 'change-set edit');
     assert.equal(edited.data.baseRevision, 1);
     assert.equal(edited.data.revision, 2);
     assert.equal(edited.data.shifts.length, 3);
     const mondayEdited = edited.data.shifts.find((shift) => shift.id === staffOneMonday.id);
     assert.equal(mondayEdited.startTime, at(2, 8));
-    assert.equal(mondayEdited.endTime, at(2, betaGrant ? 12 : 16));
+    assert.equal(mondayEdited.endTime, at(2, 16));
     assert.equal(mondayEdited.role, 'Server', 'omitted fields keep their saved value');
     // ... the default Manager system role has no shifts:delete (rbac.service.ts), so deletion is refused for it ...
     await v2(base, manager, 'POST', `/schedules/${scheduleId}/change-sets`, {
@@ -391,34 +391,24 @@ async function pilotFlow(mode) {
     assert.equal(await balance(), GRANT_CREDITS, 'change sets are zero-settlement in api-v2');
 
     // --------------------------------------------------------------- 3. break
-    const breakBody = (entries) => ({ locationId: publicLocationA, breaks: entries });
     const breakPlan = await v2(base, manager, 'PUT', `/lunch-breaks/shift/${staffOneMonday.id}`, {
       headers: { 'Idempotency-Key': key('break') },
-      body: breakBody(betaGrant
-        ? [{ type: 'lunch', startTime: at(2, 10), durationMinutes: 30, skip: false }]
-        : [
+      body: {
+        locationId: publicLocationA,
+        breaks: [
           { type: 'break1', startTime: at(2, 10), durationMinutes: 15, skip: false },
           { type: 'lunch', startTime: at(2, 12), durationMinutes: 30, skip: false },
           { type: 'break2', startTime: at(2, 14), durationMinutes: 15, skip: false },
-        ]),
+        ],
+      },
     });
-    const breakRows = await owner.break.findMany({ where: { shift: { tenantId: ids.tenantA } }, select: { type: true, startTime: true, endTime: true } });
-    if (betaGrant) {
-      // PRODUCT GAP (reported, not papered over): the internal-beta grant covers `scheduling` only
-      // (platform/feature-entitlement.ts: internalBetaActive requires feature === 'scheduling'),
-      // so a beta-only tenant cannot persist lunch/break plans. Pinned here so a deliberate
-      // policy change to extend the grant must update this assertion.
-      assert.equal(breakPlan.status, 403, breakPlan.text.slice(0, 300));
-      assert.equal(breakPlan.json.code, 'lunch_breaks_not_entitled');
-      assert.deepEqual(breakRows, []);
-      assert.equal(await balance(), GRANT_CREDITS, 'refused break edit costs nothing');
-    } else {
-      assert.equal(breakPlan.status, 200, breakPlan.text.slice(0, 400));
-      assert.equal(breakPlan.json.shiftId, staffOneMonday.id);
-      assert.deepEqual(breakPlan.json.breaks.map((entry) => entry.type).sort(), ['break1', 'break2', 'lunch']);
-      assert.equal(breakRows.length, 3);
-      assert.equal(await balance(), GRANT_CREDITS - 1, 'manual break replacement settles one credit');
-    }
+    // An 8h shift needs break1/lunch/break2 to publish; the internal-beta grant must cover lunch_breaks.
+    assert.equal(breakPlan.status, 200, breakPlan.text.slice(0, 400));
+    assert.equal(breakPlan.json.shiftId, staffOneMonday.id);
+    assert.deepEqual(breakPlan.json.breaks.map((entry) => entry.type).sort(), ['break1', 'break2', 'lunch']);
+    const breakRows = await owner.break.findMany({ where: { shift: { tenantId: ids.tenantA } }, select: { type: true } });
+    assert.equal(breakRows.length, 3);
+    assert.equal(await balance(), GRANT_CREDITS - 1, 'manual break replacement settles one credit');
     const creditsAfterBreak = await balance();
 
     // ------------------------ 4. STAFF sees nothing of a draft; denied writes
@@ -475,27 +465,6 @@ async function pilotFlow(mode) {
     assert.equal(await owner.schedule.count({ where: { tenantId: ids.tenantB } }), 0);
 
     // --------------------------------------------------------- 6. publication
-    let publishEtag = deleted.data.etag;
-    if (betaGrant) {
-      // PRODUCT BUG (reported): publish requires LUNCH on shifts >= 5h and BREAK1/LUNCH/BREAK2 on
-      // shifts >= 8h (schedules.controller.ts assertRequiredDefaultBreakTypes), but the beta grant
-      // cannot persist breaks (see above), so a beta-only tenant cannot publish such a shift.
-      const walled = await v2(base, manager, 'POST', `/schedules/${scheduleId}/publications`, {
-        headers: { 'Idempotency-Key': key('publish-long') },
-        body: { acceptedContract: (expectStatus(await v2(base, manager, 'GET', `/schedules/${scheduleId}/publish-plan`), 200, 'long-shift plan')).acceptedContract },
-      });
-      assert.equal(walled.status, 422, walled.text.slice(0, 300));
-      assert.match(walled.json.detail, /missing required break types: BREAK1, LUNCH, BREAK2/);
-      assert.equal(await balance(), GRANT_CREDITS, 'refused publish costs nothing');
-      assert.equal((await owner.schedule.findFirstOrThrow({ where: { tenantId: ids.tenantA } })).status, 'DRAFT');
-      // Work within the gap: shorten the 8h shift below the 5h break threshold.
-      const shortened = expectStatus(await v2(base, manager, 'POST', `/schedules/${scheduleId}/change-sets`, {
-        headers: csHeaders(publishEtag, 'cs-shorten'),
-        body: { operations: [{ op: 'shift.update', shiftId: staffTwoTuesday.id, endTime: at(3, 14) }] },
-      }), 200, 'shorten long shift');
-      assert.equal(shortened.data.revision, 4);
-      publishEtag = shortened.data.etag;
-    }
     const creditsBefore = await balance();
     const priorLedgerIds = new Set((await ledger()).map((row) => row.id));
     const plan = expectStatus(await v2(base, manager, 'GET', `/schedules/${scheduleId}/publish-plan`), 200, 'publish plan');
@@ -533,7 +502,7 @@ async function pilotFlow(mode) {
     assert.deepEqual(oneBoard.shifts.map((shift) => shift.id), [staffOneMonday.id]);
     assert.equal(oneBoard.shifts[0].userId, publicStaffOne);
     assert.equal(oneBoard.shifts[0].startTime, at(2, 8));
-    assert.deepEqual(oneBoard.shifts[0].breaks.map((entry) => entry.startTime), betaGrant ? [] : [at(2, 10), at(2, 12), at(2, 14)], 'own breaks are visible when they exist');
+    assert.deepEqual(oneBoard.shifts[0].breaks.map((entry) => entry.startTime), [at(2, 10), at(2, 12), at(2, 14)], 'own breaks are visible when they exist');
     assert.deepEqual(oneBoard.staff.map((entry) => entry.id), [publicStaffOne], 'roster is limited to self');
     assert.equal(JSON.stringify(oneBoard).includes(publicStaffTwo), false, 'other staff never appear');
     assert.equal(JSON.stringify(oneBoard).includes(staffTwoTuesday.id), false);
@@ -590,5 +559,5 @@ async function pilotFlow(mode) {
   }
 }
 
-test('internal-beta entitled tenant (APP_ORIGIN dev.lunchlineup.com): draft, edit, publish, STAFF sees only own published shifts', { timeout: 240_000 }, () => pilotFlow('internal-beta'));
-test('paid-subscription tenant: same flow plus manual lunch break, STAFF sees own break', { timeout: 240_000 }, () => pilotFlow('paid'));
+test('internal-beta entitled tenant (APP_ORIGIN dev.lunchlineup.com): draft, edit, breaks, publish, STAFF sees only own published shifts', { timeout: 240_000 }, () => pilotFlow('internal-beta'));
+test('paid-subscription tenant: same flow, STAFF sees own breaks', { timeout: 240_000 }, () => pilotFlow('paid'));

@@ -1,5 +1,6 @@
 import { ForbiddenException, Injectable, Optional } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
+import { isInternalBetaCoveredFeature } from '@lunchlineup/config';
 import { TenantPrismaService, TenantPrismaTransaction } from '../database/tenant-prisma.service';
 import { MeteringService } from './metering.service';
 import {
@@ -380,7 +381,7 @@ export class FeatureAccessService {
         const effectiveEntitlement = resolveEffectiveTenantEntitlement(tenant);
         const includedByPlan = coercePlanFeatureKeys(plan?.metadata ?? null, effectiveEntitlement.planCode).includes(feature);
         const paidSubscriptionActive = effectiveEntitlement.source === 'paid_subscription';
-        const internalBetaActive = feature === 'scheduling' && internalBetaSchedulingActive;
+        const internalBetaActive = isInternalBetaCoveredFeature(feature) && internalBetaSchedulingActive;
         const override = featureConfig?.features?.[feature];
 
         if (override?.source === 'disabled' || override?.enabled === false) {

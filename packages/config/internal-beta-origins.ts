@@ -26,3 +26,15 @@ export function isInternalBetaOrigin(value: string | undefined | null): boolean 
 export function isInternalBetaHostname(hostname: string): boolean {
   return INTERNAL_BETA_ORIGINS.some((origin) => new URL(origin).hostname === hostname);
 }
+
+/**
+ * Billable features an active internal-beta grant entitles. The stored grant
+ * shape stays `features: ['scheduling']`; lunch_breaks is covered because
+ * publication requires break plans. Never add time_cards, payroll or others
+ * here without an explicit entitlement decision.
+ */
+export const INTERNAL_BETA_COVERED_FEATURES: readonly string[] = Object.freeze(['scheduling', 'lunch_breaks']);
+
+export function isInternalBetaCoveredFeature(feature: string): boolean {
+  return INTERNAL_BETA_COVERED_FEATURES.includes(feature);
+}

@@ -51,7 +51,7 @@ describe('Operations entitlement', () => {
     });
   });
 
-  it('authorizes scheduling only for an unexpired beta trial with exact positive-credit provenance', async () => {
+  it('authorizes scheduling and lunch_breaks only for an unexpired beta trial with exact positive-credit provenance', async () => {
     process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED = 'true';
     process.env.APP_ORIGIN = 'https://beta.lunchlineup.com';
     const approvedAt = new Date(Date.now() - 60_000);
@@ -114,7 +114,7 @@ describe('Operations entitlement', () => {
         })),
       },
       planDefinition: {
-        findUnique: vi.fn(async () => ({ metadata: { features: ['scheduling'] } })),
+        findUnique: vi.fn(async () => ({ metadata: { features: ['scheduling', 'lunch_breaks', 'time_cards'] } })),
       },
     };
 
@@ -123,7 +123,12 @@ describe('Operations entitlement', () => {
       feature: 'scheduling',
       creditCost: 1,
     });
-    await expect(assertFeatureEntitled(database as never, 'tenant-1', 'lunch_breaks', false)).rejects.toMatchObject({
+    await expect(assertFeatureEntitled(database as never, 'tenant-1', 'lunch_breaks', true)).resolves.toEqual({
+      feature: 'lunch_breaks',
+      creditCost: 1,
+    });
+    // The grant never widens beyond scheduling and lunch_breaks, even when the plan lists the feature.
+    await expect(assertFeatureEntitled(database as never, 'tenant-1', 'time_cards', false)).rejects.toMatchObject({
       status: 403,
     });
   });
