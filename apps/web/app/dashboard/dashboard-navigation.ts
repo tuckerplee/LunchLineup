@@ -1,4 +1,5 @@
 import {
+  CalendarClock,
   CalendarDays,
   Clock3,
   HandCoins,
@@ -22,7 +23,7 @@ export type DashboardNavItem = {
 };
 
 export type DashboardMobileNavItem = DashboardNavItem & {
-  mobileLabel: 'Home' | 'Schedule' | 'Breaks' | 'Team';
+  mobileLabel: 'Home' | 'My Schedule' | 'Schedule' | 'Breaks' | 'Team';
 };
 
 export type DashboardMobileNavGroups = {
@@ -38,6 +39,7 @@ type DashboardProfileSummary = {
 
 const NAV_ITEMS: DashboardNavItem[] = [
   { href: '/dashboard', label: 'Overview', icon: LayoutGrid, exact: true },
+  { href: '/dashboard/my-schedule', label: 'My Schedule', icon: CalendarClock, exact: false },
   { href: '/dashboard/scheduling', label: 'Calendar', icon: CalendarDays, exact: false, priority: 'strong' },
   { href: '/dashboard/lunch-breaks', label: 'Lunch & Breaks', icon: UtensilsCrossed, exact: false },
   { href: '/dashboard/time-cards', label: 'Time Cards', icon: Clock3, exact: false },
@@ -51,14 +53,26 @@ const ADMIN_NAV_ITEM: DashboardNavItem = { href: '/admin', label: 'Admin Console
 
 const MOBILE_PRIMARY_ITEMS = [
   { href: '/dashboard', mobileLabel: 'Home' },
+  { href: '/dashboard/my-schedule', mobileLabel: 'My Schedule' },
   { href: '/dashboard/scheduling', mobileLabel: 'Schedule' },
   { href: '/dashboard/lunch-breaks', mobileLabel: 'Breaks' },
   { href: '/dashboard/staff', mobileLabel: 'Team' },
 ] as const;
 
+/**
+ * Employee view: can read the schedule but cannot change it. These users land on
+ * My Schedule first instead of the manager calendar.
+ */
+export function isEmployeeScheduleView(permissions: PermissionList): boolean {
+  const capabilities = getWorkspaceCapabilities(permissions);
+  return capabilities.canReadScheduling && !capabilities.canWriteSchedules && !capabilities.canWriteShifts;
+}
+
 export function getVisibleDashboardNavItems(permissions: PermissionList): DashboardNavItem[] {
   const capabilities = getWorkspaceCapabilities(permissions);
+  const employeeView = isEmployeeScheduleView(permissions);
   const navItems = NAV_ITEMS.filter((item) => {
+    if (item.href === '/dashboard/my-schedule') return capabilities.canReadScheduling;
     if (item.href === '/dashboard/scheduling') return capabilities.canReadScheduling;
     if (item.href === '/dashboard/lunch-breaks') return capabilities.canReadLunchBreaks;
     if (item.href === '/dashboard/staff') return capabilities.canReadUsers;
@@ -67,7 +81,9 @@ export function getVisibleDashboardNavItems(permissions: PermissionList): Dashbo
     if (item.href === '/dashboard/locations') return capabilities.canReadLocations;
     if (item.href === '/dashboard/settings') return capabilities.canReadSettings;
     return true;
-  });
+  }).map((item) => (
+    item.href === '/dashboard/my-schedule' && employeeView ? { ...item, priority: 'strong' as const } : item
+  ));
 
   return capabilities.hasAdminPortal ? [...navItems, ADMIN_NAV_ITEM] : navItems;
 }
@@ -79,7 +95,10 @@ export function canOpenDashboardAccountSettings(permissions: PermissionList): bo
 export function getDashboardMobileNavGroups(permissions: PermissionList): DashboardMobileNavGroups {
   const visibleItems = getVisibleDashboardNavItems(permissions);
   const visibleByHref = new Map(visibleItems.map((item) => [item.href, item]));
+  const employeeView = isEmployeeScheduleView(permissions);
   const primary = MOBILE_PRIMARY_ITEMS.flatMap(({ href, mobileLabel }) => {
+    // Managers keep four primary slots; their My Schedule entry lives under More.
+    if (mobileLabel === 'My Schedule' && !employeeView) return [];
     const item = visibleByHref.get(href);
     return item ? [{ ...item, mobileLabel }] : [];
   });

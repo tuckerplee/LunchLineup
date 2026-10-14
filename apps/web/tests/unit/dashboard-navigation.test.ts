@@ -6,6 +6,7 @@ import {
   getDashboardMobileNavGroups,
   getDashboardUserInitials,
   getVisibleDashboardNavItems,
+  isEmployeeScheduleView,
 } from '../../app/dashboard/dashboard-navigation';
 
 function labelsFor(permissions: string[]): string[] {
@@ -28,7 +29,7 @@ describe('dashboard navigation helpers', () => {
         'users:read',
         'settings:read',
       ]),
-    ).toEqual(['Overview', 'Calendar', 'Lunch & Breaks', 'Time Cards', 'Staff', 'Locations', 'Settings']);
+    ).toEqual(['Overview', 'My Schedule', 'Calendar', 'Lunch & Breaks', 'Time Cards', 'Staff', 'Locations', 'Settings']);
   });
 
   it('adds admin console access without granting settings account access', () => {
@@ -52,10 +53,11 @@ describe('dashboard navigation helpers', () => {
       'payroll:read',
       'users:read',
       'settings:read',
+      'shifts:write',
     ]);
 
     expect(groups.primary.map((item) => item.mobileLabel)).toEqual(['Home', 'Schedule', 'Breaks', 'Team']);
-    expect(groups.more.map((item) => item.label)).toEqual(['Time Cards', 'Payroll', 'Locations', 'Settings']);
+    expect(groups.more.map((item) => item.label)).toEqual(['My Schedule', 'Time Cards', 'Payroll', 'Locations', 'Settings']);
   });
 
   it('filters both mobile groups without leaking unavailable or admin-only destinations', () => {
@@ -66,6 +68,24 @@ describe('dashboard navigation helpers', () => {
     const admin = getDashboardMobileNavGroups(['admin_portal:access']);
     expect(admin.primary.map((item) => item.mobileLabel)).toEqual(['Home']);
     expect(admin.more.map((item) => item.label)).toEqual(['Admin Console']);
+  });
+
+  it('makes My Schedule the primary entry for read-only employees', () => {
+    const staff = ['schedules:read', 'shifts:read', 'locations:read', 'lunch_breaks:read'];
+    const items = getVisibleDashboardNavItems(staff);
+    expect(items.find((item) => item.href === '/dashboard/my-schedule')?.priority).toBe('strong');
+    expect(isEmployeeScheduleView(staff)).toBe(true);
+
+    const groups = getDashboardMobileNavGroups(staff);
+    expect(groups.primary.map((item) => item.mobileLabel)).toEqual(['Home', 'My Schedule', 'Schedule', 'Breaks']);
+    expect(groups.more.map((item) => item.label)).toEqual(['Locations']);
+  });
+
+  it('keeps My Schedule secondary for schedule editors and hidden without schedule read access', () => {
+    const manager = ['schedules:read', 'shifts:read', 'locations:read', 'shifts:write'];
+    expect(isEmployeeScheduleView(manager)).toBe(false);
+    expect(getVisibleDashboardNavItems(manager).find((item) => item.href === '/dashboard/my-schedule')?.priority).toBeUndefined();
+    expect(labelsFor(['shifts:read'])).not.toContain('My Schedule');
   });
 
   it('does not fabricate navigation badges without authoritative counts', () => {
