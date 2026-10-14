@@ -143,7 +143,7 @@ describe('FeatureAccessService', () => {
         )).rejects.toThrow(/active paid subscription/i);
     });
 
-    it('enables only scheduling for an approved, unexpired internal beta trial with exact ledger provenance', async () => {
+    it('enables only scheduling and lunch_breaks for an approved, unexpired internal beta trial with exact ledger provenance', async () => {
         process.env.INTERNAL_BETA_ENTITLEMENTS_ENABLED = 'true';
         process.env.APP_ORIGIN = 'https://beta.lunchlineup.com';
         const approvedAt = new Date(Date.now() - 60_000);
@@ -169,7 +169,7 @@ describe('FeatureAccessService', () => {
         };
         prisma.tenant.findUniqueOrThrow.mockResolvedValue({
             id: 'tenant-1',
-            planTier: PlanTier.STARTER,
+            planTier: PlanTier.GROWTH,
             status: TenantStatus.TRIAL,
             trialEndsAt,
             usageCredits: 5,
@@ -207,10 +207,19 @@ describe('FeatureAccessService', () => {
             creditCost: 1,
         });
         expect(matrix.features.scheduling.reason).toMatch(/approved internal beta grant/i);
-        expect(matrix.features.lunch_breaks.enabled).toBe(false);
+        expect(matrix.features.lunch_breaks).toMatchObject({
+            enabled: true,
+            source: 'credits',
+            creditCost: 1,
+        });
+        expect(matrix.features.lunch_breaks.reason).toMatch(/approved internal beta grant/i);
         expect(matrix.features.time_cards.enabled).toBe(false);
         expect(matrix.features.webhooks.enabled).toBe(false);
         await expect(service.assertFeatureEntitled('tenant-1', 'scheduling')).resolves.toMatchObject({
+            enabled: true,
+            source: 'credits',
+        });
+        await expect(service.assertFeatureEntitled('tenant-1', 'lunch_breaks')).resolves.toMatchObject({
             enabled: true,
             source: 'credits',
         });

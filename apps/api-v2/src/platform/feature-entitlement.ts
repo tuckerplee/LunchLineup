@@ -1,4 +1,4 @@
-import { isInternalBetaOrigin } from '@lunchlineup/config';
+import { isInternalBetaCoveredFeature, isInternalBetaOrigin } from '@lunchlineup/config';
 import { Prisma } from '@prisma/client';
 import type { TenantTransaction } from './database';
 import { ProblemError } from './problem';
@@ -266,7 +266,7 @@ export async function assertFeatureEntitled(
     && Boolean(tenant.stripeSubscriptionId?.trim())
     && tenant.stripeSubscriptionCurrentPeriodEnd instanceof Date
     && tenant.stripeSubscriptionCurrentPeriodEnd > now;
-  const internalBetaActive = feature === 'scheduling'
+  const internalBetaActive = isInternalBetaCoveredFeature(feature)
     && await hasActiveInternalBetaSchedulingEntitlement(
       transaction,
       tenantId,
