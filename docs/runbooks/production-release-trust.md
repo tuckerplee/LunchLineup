@@ -1,4 +1,5 @@
 # Source-neutral production release trust
+> **Superseded (2026-10-14):** the VM217, GitHub OIDC/Sigstore and signed-release procedure described here is historical. The current production deploy path, cutover and rollback plan are in [production-cutover](production-cutover.md) (`scripts/deploy-release.sh --target production`). Retained below unchanged for history.
 
 This is a source contract, not signer approval, installation approval, runtime qualification or permission to publish. C16 installation/activation remains deferred. Generic CI and GitHub Actions remain disabled. Historical GitHub/VM217 deployment choreography is not converted into an authorized controller by this change.
 

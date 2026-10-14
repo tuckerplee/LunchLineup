@@ -18,6 +18,7 @@
 - `internal-beta-hands-on-signoff.md`: exact-SHA automated interaction-evidence boundary and independent unfamiliar-evaluator Calendar, touch, Lunch, and Time Cards checklist.
 - `mfa-encryption-key-rotation.md`: managed current/previous MFA key overlap, transactional re-encryption, and fail-closed old-key removal verification.
 - `outbound-delivery.md`: transactional and staff-invitation email, notification outbox, tenant webhook replay, provider suppression, privacy erasure, and dead-letter response.
+- `production-cutover.md`: current plan for replacing the legacy PHP app at lunchlineup.com: `deploy-release.sh --target production` path, rehearsal, cutover steps, go/no-go criteria and rollback (supersedes the VM217/Sigstore runbooks).
 - `production-readiness.md`: public SaaS production launch preflight, required remote versioned Terraform state, immutable release, scheduled encrypted offsite backup, cleanup/absence-bound DR proof, alert, and post-deploy checks.
 - `postgres-pitr-recovery.md`: off-host WAL/base-backup verification, isolated point-in-time restore, validation, promotion, cutover, and rollback procedure.
 - `public-web-unavailable.md`: public DNS, TLS, Caddy, Next.js, release-header, and host-probe paging response.
@@ -30,7 +31,7 @@ Use `disposable-dev-server.md` when VM107 needs to be replaced instead of repair
 
 Use `internal-beta-operations.md` to turn the intentionally offline VM107 beta into a candidate-bound session, prove direct/public behavior plus delivery/monitoring/restore readiness, and pause it again without changing `onboot: 0` or deleting data.
 
-Use `production-readiness.md` before public SaaS production deploys. It is the preferred `operator_runbook_url` for the Terraform production readiness gate and the release-manifest deploy gate.
+Use `production-cutover.md` for the current production deploy and cutover (the VM217/Sigstore documents below it are superseded). Historical: use `production-readiness.md` before public SaaS production deploys. It is the preferred `operator_runbook_url` for the Terraform production readiness gate and the release-manifest deploy gate.
 
 Use `data-retention-delete-export.md` for account lifecycle, privacy export, tenant archive, and tenant deletion requests during beta.
 

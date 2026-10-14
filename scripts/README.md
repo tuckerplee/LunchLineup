@@ -2,6 +2,7 @@
 
 ## Files
 
+- `deploy-release.sh`: target-parameterized (`--target pilot|production`) verified image load, offsite-backup-gated deploy with receipt and image rollback; see `docs/runbooks/production-cutover.md`.
 - `check-development-browser-database.mjs`: Validates fixed disposable database freshness and restricted application-role observations; does not provision a database.
 - `fixed-browser-source-profile.mjs`: Reads the protected fixed-browser source profile and binds its version-two source identity to the exact invocation while preserving the generic default.
 - `read-fixed-browser-phase.py`: Reads the protected fixed phase record and verifies the visible read-only runtime-input mount before selecting a browser phase.
