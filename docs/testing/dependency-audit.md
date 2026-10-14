@@ -51,3 +51,19 @@ the supported parent versions select a patched parser without overrides.
 The advisory describes synchronous parsing of untrusted selectors. The
 identified application use is trusted build-time CSS; this change does not
 claim a demonstrated production exploit or dismiss the advisory.
+
+## October 14, 2026 pre-production cleanup
+
+- `npm audit --omit=dev`: 0 vulnerabilities (the launch gate stays green).
+- Full `npm audit`: 10 high, all dev-only and all rooted in
+  [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+  (`braces` stack exhaustion on deeply nested patterns). The advisory range is
+  `<= 3.0.3` with no patched release (3.0.3 is the latest), so there is no safe
+  bump; npm's only offered "fix" is a breaking `tailwindcss@4` jump that does
+  not remove `braces` from `ts-loader`/`jest-message-util`/`ts-node-dev`.
+  Affected paths are build/test tooling (`tailwindcss`, `ts-loader`,
+  `ts-node-dev`, `@types/jest` via `chokidar`/`micromatch`/`fast-glob`) that
+  expand developer-authored globs; none run in production images or on
+  request input. Revisit when `braces` publishes a fix.
+- Python: `pip-audit` over `apps/worker/requirements.txt` and
+  `apps/engine/requirements.txt` (pinned, `--no-deps`): no known vulnerabilities.

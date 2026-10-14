@@ -80,6 +80,12 @@ type AuthorizationSnapshot = {
   mfaRequired: boolean;
 };
 
+/**
+ * Cheap flood guard evaluated after the access-token signature is verified but
+ * before any database work. It receives only signed session-locator claims.
+ */
+export type PreAuthGuard = (claims: { tenantId: string; sessionId: string }) => Promise<void>;
+
 export type MfaSessionStore = Partial<MfaSessionObserver> & {
   isVerified(sessionId: string): Promise<boolean>;
   ready?(): Promise<void>;
@@ -255,6 +261,7 @@ export class NativeIdentityAdapter implements IdentityAdapter {
     private readonly config: ApiV2Config,
     private readonly database: Pick<TenantDatabase, 'withTenant'>,
     private readonly mfaSessions: MfaSessionStore = new RedisMfaSessionStore(config),
+    private readonly preAuthGuard?: PreAuthGuard,
   ) {}
 
   async ready(): Promise<void> {
@@ -277,6 +284,8 @@ export class NativeIdentityAdapter implements IdentityAdapter {
   async authenticate(request: FastifyRequest, reply: FastifyReply): Promise<SessionIdentity> {
     const source = requestToken(request);
     const claims = accessClaims(source.token, this.config);
+    // Bound per-session identity database work before the first snapshot read.
+    await this.preAuthGuard?.({ tenantId: claims.tenantId, sessionId: claims.sessionId });
 
     let firstSnapshot: AuthorizationSnapshot;
     try {

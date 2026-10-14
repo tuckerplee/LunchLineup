@@ -163,6 +163,31 @@ describe('native API v2 identity', () => {
     );
   });
 
+  it('applies the pre-auth guard before any database work and refuses when it blocks', async () => {
+    const { database, transaction, mfaSessions } = fixture();
+    const guard = vi.fn(async () => {
+      throw new ProblemError(429, 'rate_limited', 'Too many requests. Try again later.', 'Too many requests');
+    });
+    const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions, guard);
+
+    await expect(adapter.authenticate(request(), reply())).rejects.toMatchObject({ status: 429, code: 'rate_limited' });
+    expect(guard).toHaveBeenCalledWith({ tenantId: 'tenant-1', sessionId: 'session-1' });
+    expect(database.withTenant).not.toHaveBeenCalled();
+    expect(transaction.session.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('does not run the pre-auth guard for unsigned or invalid tokens', async () => {
+    const { database, mfaSessions } = fixture();
+    const guard = vi.fn(async () => undefined);
+    const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions, guard);
+    const bad = request();
+    (bad as { cookies: Record<string, string> }).cookies = { access_token: 'not-a-jwt' };
+
+    await expect(adapter.authenticate(bad, reply())).rejects.toMatchObject({ status: 401 });
+    expect(guard).not.toHaveBeenCalled();
+    expect(database.withTenant).not.toHaveBeenCalled();
+  });
+
   it('uses the shared privileged-permission policy and MFA session marker', async () => {
     const { database, mfaSessions } = fixture({ permissions: ['settings:write'] });
     const adapter = new NativeIdentityAdapter(config, database as never, mfaSessions);
