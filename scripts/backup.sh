@@ -148,10 +148,19 @@ provider_command_container_job() {
     wait "$monitor_pid" >/dev/null 2>&1 || true
   fi
 
-  if ! provider_container_job_survivors "$baseline_file"; then
-    echo "ERROR: Provider command left descendant processes; aborting the one-shot container ownership domain (pids=${provider_survivor_pids})." >&2
-    exit 70
-  fi
+  # The monitor subshell above is killed while it may be inside `sleep 0.05`
+  # (or the initial `sleep 0.1`); that orphaned sleep is ours, not the provider's,
+  # and exits on its own. Give such helpers a bounded moment to disappear, then
+  # still fail closed on anything that outlives the grace window.
+  survivor_checks=0
+  until provider_container_job_survivors "$baseline_file"; do
+    survivor_checks=$((survivor_checks + 1))
+    if [ "$survivor_checks" -gt 40 ]; then
+      echo "ERROR: Provider command left descendant processes; aborting the one-shot container ownership domain (pids=${provider_survivor_pids})." >&2
+      exit 70
+    fi
+    sleep 0.05
+  done
 
   reason=""
   [ ! -f "$reason_file" ] || reason="$(head -n 1 "$reason_file")"
