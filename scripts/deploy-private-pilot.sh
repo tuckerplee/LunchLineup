@@ -61,9 +61,10 @@ check_target() {
     [[ "$(env_value "$key")" == "$PILOT_HOST" ]] || fail "$key must be $PILOT_HOST"
   done
   [[ "$(env_value COOKIE_SECURE)" == true ]] || fail "COOKIE_SECURE must be true (TLS ends at the CT940 proxy)"
-  # Must be the Caddy address(es) on the compose network, never the default broad ranges.
-  [[ "$(env_value TRUST_PROXY)" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/32(,([0-9]{1,3}\.){3}[0-9]{1,3}/32)*$ ]] \
-    || fail "TRUST_PROXY must be an explicit list of /32 Caddy compose-network addresses"
+  # The APIs sit on the internal-only `app` network, so named private ranges or explicit
+  # addresses/CIDRs are acceptable; blanket true and hop counts are not.
+  [[ "$(env_value TRUST_PROXY)" =~ ^(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)(,(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?))*$ ]] \
+    || fail "TRUST_PROXY must list named private ranges or explicit addresses/CIDRs (not true or a hop count)"
   [[ "$(env_value PROXY_HTTP_BIND)" == "$PILOT_BIND" && "$(env_value PROXY_HTTP_PORT)" == 80 ]] \
     || fail "PROXY_HTTP_BIND/PORT must be $PILOT_BIND:80"
   value="$(env_value DATA_TARGET_ENV)"
@@ -87,9 +88,10 @@ load_images() {
   mkdir -p "$STATE_DIR"; : > "$STATE_DIR/previous-images.tsv"
   shopt -s nullglob
   for meta in "$dir"/*.image.json; do
-    fields="$(node -e '
-      const m = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
-      process.stdout.write([m.artifactName, m.imageRef, m.localImageId, m.archiveSha256, m.archiveBytes].join("\t"));' "$meta")" \
+    fields="$(python3 -c '
+import json, sys
+m = json.load(open(sys.argv[1], encoding="utf-8"))
+sys.stdout.write("\t".join(str(m[k]) for k in ("artifactName", "imageRef", "localImageId", "archiveSha256", "archiveBytes")))' "$meta")" \
       || fail "unreadable metadata: $meta"
     IFS=$'\t' read -r name ref id sha bytes <<<"$fields"
     [[ "$name" =~ ^[a-z0-9-]+$ && "$(basename "$meta")" == "$name.image.json" ]] || fail "bad artifactName in $meta"
@@ -152,7 +154,7 @@ wait_for_health() {
 
 main() {
   [[ $# == 1 ]] || { echo "Usage: $0 <image-dir>" >&2; exit 64; }
-  for c in "$DOCKER" node curl flock sha256sum gzip awk grep; do command -v "$c" >/dev/null 2>&1 || fail "missing command: $c"; done
+  for c in "$DOCKER" python3 curl flock sha256sum gzip awk grep; do command -v "$c" >/dev/null 2>&1 || fail "missing command: $c"; done
   exec 9>"$LOCK_FILE"
   flock -n 9 || fail "another deployment or storage cleanup holds $LOCK_FILE"
   check_target
