@@ -37,3 +37,5 @@ use an account without MFA on the dev tenant.
 
 Run locally with `docker run --rm -i grafana/k6 run - < tests/load/small-business-smoke.k6.js`
 only against a local stack.
+
+- `README.md`: this file.
