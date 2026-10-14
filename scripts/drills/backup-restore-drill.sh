@@ -124,16 +124,16 @@ wait_for() { # <seconds> <description> <command...>
 # ================================================================ build
 phase_build() {
   log "build images from ${SRC}"
-  d build -q -t "${BACKUP_IMG}" -f "${SRC}/infrastructure/docker/Dockerfile.backup" "${SRC}" >/dev/null
-  d build -q -t "${POSTGRES_IMG}" -f "${SRC}/infrastructure/docker/Dockerfile.postgres" "${SRC}" >/dev/null
-  d build -q -t "${MINIO_IMG}" -f "${SRC}/scripts/drills/Dockerfile.minio" "${SRC}/scripts/drills" >/dev/null
+  d build -q -t "${BACKUP_IMG}" -f "${W_SRC}/infrastructure/docker/Dockerfile.backup" "${W_SRC}" >/dev/null
+  d build -q -t "${POSTGRES_IMG}" -f "${W_SRC}/infrastructure/docker/Dockerfile.postgres" "${W_SRC}" >/dev/null
+  d build -q -t "${MINIO_IMG}" -f "${W_SRC}/scripts/drills/Dockerfile.minio" "${W_SRC}/scripts/drills" >/dev/null
   local migrate="${DRILL_MIGRATE_IMAGE:-}"
   if [ -z "${migrate}" ]; then
     migrate=ll-drill-migrate:local
-    d build -q -t "${migrate}" -f "${SRC}/infrastructure/docker/Dockerfile.migrations" "${SRC}" >/dev/null
+    d build -q -t "${migrate}" -f "${W_SRC}/infrastructure/docker/Dockerfile.migrations" "${W_SRC}" >/dev/null
   fi
-  d build -q -t "${TOOLBOX_IMG}" -f "${SRC}/scripts/drills/Dockerfile.toolbox" \
-    --build-arg "BACKUP_IMAGE=${BACKUP_IMG}" --build-arg "MIGRATE_IMAGE=${migrate}" "${SRC}" >/dev/null
+  d build -q -t "${TOOLBOX_IMG}" -f "${W_SRC}/scripts/drills/Dockerfile.toolbox" \
+    --build-arg "BACKUP_IMAGE=${BACKUP_IMG}" --build-arg "MIGRATE_IMAGE=${migrate}" "${W_SRC}" >/dev/null
   result "images built backup=$(d image inspect -f '{{.Id}}' "${BACKUP_IMG}" | cut -c1-19) postgres=$(d image inspect -f '{{.Id}}' "${POSTGRES_IMG}" | cut -c1-19)"
 }
 
