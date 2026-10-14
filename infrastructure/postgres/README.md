@@ -4,6 +4,7 @@
 
 - `README.md`: this Postgres runtime and PITR configuration guide.
 - `archive-wal.sh`: fail-closed `archive_command` target that rejects disabled PITR, accepts only exact PostgreSQL archive names, and returns success only after the private request-scoped provider returns conditional immutable upload plus exact versioned byte/retention proof.
+- `pg_hba.conf`: checked-in client authentication used by the Compose postgres service (`hba_file`); it adds the `host replication all samenet scram-sha-256` entry that the daily `pg_basebackup` job needs.
 - `pg_hba.conf.template`: generated client-authentication template.
 - `pitr-object-store.sh`: shared archive-name classifier, strict stat-state handling, mode-0600 MinIO config channel that keeps credentials out of argv, validated timeout/kill-after wrapper, conditional encrypted upload, single-version enumeration, and version-specific readback helpers.
 - `pitr-export-lifecycle-policy.sh`: exports the live bucket lifecycle JSON through the dedicated read-only lifecycle-audit identity for canonical policy verification.
