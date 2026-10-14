@@ -27,3 +27,4 @@
 - `native-quota-storage.ts`: Redis sliding-window quota storage with finite operations, readiness probes and owned-client cleanup.
 - `native-quota.test.ts`: plan quota key, principal/tenant charging, readiness and refusal regressions.
 - `native-quota.ts`: current plan resolution and principal/tenant quota charging for server-owned operations.
+- `pre-auth-guard.ts`: per-session request ceiling evaluated after token-signature verification and before identity database snapshots; fails closed (503) when shared limit storage is unavailable.
