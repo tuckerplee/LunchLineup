@@ -460,6 +460,9 @@ lunchlineup_backup_last_success_timestamp_seconds ${BACKUP_COMPLETED_AT}
 lunchlineup_backup_last_success_size_bytes ${BACKUP_SIZE_BYTES}
 METRICS
 
+  # mktemp creates 0600 files; node-exporter runs as an unprivileged user and
+  # must be able to read the textfile or BackupMissingTelemetry fires.
+  chmod 0644 "${tmp_metrics_file}"
   mv "${tmp_metrics_file}" "${BACKUP_METRICS_FILE}"
 }
 

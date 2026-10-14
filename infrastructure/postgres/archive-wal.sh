@@ -45,6 +45,8 @@ lunchlineup_pitr_wal_archive_last_success_timestamp_seconds ${last_success:-0}
 # TYPE lunchlineup_pitr_wal_archive_last_failure_timestamp_seconds gauge
 lunchlineup_pitr_wal_archive_last_failure_timestamp_seconds ${last_failure:-0}
 EOF
+  # mktemp creates 0600 files; node-exporter (unprivileged) must be able to read the textfile.
+  chmod 0644 "${metrics_tmp}" 2>/dev/null || true
   mv "${metrics_tmp}" "${PITR_WAL_METRICS_FILE}" || rm -f "${metrics_tmp}"
 }
 
