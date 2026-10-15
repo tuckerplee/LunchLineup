@@ -68,7 +68,7 @@ check_target() {
   [[ "$(env_value PROXY_HTTP_BIND)" == "$PILOT_BIND" && "$(env_value PROXY_HTTP_PORT)" == 80 ]] \
     || fail "PROXY_HTTP_BIND/PORT must be $PILOT_BIND:80"
   value="$(env_value DATA_TARGET_ENV)"
-  [[ "$value" == disposable || "$value" == development ]] || fail "DATA_TARGET_ENV must be disposable or development"
+  [[ "$value" == disposable || "$value" == development || "$value" == staging ]] || fail "DATA_TARGET_ENV must be disposable, development or staging"
   if grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com' "$RUNTIME_ENV"; then
     fail "runtime env references a production/beta lunchlineup.com host"
   fi
