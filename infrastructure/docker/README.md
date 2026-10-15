@@ -21,6 +21,7 @@
 - `Dockerfile.web`: Next.js web image.
 - `Dockerfile.worker`: background worker image on the same fixed, digest-pinned Chainguard Python base.
 - `grafana-healthcheck.go`: static loopback health probe used by the shell-free Grafana runtime.
+- `http-healthcheck.go`: generic static `GET URL` probe (exit 0 only on HTTP 200) copied into the shell-free Loki and Tempo images as `/usr/local/bin/http-healthcheck`. Prometheus uses its bundled `promtool check healthy` instead.
 - `otelcol-builder.yaml`: minimal collector component manifest shared by the trace and log-shipping services.
 
 ## API Runtime Note

@@ -540,6 +540,33 @@ test('Grafana runtime assembles only application assets over the static base', (
   assert.match(compose, /test: \[ "CMD", "\/usr\/local\/bin\/grafana-healthcheck" \]/);
 });
 
+test('shell-free observability images use healthchecks whose binaries exist in the image', () => {
+  const compose = read('docker-compose.yml');
+  const block = (name) => {
+    const start = compose.indexOf(`\n  ${name}:\n`);
+    assert.ok(start >= 0, name);
+    const rest = compose.slice(start + 1);
+    const end = rest.slice(1).search(/\n {2}[a-z][a-z0-9-]*:\n|\nnetworks:\n/);
+    return end < 0 ? rest : rest.slice(0, end + 1);
+  };
+  const expected = {
+    prometheus: 'test: [ "CMD", "/bin/promtool", "check", "healthy", "--url=http://127.0.0.1:9090" ]',
+    loki: 'test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3100/ready" ]',
+    tempo: 'test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3200/ready" ]',
+  };
+  for (const [name, line] of Object.entries(expected)) {
+    assert.ok(block(name).includes(line), `${name} healthcheck`);
+    assert.doesNotMatch(block(name), /wget/, name);
+  }
+  for (const name of ['loki', 'tempo']) {
+    const dockerfile = read(`infrastructure/docker/Dockerfile.${name}`);
+    assert.ok(dockerfile.includes('COPY infrastructure/docker/http-healthcheck.go /src-healthcheck/main.go'), name);
+    assert.ok(dockerfile.includes('-o /out/http-healthcheck /src-healthcheck/main.go'), name);
+    assert.ok(dockerfile.includes('COPY --from=build /out/http-healthcheck /usr/local/bin/http-healthcheck'), name);
+  }
+  assert.ok(read('infrastructure/docker/http-healthcheck.go').includes('http.StatusOK'));
+});
+
 test('release-built observability and proxy binaries enforce patched dependency floors', () => {
   const proxy = read('infrastructure/docker/Dockerfile.proxy');
   const tempo = read('infrastructure/docker/Dockerfile.tempo');
