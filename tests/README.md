@@ -8,6 +8,7 @@ This folder contains repo-level tests for the LunchLineup rebuild. These tests r
 - `fixtures/`: closed current-authority adapters for availability imports and payroll export, policy and period read source regressions.
 - `hygiene/production-launch-env.test.mjs`: verifies public launch runtime env validation rejects smoke-only domains, test payment keys, insecure public URLs, unsafe public API/OIDC launch config, and local secret paths.
 - `hygiene/repository-hygiene.test.mjs`: checks secret-file hygiene, public backup exposure, generated artifact ignore rules, CI wiring, and documentation coverage.
+- `load/`: k6 small-business load smoke (login, schedule board reads, health) and run instructions; see `load/README.md`.
 - `migration/legacy-parity-inventory.test.mjs`: verifies the legacy PHP source and TypeScript platform expose the required migration workflows and SaaS controls.
 - `deploy/deploy-source.test.mjs`: verifies deploy-source guard scripts exist and enforce GitHub/upstream SHA discipline before server rollout.
 - `deploy/production-compose.test.mjs`: verifies Compose isolation, public port exposure, proxy hardening, smoke CI env generation, and fail-fast example secrets.

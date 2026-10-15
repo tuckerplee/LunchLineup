@@ -1,4 +1,5 @@
 import { NativePlanQuota, type NativeQuotaAdapter } from './platform/native-quota';
+import { createPreAuthGuard } from './platform/pre-auth-guard';
 import { NativeRedisQuotaStorage } from './platform/native-quota-storage';
 import { NativeApiMetrics } from './platform/metrics';
 import cookie from '@fastify/cookie';
@@ -137,7 +138,23 @@ export async function buildServer(
     metrics.install(app);
     const database = overrides.database ?? new TenantDatabase();
     resources.database = database;
-    const identity = overrides.identity ?? new NativeIdentityAdapter(config, database);
+    // The shared-limit storage is constructed after identity (see below); the
+    // guard fails closed until it is bound, which happens before listening.
+    let preAuthGuard: ReturnType<typeof createPreAuthGuard> | undefined;
+    const identity = overrides.identity ?? new NativeIdentityAdapter(
+      config,
+      database,
+      undefined,
+      overrides.quota === undefined
+        ? async (claims) => {
+          if (!preAuthGuard) {
+            throw new ProblemError(503, 'rate_limit_storage_unavailable',
+              'Request limits are temporarily unavailable.', 'Service unavailable');
+          }
+          await preAuthGuard(claims);
+        }
+        : undefined,
+    );
     resources.identity = identity;
     const locations = overrides.locations ?? new LocationService(database);
     const people = overrides.people ?? new PeopleService(database, config, identity);
@@ -170,6 +187,7 @@ export async function buildServer(
       })
       : undefined;
     resources.quotaStorage = ownedQuotaStorage;
+    if (ownedQuotaStorage) preAuthGuard = createPreAuthGuard(ownedQuotaStorage);
     const quota = overrides.quota ?? new NativePlanQuota(database, ownedQuotaStorage!);
     await app.register(cookie);
     await identity.ready?.();
