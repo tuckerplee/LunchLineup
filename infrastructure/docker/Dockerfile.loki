@@ -13,7 +13,7 @@ RUN CGO_ENABLED=0 go build -trimpath -tags netgo \
     -ldflags '-s -w -X github.com/grafana/loki/v3/pkg/util/build.Branch=HEAD -X github.com/grafana/loki/v3/pkg/util/build.Version=3.7.6 -X github.com/grafana/loki/v3/pkg/util/build.Revision=5003600d7c787b5f047c8d1b0198559471b0caa5 -X github.com/grafana/loki/v3/pkg/util/build.BuildUser=lunchlineup -X github.com/grafana/loki/v3/pkg/util/build.BuildDate=2026-08-20T00:00:00Z' \
     -o /out/loki ./cmd/loki
 COPY infrastructure/docker/http-healthcheck.go /src-healthcheck/main.go
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' \n    -o /out/http-healthcheck /src-healthcheck/main.go
+RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags '-s -w' -o /out/http-healthcheck /src-healthcheck/main.go
 
 FROM grafana/loki:3.7.6@sha256:efd47c67f9bac88ca29bcf8cb997d9ab29d1848bd0aff579282295542a745952
 COPY --from=build /out/loki /usr/bin/loki
