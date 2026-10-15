@@ -310,6 +310,19 @@ for i in json.load(open(sys.argv[1]))["images"]:
   echo "deploy_release_rollback_ok target=$TARGET from=$rid (schema is forward-only; see docs/runbooks/production-cutover.md)"
 }
 
+# Named volumes created empty (e.g. by an earlier failed start) stay root-owned and
+# never receive the image's directory ownership. Give the non-root services theirs.
+ensure_volume_ownership() {
+  local entry service volume owner path
+  step "volume ownership"
+  for entry in grafana:grafana_data:472:0 promtail:promtail_positions:10001:10001; do
+    IFS=: read -r service volume owner <<<"${entry%:*}"; owner="$owner:${entry##*:}"
+    compose create --no-build --pull never "$service" >/dev/null 2>&1 || true
+    path="$("$DOCKER" volume inspect --format '{{.Mountpoint}}' "${PROJECT}_$volume" 2>/dev/null)" || continue
+    if [[ -d "$path" && "$(stat -c %u "$path")" == 0 ]]; then chown "$owner" "$path"; fi
+  done
+}
+
 main() {
   local target="" rollback="" dir="" c
   while [[ $# -gt 0 ]]; do
@@ -339,6 +352,7 @@ main() {
   write_receipt started
   step "start postgres"; compose up -d --no-build --pull never postgres
   run_migrations
+  ensure_volume_ownership
   step "start stack"; compose up -d --no-build --pull never
   wait_for_health
   write_receipt ok
