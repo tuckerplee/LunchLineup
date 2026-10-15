@@ -2,6 +2,7 @@
 
 ## Files
 
+- `deploy-release.sh` tests: `deploy-release.test.mjs` runs the target-parameterized deploy functions against a stub docker (production env refusals, offsite backup gate, rollback tags, receipt, overlay/Caddyfile contract).
 - `development-browser-database.test.mjs`: Pure database-observation contract tests for freshness, restricted login and malformed or unexpected fields.
 
 - `README.md`: this deploy test folder guide.

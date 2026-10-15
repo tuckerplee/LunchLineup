@@ -1,4 +1,5 @@
 # Production Readiness Runbook
+> **Superseded (2026-10-14):** the VM217, GitHub OIDC/Sigstore and signed-release procedure described here is historical. The current production deploy path, cutover and rollback plan are in [production-cutover](production-cutover.md) (`scripts/deploy-release.sh --target production`). Retained below unchanged for history.
 
 **Current user scope:** keep public legacy VM4014 online until LunchLineup 2.0 has been fully tested for months. The immediate outcome is isolated, long-duration 2.0 qualification. Production migration and activation are entirely deferred. No production access, test traffic, settings, runtime, data, recovery, or routing action is authorized. The production bridge below is future source planning only; references to external production verification do not authorize performing it now.
 

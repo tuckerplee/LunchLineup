@@ -1,0 +1,35 @@
+# Production overlay: Caddy sits behind nginx CT940 (10.231.10.30), which sits
+# behind the Cloudflare Tunnel. TLS ends at Cloudflare; Caddy speaks plain HTTP on
+# the VM's private IP only. Compose !override/!reset support required.
+# PROXY_HTTP_BIND (the VM's private IPv4) comes from the runtime env and is
+# validated by scripts/deploy-release.sh --target production (PROD_BIND_IP).
+services:
+  proxy:
+    cap_add: !reset []
+    ports: !override
+      - target: 8080
+        published: "80"
+        host_ip: "${PROXY_HTTP_BIND:?Set PROXY_HTTP_BIND to the production VM private IP}"
+        protocol: tcp
+    environment:
+      PRIVATE_APP_HOST: lunchlineup.com
+      CADDY_SITE_ADDRESSES: http://lunchlineup.com
+    volumes: !override
+      - type: bind
+        source: ./infrastructure/caddy/Caddyfile.production
+        target: /etc/caddy/Caddyfile
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: volume
+        source: caddy_data
+        target: /data
+      - type: volume
+        source: caddy_config
+        target: /config
+  backup:
+    environment:
+      # Read-only container root: gpg needs a writable home on the /tmp tmpfs.
+      GNUPGHOME: /tmp
+      # Offsite is REQUIRED in production; there is no local-only override here.
+      BACKUP_OFFSITE_ENABLED: "true"
