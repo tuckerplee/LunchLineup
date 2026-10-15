@@ -21,6 +21,7 @@ type AuthUser = {
     workspaceScope: string;
     sessionScope: string;
     permissions: string[];
+    pinResetRequired: boolean;
     mfaRequired?: boolean;
     mfaVerified?: boolean;
 };
@@ -139,6 +140,8 @@ function parseAuthUser(payload: unknown): AuthUser | null {
         return null;
     }
 
+    if (typeof user.pinResetRequired !== 'boolean') return null;
+
     const permissions = user.permissions ?? [];
     if (!Array.isArray(permissions) || permissions.length > 200 || !permissions.every(safeHeaderToken)) {
         return null;
@@ -155,6 +158,7 @@ function parseAuthUser(payload: unknown): AuthUser | null {
         workspaceScope: user.workspaceScope,
         sessionScope: user.sessionScope,
         permissions: [...permissions],
+        pinResetRequired: user.pinResetRequired,
         mfaRequired: user.mfaRequired as boolean | undefined,
         mfaVerified: user.mfaVerified as boolean | undefined,
     };
@@ -380,6 +384,12 @@ export async function proxy(request: NextRequest) {
 
     if (!user) {
         return redirectToLogin('redirect_login_missing_user_after_auth');
+    }
+
+    if (user.pinResetRequired) {
+        const resetUrl = new URL('/auth/reset-pin', appOrigin);
+        resetUrl.searchParams.set('next', returnPath);
+        return secureResponse(NextResponse.redirect(resetUrl));
     }
 
     const mfaRequired = user.mfaRequired === true;

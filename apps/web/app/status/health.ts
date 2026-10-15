@@ -180,6 +180,17 @@ export async function readApiHealth(
     const latencyMs = Date.now() - startedAt;
     const payload = normalizeHealthPayload(body);
 
+    if (response.ok && body && typeof body === 'object'
+      && (body as Record<string, unknown>).status === 'ok'
+      && (body as Record<string, unknown>).service === 'api-v2'
+      && Object.keys(body).every((key) => key === 'status' || key === 'service')) {
+      return {
+        status: 'reachable', label: 'API readiness passing',
+        detail: 'API v2 passed its database readiness check. This endpoint does not report cache, worker, or scheduling engine health.',
+        checkedAt, latencyMs, httpStatus: response.status, payload: null,
+      };
+    }
+
     if (payload) {
       const degraded = payload.status !== 'ok' || !response.ok;
       return {

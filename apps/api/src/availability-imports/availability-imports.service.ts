@@ -8,6 +8,7 @@ import {
     ServiceUnavailableException,
 } from '@nestjs/common';
 import { createCipheriv, createHash, randomBytes, randomUUID } from 'crypto';
+import { Prisma } from '@prisma/client';
 import { mkdir, open, readdir, stat, unlink } from 'fs/promises';
 import { basename, extname, join, resolve, sep } from 'path';
 
@@ -64,6 +65,7 @@ type ImportRow = {
 type CreditLedgerRow = {
     id: string;
     amount: number;
+    debtAmount?: number;
 };
 
 export type AvailabilityImportSettlement = {
@@ -391,6 +393,37 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
         return this.getImport(args.tenantId, row.id);
     }
 
+    async cancelImport(tenantId: string, requestedByUserId: string, id: string) {
+        const source = await runSerializableMutationWithRetry(() => this.tenantDb.withTenant(tenantId, async (tx: any) => {
+            await this.featureAccess.lockTenantInTransaction(tx, tenantId);
+            await tx.$queryRaw`SELECT "id" FROM "AvailabilityImportJob" WHERE "id" = ${id} AND "tenantId" = ${tenantId} FOR UPDATE`;
+            const row = await tx.availabilityImportJob.findFirst({ where: { id, tenantId } });
+            if (!row) throw new NotFoundException('Availability import not found.');
+            if (row.status === 'SUCCEEDED') throw new ConflictException('This import already completed. Review or discard its preview; cancellation cannot undo completion.');
+            if (['CANCELLED', 'FAILED', 'DEAD_LETTERED'].includes(row.status)) return null;
+            const ids = availabilityImportLedgerIds(id);
+            const debit = await tx.creditTransaction.findFirst({ where: { id: ids.debit, tenantId } });
+            if (!debit || !Number.isSafeInteger(debit.amount) || debit.amount >= 0) throw new ConflictException('The import charge could not be confirmed. No cancellation was recorded.');
+            const refund = await tx.creditTransaction.findFirst({ where: { id: ids.refund, tenantId } });
+            if (refund) throw new ConflictException('The import settlement changed. Refresh its status.');
+            const amount = -debit.amount;
+            const reason = `Availability PDF import refund (${id})`;
+            const settled = await tx.$queryRaw`SELECT * FROM public.settle_positive_credit_value(${tenantId}, ${amount}::integer, ${reason}, ${ids.refund})`;
+            if (settled.length !== 1 || Number(settled[0].creditedValue) !== amount || settled[0].replayed !== false) throw new ConflictException('The import refund could not be confirmed.');
+            const completedAt = new Date();
+            const updated = await tx.availabilityImportJob.updateMany({ where: { id, tenantId, status: row.status }, data: {
+                status: 'CANCELLED', parsedAvailability: Prisma.DbNull, resultErasedAt: completedAt, failureCode: null,
+                storageKey: null, encryptedSourcePayload: null, executionToken: null, executionLeaseUntil: null,
+                completedAt,
+            } });
+            if (updated.count !== 1) throw new ConflictException('The import changed while cancellation was being saved.');
+            await tx.auditLog.create({ data: { tenantId, userId: requestedByUserId, action: 'AVAILABILITY_IMPORT_CANCELLED', resource: 'AvailabilityImportJob', resourceId: id } });
+            return row.storageKey as string | null;
+        }, { isolationLevel: 'Serializable' }), { conflictMessage: 'The import changed while cancellation was being saved. Retry cancellation.' });
+        if (source) await this.safeUnlink(this.storagePath(source)).catch(() => undefined);
+        return this.getImport(tenantId, id);
+    }
+
     async getImport(tenantId: string, id: string) {
         return this.tenantDb.withTenant(tenantId, async (tx: any) => {
             const row = await tx.availabilityImportJob.findFirst({
@@ -403,7 +436,7 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
                     tenantId,
                     id: { in: [ledgerIds.debit, ledgerIds.refund] },
                 },
-                select: { id: true, amount: true },
+                select: { id: true, amount: true, debtAmount: true },
             }) as CreditLedgerRow[];
             return this.serialize(row, this.deriveSettlement(row, ledgerRows));
         });
@@ -482,8 +515,8 @@ export class AvailabilityImportsService implements OnModuleInit, OnModuleDestroy
         const chargedCredits = debit && Number.isSafeInteger(debit.amount) && debit.amount < 0
             ? -debit.amount
             : 0;
-        const refundedCredits = refund && Number.isSafeInteger(refund.amount) && refund.amount > 0
-            ? refund.amount
+        const refundedCredits = refund && Number.isSafeInteger(refund.amount) && Number.isSafeInteger(refund.debtAmount ?? 0) && refund.amount >= 0 && (refund.debtAmount ?? 0) <= 0
+            ? refund.amount - (refund.debtAmount ?? 0)
             : 0;
         const refundTerminal = row.status === 'FAILED'
             || row.status === 'DEAD_LETTERED'

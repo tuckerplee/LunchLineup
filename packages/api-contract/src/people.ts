@@ -27,6 +27,8 @@ export type AssignedRole = Static<typeof AssignedRoleSchema>;
  * projection exported by scheduling.ts.
  */
 export const StaffDirectoryMemberSchema = Type.Object({
+  suspendedAt: Type.Optional(Type.Union([InstantSchema, Type.Null()])),
+  identityVersion: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
   id: UuidSchema,
   name: Type.String({ minLength: 1, maxLength: 200 }),
   email: Type.String({ maxLength: 320 }),
@@ -132,6 +134,7 @@ export const StaffAvailabilityExceptionSchema = Type.Object({
 export type StaffAvailabilityException = Static<typeof StaffAvailabilityExceptionSchema>;
 
 export const StaffSchedulingProfileSchema = Type.Object({
+  version: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
   user: Type.Object({
     id: UuidSchema,
     name: Type.String({ minLength: 1, maxLength: 200 }),
@@ -145,6 +148,7 @@ export const StaffSchedulingProfileSchema = Type.Object({
 export type StaffSchedulingProfile = Static<typeof StaffSchedulingProfileSchema>;
 
 export const StaffSchedulingProfileRequestSchema = Type.Object({
+  expectedVersion: Type.Optional(Type.String({ pattern: '^[a-f0-9]{64}$' })),
   skills: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 50 }),
   availability: Type.Array(StaffAvailabilityWindowSchema, { maxItems: 21 }),
   // Optional during the additive rollout so an older browser replacing weekly
@@ -272,6 +276,35 @@ export const PeopleRouteProblemResponses = {
   404: ProblemDetailsSchema,
   409: ProblemDetailsSchema,
   422: ProblemDetailsSchema,
+  428: ProblemDetailsSchema,
   500: ProblemDetailsSchema,
   503: ProblemDetailsSchema,
 };
+
+export const StaffIdentityRequestSchema = Type.Object({
+  name: Type.String({ minLength: 1, maxLength: 200 }),
+  email: Type.String({ maxLength: 320 }),
+  username: Type.String({ maxLength: 32 }),
+  expectedVersion: Type.String({ pattern: '^[a-f0-9]{64}$' }),
+}, { additionalProperties: false });
+export type StaffIdentityRequest = Static<typeof StaffIdentityRequestSchema>;
+
+/** Account eligibility is separate from irreversible staff removal. */
+export const StaffLifecycleRequestSchema = Type.Object({
+  suspended: Type.Boolean(),
+  expectedSuspendedAt: Type.Union([InstantSchema, Type.Null()]),
+}, { additionalProperties: false });
+export type StaffLifecycleRequest = Static<typeof StaffLifecycleRequestSchema>;
+export const StaffLifecycleResponseSchema = Type.Object({
+  user: StaffDirectoryMemberSchema,
+  futureAssignmentCount: Type.Integer({ minimum: 0 }),
+  futureAssignments: Type.Array(Type.Object({
+    id: UuidSchema,
+    startTime: InstantSchema,
+    endTime: InstantSchema,
+    locationName: Type.String(),
+    timezone: Type.String(),
+    scheduleStatus: Type.Union([Type.String(), Type.Null()]),
+  }), { maxItems: 100 }),
+});
+export type StaffLifecycleResponse = Static<typeof StaffLifecycleResponseSchema>;

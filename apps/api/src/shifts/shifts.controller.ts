@@ -885,7 +885,7 @@ export class ShiftsController {
         if (!(schedule.startDate instanceof Date) || !(schedule.endDate instanceof Date)) {
             throw new BadRequestException('Schedule window is invalid.');
         }
-        if (startTime < schedule.startDate || endTime > schedule.endDate) {
+        if (startTime < schedule.startDate || startTime >= schedule.endDate || endTime <= startTime || endTime.getTime() - startTime.getTime() > 86_400_000) {
             throw new BadRequestException('Shift must stay within its schedule window.');
         }
     }
@@ -1059,7 +1059,7 @@ export class ShiftsController {
         timeZone: string,
     ): Promise<ShiftScheduleWindow> {
         const startDate = localDateBoundaryUtc(dateValueInTimeZone(shiftStart, timeZone), timeZone);
-        const endDate = nextLocalDateBoundaryUtc(new Date(shiftEnd.getTime() - 1), timeZone);
+        const endDate = nextLocalDateBoundaryUtc(shiftStart, timeZone);
 
         const existing = await tx.schedule.findFirst({
             where: {
@@ -1068,7 +1068,7 @@ export class ShiftsController {
                 status: 'DRAFT',
                 deletedAt: null,
                 startDate: { lte: shiftStart },
-                endDate: { gte: shiftEnd },
+                endDate: { gt: shiftStart },
             },
             orderBy: [{ startDate: 'desc' }, { endDate: 'asc' }],
             select: { id: true, locationId: true, status: true, startDate: true, endDate: true },
@@ -1091,7 +1091,7 @@ export class ShiftsController {
         if (overlappingSchedule) {
             await this.lockScheduleRowsForMutation(tx, tenantId, [overlappingSchedule.id]);
             if (overlappingSchedule.status === 'DRAFT') {
-                throw new BadRequestException('An existing draft schedule does not contain the full shift interval. Extend that draft before adding this shift.');
+                throw new BadRequestException('An existing draft does not own this shift start. Refresh the schedule before adding this shift.');
             }
             throw new BadRequestException('Published schedules are locked. Create an explicit draft schedule before adding shifts.');
         }

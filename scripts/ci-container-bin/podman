@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Every application QA container command uses the controller's explicit store.
+set -euo pipefail
+[[ "${CI_REPOSITORY:-}" == lunchlineup && "${CI_RUN_ID:-}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,159}$ ]] || exit 64
+root="/var/lib/custom-ci/runs/$CI_RUN_ID/tmp"
+[[ "${RUNNER_TEMP:-}" == "$root/job-tmp" && "${CONTAINERS_STORAGE_CONF:-}" == "$root/step-inputs/container-storage.conf" ]] || exit 64
+[[ -z "${DOCKER_HOST:-}" && -z "${CONTAINER_HOST:-}" ]] || exit 64
+for path in "$root/containers/graphroot" "$root/containers/runroot"; do
+  [[ -d "$path" && "$(realpath -e "$path")" == "$path" ]] || exit 64
+done
+runroot="$root/containers/runroot"
+if [[ "${LUNCHLINEUP_DEVELOPMENT_QA:-}" == 1 && -n "${LUNCHLINEUP_DEV_RUNTIME:-}" ]]; then
+  runtime=$LUNCHLINEUP_DEV_RUNTIME
+  [[ "$runtime" =~ ^/tmp/llr\.[A-Za-z0-9]{6}$ && -d "$runtime" && ! -L "$runtime" ]] || exit 64
+  [[ "$(stat -c %u "$runtime")" == "$UID" && "$(cat "$runtime/owner")" == "$CI_RUN_ID" ]] || exit 64
+  [[ -d "$runtime/containers" && "$(realpath -e "$runtime/containers")" == "$runtime/containers" ]] || exit 64
+  runroot="$runtime/containers"
+fi
+exec /usr/bin/podman --root "$root/containers/graphroot" --runroot "$runroot" "$@"

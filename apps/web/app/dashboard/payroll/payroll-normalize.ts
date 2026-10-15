@@ -37,7 +37,9 @@ export function normalizePayrollPolicy(value: unknown): PayrollPolicyVersion {
 
 export function normalizePayrollPolicyEnvelope(value: unknown): PayrollPolicyVersion | null {
   const source = record(value);
-  const candidate = source.data ?? source.policy ?? value;
+  // An explicit null means first-time setup, not a policy-shaped envelope.
+  const candidate = Object.prototype.hasOwnProperty.call(source, 'data') ? source.data
+    : Object.prototype.hasOwnProperty.call(source, 'policy') ? source.policy : value;
   return candidate === null || candidate === undefined ? null : normalizePayrollPolicy(candidate);
 }
 

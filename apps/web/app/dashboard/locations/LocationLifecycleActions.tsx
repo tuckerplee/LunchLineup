@@ -8,6 +8,7 @@ import { buildLocationUpdatePayload, persistedLocationFormValues } from './locat
 
 export type LocationSummary = {
     id: string;
+    updatedAt?: string;
     name: string;
     address?: string | null;
     timezone?: string | null;
@@ -24,14 +25,15 @@ type LocationLifecycleActionsProps = {
 };
 
 async function readMessage(response: Response, fallback: string): Promise<string> {
-    const payload = (await response.json().catch(() => ({}))) as { message?: unknown };
+    const payload = (await response.json().catch(() => ({}))) as { message?: unknown; detail?: unknown };
+    if (typeof payload.detail === 'string' && payload.detail.trim()) return payload.detail;
     return typeof payload.message === 'string' && payload.message.trim() ? payload.message : fallback;
 }
 
 function jsonWrite(method: 'PUT' | 'DELETE', payload?: unknown): RequestInit {
     return {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        headers: payload === undefined ? {} : { 'Content-Type': 'application/json' },
         ...(payload === undefined ? {} : { body: JSON.stringify(payload) }),
     };
 }
@@ -46,6 +48,7 @@ export function LocationLifecycleActions({
     onNotice,
 }: LocationLifecycleActionsProps) {
     const initialDrafts = persistedLocationFormValues(location);
+    const [expectedUpdatedAt, setExpectedUpdatedAt] = useState(location.updatedAt);
     const [mode, setMode] = useState<'idle' | 'edit' | 'delete'>('idle');
     const [name, setName] = useState(initialDrafts.name);
     const [address, setAddress] = useState(initialDrafts.address);
@@ -58,6 +61,7 @@ export function LocationLifecycleActions({
 
     const resetEditDrafts = (persisted: LocationSummary = location) => {
         const drafts = persistedLocationFormValues(persisted);
+        setExpectedUpdatedAt(persisted.updatedAt);
         setName(drafts.name);
         setAddress(drafts.address);
         setTimezone(drafts.timezone);
@@ -139,7 +143,7 @@ export function LocationLifecycleActions({
         try {
             const response = await fetchWithSession(
                 '/locations/' + encodeURIComponent(location.id),
-                jsonWrite('PUT', payload),
+                jsonWrite('PUT', { ...payload, expectedUpdatedAt }),
             );
             if (!response.ok) throw new Error(await readMessage(response, 'Unable to update location.'));
             const updated = (await response.json()) as LocationSummary;

@@ -63,7 +63,9 @@ function formatTime(dateIso: string, timeZone: string): string {
 function formatRange(startIso: string, endIso: string, timeZone: string): string {
   const start = formatTime(startIso, timeZone);
   const end = formatTime(endIso, timeZone);
-  return start && end ? `${start}-${end}` : '';
+  const day = new Intl.DateTimeFormat('en-CA', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
+  const nextDay = day.format(new Date(startIso)) !== day.format(new Date(endIso));
+  return start && end ? `${start}-${end}${nextDay ? ' (+1 day)' : ''}` : '';
 }
 
 function roleToPos(role: string | null | undefined): string {
@@ -466,6 +468,16 @@ function PrintScheduleView() {
         }
 
         @media print {
+          :global(.workspace-sidebar), :global(.workspace-topbar), :global(.workspace-mobile-navigation) {
+            display: none !important;
+          }
+          :global(.workspace-shell), :global(.workspace-main), :global(.workspace-content) {
+            display: block !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            min-height: 0 !important;
+          }
           html,
           body {
             margin: 0;

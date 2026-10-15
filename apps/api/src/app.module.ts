@@ -16,6 +16,7 @@ import { SchedulesController } from './schedules/schedules.controller';
 import { UsersController } from './users/users.controller';
 import { TimeCardsController } from './time-cards/time-cards.controller';
 import { MetricsController } from './common/metrics.controller';
+import { AccountDeletionReceiptController } from './admin/account-deletion-receipt.controller';
 import { AdminController } from './admin/admin.controller';
 import { SettingsController } from './settings/settings.controller';
 
@@ -64,6 +65,7 @@ import { TenantDeletionBillingReconcilerService } from './admin/tenant-deletion-
         TimeCardsController,
         MetricsController,
         AdminController,
+        AccountDeletionReceiptController,
         SettingsController,
     ],
     providers: [

@@ -72,11 +72,11 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     const removeRow = page.getByRole('row').filter({ hasText: 'Remove Candidate' });
     await removeRow.getByText('Remove Candidate', { exact: true }).click();
     const removeDrawer = page.getByRole('dialog', { name: 'Manage Remove Candidate' });
-    await removeDrawer.getByRole('button', { name: 'Remove' }).click();
-    const removeDialog = page.getByRole('alertdialog', { name: 'Remove Remove Candidate?' });
+    await removeDrawer.getByRole('button', { name: 'Remove permanently' }).click();
+    const removeDialog = page.getByRole('alertdialog', { name: 'Permanently remove Remove Candidate?' });
     await expect(removeDialog).toBeVisible();
     expect(removeRequests).toBe(0);
-    await removeDialog.getByRole('button', { name: 'Remove staff member' }).click();
+    await removeDialog.getByRole('button', { name: 'Remove permanently' }).click();
     await expect.poll(() => removeRequests).toBe(1);
     await expect(removeRow).toHaveCount(0);
   });
@@ -88,7 +88,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await expect(page.getByRole('button', { name: 'Create team member' })).toBeVisible();
     await expect(page.getByRole('columnheader', { name: 'Actions' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Reset PIN' })).toHaveCount(0);
-    await expect(page.getByRole('button', { name: 'Remove' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Remove permanently' })).toHaveCount(0);
 
     const staffRow = page.getByRole('row').filter({ hasText: 'Mock Staff' });
     await staffRow.getByText('Mock Staff', { exact: true }).click();
@@ -112,7 +112,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await datedException.getByLabel('Start').fill('12:00');
     await datedException.getByLabel('End').fill('14:00');
     await editor.getByRole('button', { name: 'Save profile' }).click();
-    await expect(editor.getByText('Scheduling profile saved.')).toBeVisible();
+    await expect(editor.getByText('Scheduling profile saved and confirmed.')).toBeVisible();
 
     await page.getByRole('dialog', { name: 'Manage Mock Staff' }).getByRole('button', { name: 'Close staff management' }).click();
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();

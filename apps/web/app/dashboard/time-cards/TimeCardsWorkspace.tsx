@@ -12,6 +12,7 @@ import {
     locationContinuation,
 } from './time-card-api';
 import { formatTimeCardTimestamp } from './time-card-format';
+import { isTimeCardValidationRejection } from './time-card-mutation-result';
 import {
     ClockInRequestKey,
     isClockInTargetExplicit,
@@ -132,13 +133,16 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
 
             setActiveCard(targetView === 'mine' || isTimeCardForEmployee(snapshot.activeCard, userId) ? snapshot.activeCard : null);
             setLoadedTargetKey(targetKey);
-            setCanStartNewTimeCard(snapshot.historyResponse.ok);
+
             if (snapshot.historyResponse.ok) {
                 const page = (await snapshot.historyResponse.json()) as TimeCardPage;
                 if (!cardsRequestGate.current.isLatest(ticket)) return;
-                const rows = Array.isArray(page.data) ? page.data : [];
+                if (!Array.isArray(page.data)) throw new Error('Time card history could not be verified.');
+                const rows = page.data;
+                setCanStartNewTimeCard(true);
                 setCards(targetView === 'team' ? rows.filter((card) => card.userId === userId) : rows);
                 setNextCardsCursor(page.pagination?.nextCursor ?? null);
+                return rows;
             } else {
                 setCards([]);
                 setError('Time card history and new clock-ins are unavailable. You can still clock out an open card.');
@@ -332,7 +336,21 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
             setNotes('');
             await loadCards(selectedUserId, view);
         } catch (saveError) {
-            setError(saveError instanceof Error ? saveError.message : 'Unable to clock out.');
+            if (isTimeCardValidationRejection(saveError)) {
+                // A rejected input did not commit; retain the draft and explain
+                // how to correct it. Lost responses still require readback.
+                setError(saveError.message);
+                return;
+            }
+            const refreshedCards = await loadCards(selectedUserId, view);
+            const confirmed = refreshedCards?.find((card) => card.id === activeCardForSelectedUser.id && card.clockOutAt);
+            if (confirmed) {
+                setNotice('Clock-out confirmed from the saved time card after refreshing.');
+                setBreakMinutes('30');
+                setNotes('');
+            } else {
+                setError('Clock-out could not be confirmed. Your entries have been retained. Check the current status before retrying.');
+            }
         } finally {
             setIsSaving(false);
         }
@@ -364,7 +382,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                                 ? 'Choose a person and location before any Team Time action.'
                                 : isLoading
                                     ? 'Loading time cards...'
-                                    : `${cards.length} card${cards.length === 1 ? '' : 's'} for ${selectedStaffName}`}
+                                    : !canStartNewTimeCard ? 'Time card count unavailable' : `${cards.length} card${cards.length === 1 ? '' : 's'} for ${selectedStaffName}`}
                         </p>
                     </div>
                     <button className="btn btn-secondary" onClick={() => void loadCards(selectedUserId, view)} disabled={!selectedUserId || isLoading || isSaving}>
@@ -503,11 +521,11 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 {error ? <div role="alert" style={{ fontSize: '0.83rem', color: '#cb3653' }}>{error}</div> : null}
                 {notice ? <div role="status" style={{ fontSize: '0.83rem', color: '#0f8c52' }}>{notice}</div> : null}
 
-                <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto', gap: '0.8rem', alignItems: 'center' }}>
-                    <div className="surface-muted" style={{ padding: '0.8rem' }}>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.8rem', alignItems: 'center' }}>
+                    <div className="surface-muted" style={{ padding: '0.8rem', flex: '1 1 240px', minWidth: 0, overflowWrap: 'anywhere' }}>
                         <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)', textTransform: 'uppercase', fontWeight: 800 }}>Current status</div>
                         <div style={{ marginTop: 4, fontSize: '1rem', fontWeight: 800, color: activeCardForSelectedUser ? '#166534' : 'var(--text-primary)' }}>
-                            {!selectedUserId ? 'Choose a team member to load status.' : !hasCurrentCards ? 'Loading status...' : activeCardForSelectedUser
+                            {!selectedUserId ? 'Choose a team member to load status.' : !hasCurrentCards ? (isCardsLoading ? 'Loading status...' : 'Status unavailable. Reload to confirm.') : activeCardForSelectedUser
                                 ? `Clocked in at ${formatTimeCardTimestamp(activeCardForSelectedUser.clockInAt, activeCardForSelectedUser.displayTimeZone)}`
                                 : 'Not clocked in'}
                         </div>
@@ -548,7 +566,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                 />
             ) : null}
 
-            <TimeCardHistory
+            {hasCurrentCards && canStartNewTimeCard ? <TimeCardHistory
                 cards={cards}
                 canManageTeam={canManageTeam}
                 canWriteTimeCards={canWriteTimeCards}
@@ -561,7 +579,7 @@ export function TimeCardsWorkspace({ canManageTeam, canReadLocations, canWriteTi
                     setCorrectingCard(card);
                 }}
                 onLoadEarlier={() => void loadEarlierCards()}
-            />
+            /> : <p role="status">{isCardsLoading ? 'Loading time card history…' : 'Time card history is unavailable. Refresh to verify saved records.'}</p>}
         </div>
     );
 }

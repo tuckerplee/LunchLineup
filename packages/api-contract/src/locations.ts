@@ -59,6 +59,7 @@ export const LocationCreateRequestSchema = Type.Object({
 export type LocationCreateRequest = Static<typeof LocationCreateRequestSchema>;
 
 export const LocationUpdateRequestSchema = Type.Object({
+  expectedUpdatedAt: Type.Optional(InstantSchema),
   name: Type.Optional(LocationNameSchema),
   address: Type.Optional(Type.Union([LocationAddressSchema, Type.Null()])),
   timezone: TimeZoneSchema,
@@ -76,6 +77,7 @@ export const LocationRouteProblemResponses = {
   404: ProblemDetailsSchema,
   409: ProblemDetailsSchema,
   422: ProblemDetailsSchema,
+  428: ProblemDetailsSchema,
   500: ProblemDetailsSchema,
   503: ProblemDetailsSchema,
 };
