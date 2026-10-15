@@ -6,6 +6,7 @@ This folder contains repo-level tests for the LunchLineup rebuild. These tests r
 
 - `README.md`: this test folder guide.
 - `fixtures/`: closed current-authority adapters for availability imports and payroll export, policy and period read source regressions.
+- `fixtures/production-env-fixture.mjs` (inside `fixtures/`): non-secret production env profile shared by the production env checker tests.
 - `hygiene/production-launch-env.test.mjs`: verifies public launch runtime env validation rejects smoke-only domains, test payment keys, insecure public URLs, unsafe public API/OIDC launch config, and local secret paths.
 - `hygiene/repository-hygiene.test.mjs`: checks secret-file hygiene, public backup exposure, generated artifact ignore rules, CI wiring, and documentation coverage.
 - `load/`: k6 small-business load smoke (login, schedule board reads, health) and run instructions; see `load/README.md`.

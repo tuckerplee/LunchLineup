@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +16,7 @@ export async function verifyResendReadiness({
   env,
   fetchImpl = globalThis.fetch,
   probeId = randomUUID(),
+  dryRun = false,
 } = {}) {
   if (!env || typeof env !== 'object') throw new Error('runtime_env_required');
   if (typeof fetchImpl !== 'function') throw new Error('fetch_unavailable');
@@ -42,6 +44,16 @@ export async function verifyResendReadiness({
     30_000,
     'resend_preflight_timeout_invalid',
   );
+
+  if (dryRun) {
+    return {
+      ok: true,
+      dryRun: true,
+      sent: false,
+      senderDomain,
+      releaseSha: sourceSha,
+    };
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(new Error('provider_timeout')), timeoutMs);
@@ -170,17 +182,50 @@ function boundedStatus(status) {
   return Number.isInteger(parsed) && parsed >= 400 && parsed <= 599 ? parsed : 'unknown';
 }
 
+function parseArguments(argv) {
+  const parsed = { envPath: null, to: null, releaseSha: null, checkOnly: false, help: false };
+  for (let index = 0; index < argv.length; index += 1) {
+    const argument = argv[index];
+    if (argument === '--help') parsed.help = true;
+    else if (argument === '--check-only') parsed.checkOnly = true;
+    else if (argument === '--to' || argument === '--release-sha') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) throw new Error('argument_value_required');
+      parsed[argument === '--to' ? 'to' : 'releaseSha'] = value;
+      index += 1;
+    } else if (argument.startsWith('--')) throw new Error('unknown_argument');
+    else if (!parsed.envPath) parsed.envPath = argument;
+    else throw new Error('unexpected_argument');
+  }
+  return parsed;
+}
+
+function currentGitSha() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '';
+  }
+}
+
 async function main() {
-  if (process.argv.includes('--help')) {
-    console.log('Usage: node scripts/verify-resend-readiness.mjs [runtime-env-file]');
-    console.log('Sends one idempotent acceptance probe to RESEND_PREFLIGHT_RECIPIENT.');
+  const args = parseArguments(process.argv.slice(2));
+  if (args.help) {
+    console.log('Usage: node scripts/verify-resend-readiness.mjs [runtime-env-file] [--to <recipient>] [--release-sha <sha>] [--check-only]');
+    console.log('Validates RESEND_API_KEY, RESEND_WEBHOOK_SECRET, EMAIL_FROM and the recipient, then sends ONE idempotent test email.');
+    console.log('  --to            recipient (overrides RESEND_PREFLIGHT_RECIPIENT); must be an address the owner controls');
+    console.log('  --release-sha   40-hex release id for the idempotency key (defaults to DEPLOY_RELEASE_SHA, then git HEAD)');
+    console.log('  --check-only    validate configuration and exit without calling Resend');
     return;
   }
-  const envPath = process.argv.slice(2).find((argument) => !argument.startsWith('--'));
   const collector = createErrorCollector();
-  const env = envPath ? parseEnvFile(envPath, collector) : process.env;
+  const baseEnv = args.envPath ? parseEnvFile(args.envPath, collector) : process.env;
   if (collector.errors.length > 0) throw new Error('runtime_env_invalid');
-  const result = await verifyResendReadiness({ env });
+  const env = { ...baseEnv };
+  if (args.to) env.RESEND_PREFLIGHT_RECIPIENT = args.to;
+  if (args.releaseSha) env.DEPLOY_RELEASE_SHA = args.releaseSha;
+  if (!String(env.DEPLOY_RELEASE_SHA ?? '').trim()) env.DEPLOY_RELEASE_SHA = currentGitSha();
+  const result = await verifyResendReadiness({ env, dryRun: args.checkOnly });
   console.log(JSON.stringify(result, null, 2));
 }
 

@@ -1,4 +1,4 @@
-import { isInternalBetaHostname, resolveCookieSecure } from '@lunchlineup/config';
+import { hasCurrentSelfServiceLegalApproval, isInternalBetaHostname, resolveCookieSecure } from '@lunchlineup/config';
 import crypto from 'node:crypto';
 import type { Request, Response } from 'express';
 
@@ -181,6 +181,51 @@ export function normalizeAllowedHost(value: string): string {
     }
 }
 
+const PUBLIC_SIGNUP_MODE_VALUES = new Set(['closed_beta', 'invite_only', 'open']);
+const SIGNUP_STRIPE_PRICE_KEYS = ['STRIPE_PRICE_STARTER', 'STRIPE_PRICE_GROWTH', 'STRIPE_PRICE_ENTERPRISE'] as const;
+
+/**
+ * Fails closed for self-service signup. closed_beta (or unset) needs nothing extra.
+ * invite_only and open require the recorded legal approval (packages/config
+ * legal-launch.json), billing prices, and mode-specific abuse controls. Stripe and
+ * Resend credentials are already mandatory for every production start above.
+ */
+export function validatePublicSignupConfiguration(
+    env: NodeJS.ProcessEnv,
+    errors: string[],
+    legalApproved: boolean = hasCurrentSelfServiceLegalApproval(),
+): void {
+    const mode = (env.PUBLIC_SIGNUP_MODE ?? '').trim().toLowerCase();
+    const webMode = (env.NEXT_PUBLIC_SIGNUP_MODE ?? '').trim().toLowerCase();
+    if (mode && !PUBLIC_SIGNUP_MODE_VALUES.has(mode)) {
+        errors.push('PUBLIC_SIGNUP_MODE must be one of closed_beta, invite_only, open.');
+        return;
+    }
+    if (webMode && !PUBLIC_SIGNUP_MODE_VALUES.has(webMode)) {
+        errors.push('NEXT_PUBLIC_SIGNUP_MODE must be one of closed_beta, invite_only, open.');
+        return;
+    }
+    if (mode && webMode && mode !== webMode) {
+        errors.push('PUBLIC_SIGNUP_MODE and NEXT_PUBLIC_SIGNUP_MODE must match.');
+    }
+    if (!mode || mode === 'closed_beta') return;
+
+    if (!legalApproved) {
+        errors.push(`PUBLIC_SIGNUP_MODE=${mode} requires current counsel approval recorded in the legal launch configuration.`);
+    }
+    for (const key of SIGNUP_STRIPE_PRICE_KEYS) {
+        if (!(env[key] ?? '').trim()) {
+            errors.push(`${key} must be configured when PUBLIC_SIGNUP_MODE=${mode}.`);
+        }
+    }
+    if (mode === 'open' && !(env.TURNSTILE_SECRET_KEY ?? '').trim()) {
+        errors.push('TURNSTILE_SECRET_KEY must be configured when PUBLIC_SIGNUP_MODE=open.');
+    }
+    if (mode === 'invite_only' && !(env.PUBLIC_SIGNUP_INVITE_CODES ?? '').split(',').some((code) => code.trim())) {
+        errors.push('PUBLIC_SIGNUP_INVITE_CODES must list at least one code when PUBLIC_SIGNUP_MODE=invite_only.');
+    }
+}
+
 export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.env): void {
     if (!isProduction(env)) return;
 
@@ -312,6 +357,7 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         }
     }
     validateCreditPackPriceConfiguration(env, errors);
+    validatePublicSignupConfiguration(env, errors);
 
     const metricsToken = env.METRICS_TOKEN?.trim();
     const metricsTokenFile = env.METRICS_TOKEN_FILE?.trim();

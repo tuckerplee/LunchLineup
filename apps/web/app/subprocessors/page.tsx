@@ -4,7 +4,7 @@ import { LegalContactLink, LegalPage } from '../legal-page';
 
 export const metadata: Metadata = {
   title: 'Subprocessors | LunchLineup',
-  description: 'LunchLineup public beta subprocessor list and DPA request contact.',
+  description: 'LunchLineup subprocessor list and DPA request contact.',
 };
 
 export default function SubprocessorsPage() {
@@ -13,7 +13,7 @@ export default function SubprocessorsPage() {
       title="Subprocessors"
       eyebrow="Data processing"
       updated={LEGAL_LAST_UPDATED}
-      summary="LunchLineup uses a small set of service providers to operate billing and transactional email for the public beta."
+      summary="LunchLineup uses a small set of service providers to operate billing and transactional email."
       sections={[
         {
           title: 'Current Subprocessors',

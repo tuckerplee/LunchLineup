@@ -1,0 +1,26 @@
+{
+    "_comment": "SINGLE SOURCE for LunchLineup public legal values and the legal approval switch. Every value starting with 'OWNER' is an unfilled owner input (see docs/launch/legal-review-packet.md). Contact emails come from NEXT_PUBLIC_*_CONTACT_EMAIL at build time. Never set approval.approved to true without a retained counsel approval record.",
+    "business": {
+        "legalEntityName": "OWNER: registered legal entity name",
+        "mailingAddress": "OWNER: registered business mailing address",
+        "governingLaw": "OWNER: governing law and venue (for example State of X, county Y)",
+        "effectiveDate": "OWNER: YYYY-MM-DD the approved Terms and Privacy take effect"
+    },
+    "documents": {
+        "terms": {
+            "version": "2026-07-09",
+            "lastUpdated": "July 9, 2026"
+        },
+        "privacy": {
+            "version": "2026-10-08",
+            "lastUpdated": "October 8, 2026"
+        }
+    },
+    "approval": {
+        "approved": false,
+        "approvedBy": null,
+        "approvedAt": null,
+        "termsVersion": null,
+        "privacyVersion": null
+    }
+}

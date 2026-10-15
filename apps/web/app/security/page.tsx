@@ -4,7 +4,7 @@ import { LegalContactLink, LegalPage } from '../legal-page';
 
 export const metadata: Metadata = {
   title: 'Security | LunchLineup',
-  description: 'LunchLineup security commitments for public beta customers.',
+  description: 'LunchLineup security commitments for customers.',
 };
 
 export default function SecurityPage() {

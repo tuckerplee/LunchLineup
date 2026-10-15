@@ -1,11 +1,11 @@
 import type { Metadata } from 'next';
 import { PUBLIC_LEGAL_MANIFEST } from '@lunchlineup/config';
 import { LEGAL_LAST_UPDATED, legalContacts, selfServiceTermsReadiness } from '../legal-config';
-import { LegalContactLink, LegalPage } from '../legal-page';
+import { LegalBusinessDetails, LegalContactLink, LegalPage } from '../legal-page';
 
 export const metadata: Metadata = {
   title: 'Terms | LunchLineup',
-  description: 'LunchLineup service terms for public beta customers.',
+  description: 'LunchLineup service terms.',
 };
 
 export default function TermsPage() {
@@ -15,16 +15,26 @@ export default function TermsPage() {
       eyebrow="Service agreement"
       updated={LEGAL_LAST_UPDATED}
       version={PUBLIC_LEGAL_MANIFEST.documents.terms.version}
-      summary="This checked-in beta draft is not counsel-approved and is not approved for invite-only or open self-service signup."
+      summary={
+        selfServiceTermsReadiness.counselApproved
+          ? 'These terms govern use of the LunchLineup service.'
+          : 'This checked-in draft is not counsel-approved and is not approved for invite-only or open self-service signup.'
+      }
       sections={[
         {
           title: 'Approval Status',
           body: (
             <p>
-              Status: {selfServiceTermsReadiness.status}. No approved self-service Terms version is recorded.
-              Production self-service signup remains closed until counsel approves versioned Terms and a future code change updates the launch gate.
+              Status: {selfServiceTermsReadiness.status}.{' '}
+              {selfServiceTermsReadiness.counselApproved
+                ? `Approved Terms version: ${selfServiceTermsReadiness.version}.`
+                : 'No approved self-service Terms version is recorded. Production self-service signup remains closed until counsel approves versioned Terms and the owner records that approval in the shared legal launch configuration.'}
             </p>
           ),
+        },
+        {
+          title: 'Contracting Entity and Governing Law',
+          body: <LegalBusinessDetails />,
         },
         {
           title: 'Using the Service',
@@ -66,10 +76,10 @@ export default function TermsPage() {
           ),
         },
         {
-          title: 'Availability and Beta Changes',
+          title: 'Availability and Service Changes',
           body: (
             <p>
-              Public beta features may change as operational controls, integrations, and pricing mature. The status page reports current
+              Features may change as operational controls, integrations, and pricing mature. The status page reports current
               service health. Time cards are operational records, not payroll-final records; customer payroll systems remain authoritative
               for wages, taxes, and filings. LunchLineup may suspend access when needed to protect customers, investigate abuse, comply
               with legal obligations, or prevent service harm.
