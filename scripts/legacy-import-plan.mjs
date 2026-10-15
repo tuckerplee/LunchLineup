@@ -1,4 +1,5 @@
-import crypto from 'node:crypto';
+import { sha, stable, fail, record, exactKeys, id, text, alias } from './legacy-import-common.mjs';
+import { ADAPTER_VERSION_V2, SOURCE_FORMAT_V2, V2_LIMIT_MAXIMA, V2_ARRAYS, V2_SOURCE_KEYS, V2_DESCRIPTOR_OPTIONAL, planAccountsV2, planLegacyData } from './legacy-import-v2.mjs';
 
 const Category = Object.fromEntries(['AUTH','ADMIN','USERS','LOCATIONS','SHIFTS','SCHEDULES','LUNCH_BREAKS','NOTIFICATIONS','BILLING','SETTINGS'].map((key) => [key,key]));
 const LegacyRole = Object.fromEntries(['SUPER_ADMIN','ADMIN','MANAGER','STAFF'].map((key) => [key,key]));
@@ -90,32 +91,14 @@ export const ROLE_DEFINITIONS = [
 
 
 export const ADAPTER_VERSION = 'legacy-combined-v1';
+export { ADAPTER_VERSION_V2 };
 export const DEFAULT_LIMITS = Object.freeze({ maxBytes: 16777216, maxRowsPerArray: 10000, maxTotalRows: 20000, maxStringLength: 2048, usernameCollisionLimit: 100, transactionTimeoutMs: 10000, transactionMaxWaitMs: 5000, maxDurationMs: 120000 });
-const sha = (value) => crypto.createHash('sha256').update(value).digest('hex');
-const stable = (value) => JSON.stringify(value);
 export const ROLE_PLAN_SHA256 = sha(stable({ permissions: PERMISSIONS, roles: ROLE_DEFINITIONS }));
 const HEX = /^[0-9a-f]{64}(?![\s\S])/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}(?![\s\S])/i;
-function fail(message) { throw new Error(`Legacy import plan refused: ${message}`); }
-function record(value, label) { if (!value || typeof value !== 'object' || Array.isArray(value)) fail(`${label} must be an object`); return value; }
-function exactKeys(value, keys, label) { record(value, label); if (Object.keys(value).sort().join('|') !== [...keys].sort().join('|')) fail(`${label} has unsupported or missing fields`); }
 function digest(value, label) { if (typeof value !== 'string' || !HEX.test(value)) fail(`${label} must be lowercase SHA-256`); return value; }
 export function freezePlan(value) { if (value && typeof value === 'object') { for (const child of Object.values(value)) freezePlan(child); Object.freeze(value); } return value; }
 freezePlan(PERMISSIONS); freezePlan(ROLE_DEFINITIONS);
-function id(value, label) {
-  const raw = typeof value === 'number' && Number.isInteger(value) ? String(value) : value;
-  if (typeof raw !== 'string' || !/^[1-9][0-9]{0,9}(?![\s\S])/.test(raw) || BigInt(raw) > 4294967295n) fail(`${label} must be a canonical positive UINT32`);
-  return raw;
-}
-function text(value, label, max, { nullable = false } = {}) {
-  if (nullable && (value === null || value === undefined || value === '')) return null;
-  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value)) fail(`${label} is invalid or exceeds its bound`);
-  return value;
-}
-function alias(row, first, second, fallback) {
-  if (row[first] !== undefined && row[second] !== undefined && row[first] !== row[second]) fail(`conflicting ${first}/${second} aliases`);
-  return row[first] ?? row[second] ?? fallback;
-}
 function username(value, fallback) { return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '.').replace(/^\.+|\.+$/g, '').slice(0,48) || fallback; }
 function parsed(bytes, label) {
   try { return record(JSON.parse(Buffer.from(bytes).toString('utf8').replace(/^\uFEFF/, '')), label); }
@@ -125,10 +108,12 @@ export function buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDe
   digest(expectedDescriptorSha256, 'external descriptor approval'); digest(expectedSourceSha256, 'external source approval');
   const approvalPlanSha256 = sha(descriptorBytes);
   if (approvalPlanSha256 !== expectedDescriptorSha256) fail('descriptor does not match external approval');
-  if (Buffer.byteLength(sourceBytes) > DEFAULT_LIMITS.maxBytes || Buffer.byteLength(descriptorBytes) > 1048576) fail('input exceeds policy byte bound');
+  if (Buffer.byteLength(sourceBytes) > V2_LIMIT_MAXIMA.maxBytes || Buffer.byteLength(descriptorBytes) > 1048576) fail('input exceeds policy byte bound');
   const descriptor = parsed(descriptorBytes, 'descriptor');
-  exactKeys(descriptor, ['schemaVersion','namespace','targetGenerationId','sourceSha256','adapterVersion','rolePlanSha256','companySlugs','timezone','limits'], 'descriptor');
-  if (descriptor.schemaVersion !== 1 || descriptor.adapterVersion !== ADAPTER_VERSION) fail('unsupported descriptor or adapter version');
+  const v2 = descriptor.adapterVersion === ADAPTER_VERSION_V2;
+  const descriptorKeys = ['schemaVersion','namespace','targetGenerationId','sourceSha256','adapterVersion','rolePlanSha256','companySlugs','timezone','limits'];
+  exactKeys(descriptor, v2 ? [...descriptorKeys, ...V2_DESCRIPTOR_OPTIONAL.filter((key) => key in descriptor)] : descriptorKeys, 'descriptor');
+  if (descriptor.schemaVersion !== 1 || (descriptor.adapterVersion !== ADAPTER_VERSION && !v2)) fail('unsupported descriptor or adapter version');
   if (typeof descriptor.namespace !== 'string' || !/^[a-z][a-z0-9._:-]{2,127}(?![\s\S])/.test(descriptor.namespace)) fail('namespace must be explicitly selected and canonical');
   if (typeof descriptor.targetGenerationId !== 'string' || !UUID.test(descriptor.targetGenerationId)) fail('target generation must be an admitted UUID');
   let timezone;
@@ -137,13 +122,19 @@ export function buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDe
   const sourceSha256 = sha(sourceBytes);
   if (digest(descriptor.sourceSha256, 'descriptor source digest') !== sourceSha256 || expectedSourceSha256 !== sourceSha256) fail('source does not match admitted digest');
   if (descriptor.rolePlanSha256 !== ROLE_PLAN_SHA256) fail('role plan does not match supported fixed plan');
-  exactKeys(descriptor.limits, Object.keys(DEFAULT_LIMITS), 'limits');
-  for (const [key, max] of Object.entries(DEFAULT_LIMITS)) if (!Number.isSafeInteger(descriptor.limits[key]) || descriptor.limits[key] < 1 || descriptor.limits[key] > max) fail(`limit ${key} is outside policy bounds`);
+  const maxima = v2 ? V2_LIMIT_MAXIMA : DEFAULT_LIMITS;
+  exactKeys(descriptor.limits, Object.keys(maxima), 'limits');
+  for (const [key, max] of Object.entries(maxima)) if (!Number.isSafeInteger(descriptor.limits[key]) || descriptor.limits[key] < 1 || descriptor.limits[key] > max) fail(`limit ${key} is outside policy bounds`);
   const limits = { ...descriptor.limits };
   if (Buffer.byteLength(sourceBytes) > limits.maxBytes) fail('source exceeds admitted byte bound');
   const source = parsed(sourceBytes, 'source');
-  const arrays = ['companies','stores','users','staff','user_company_roles','user_store_roles'];
-  exactKeys(source, arrays, 'combined export');
+  const arrays = v2 ? V2_ARRAYS : ['companies','stores','users','staff','user_company_roles','user_store_roles'];
+  exactKeys(source, v2 ? V2_SOURCE_KEYS : arrays, 'combined export');
+  if (v2) {
+    if (source.format !== SOURCE_FORMAT_V2) fail('combined export format does not match the v2 adapter');
+    record(source.skipped_tables, 'skipped_tables');
+    for (const [table, count] of Object.entries(source.skipped_tables)) if (!/^[a-z_]{1,64}$/.test(table) || !Number.isSafeInteger(count) || count < 0) fail('skipped_tables is malformed');
+  }
   let total = 0;
   for (const key of arrays) { if (!Array.isArray(source[key]) || source[key].length > limits.maxRowsPerArray) fail(`${key} must be an in-bound array`); total += source[key].length; }
   if (total > limits.maxTotalRows) fail('export exceeds admitted total row bound');
@@ -164,11 +155,30 @@ export function buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDe
   function company(row, label) { const value = id(row.company_id, `${label}.company_id`); if (!companyIds.has(value)) fail(`${label} has unknown company`); return value; }
   const storeRows = rows('stores');
   const storeCompanies = new Map();
+  const storeTimezones = {};
+  if (v2 && descriptor.storeTimezones !== undefined) {
+    record(descriptor.storeTimezones, 'storeTimezones');
+    for (const [storeId, zone] of Object.entries(descriptor.storeTimezones)) {
+      if (!storeRows.some((entry) => entry.id === storeId)) fail('storeTimezones names an unknown store');
+      let resolved; try { resolved = new Intl.DateTimeFormat('en-US', { timeZone: text(zone, 'store timezone', 100) }).resolvedOptions().timeZone; } catch { fail('store timezone must be an admitted IANA identifier'); }
+      if (resolved !== zone) fail('store timezone must use its canonical IANA identifier');
+      storeTimezones[storeId] = zone;
+    }
+  }
+  const templateCompanies = [];
+  if (v2 && descriptor.scheduleTemplateCompanyIds !== undefined) {
+    if (!Array.isArray(descriptor.scheduleTemplateCompanyIds)) fail('scheduleTemplateCompanyIds must be an array');
+    for (const value of descriptor.scheduleTemplateCompanyIds) { const companyId = id(value, 'scheduleTemplateCompanyIds'); if (!companyIds.has(companyId) || templateCompanies.includes(companyId)) fail('scheduleTemplateCompanyIds must name distinct known companies'); templateCompanies.push(companyId); }
+  }
   const locations = storeRows.map(({row,id: storeId}) => {
     const companyId = company(row,'store'); storeCompanies.set(storeId, companyId);
-    return { id:storeId, companyId, name:text(row.name,'store name',limits.maxStringLength), address:text(row.location,'store location',limits.maxStringLength,{nullable:true}), timezone, rowSha256:sha(stable(row)) };
+    return { id:storeId, companyId, name:text(row.name,'store name',limits.maxStringLength), address:text(row.location,'store location',limits.maxStringLength,{nullable:true}), timezone: storeTimezones[storeId] ?? timezone, rowSha256:sha(stable(row)) };
   });
   const userRows = rows('users'); const userCompanies = new Map(userRows.map(({row,id: userId}) => [userId,company(row,'user')]));
+  let accounts; let staffRefs = null; let accountSummary = null;
+  if (v2) {
+    ({ accounts, staffRefs, summary: accountSummary } = planAccountsV2({ userRows, staffRows: rows('staff'), source, userCompanies, storeCompanies, companyIds, limits }));
+  } else {
   const roleKeys = new Set(); const rolesByUser = new Map();
   for (const [array,association] of [['user_company_roles','company_id'],['user_store_roles','store_id']]) {
     for (const row of source[array]) {
@@ -180,7 +190,7 @@ export function buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDe
       const list=rolesByUser.get(userId)??[]; list.push(row.role); rolesByUser.set(userId,list);
     }
   }
-  const accounts = userRows.map(({row,id:userId}) => {
+  accounts = userRows.map(({row,id:userId}) => {
     const roles=rolesByUser.get(userId)??[]; const role=roles.includes('super_admin')||roles.includes('company_admin')?'ADMIN':roles.includes('store')||roles.includes('schedule')?'MANAGER':'STAFF';
     const sourceUsername=text(alias(row,'username_plain','username',`legacy.user.${userId}`),'username',limits.maxStringLength);
     const name=text(alias(row,'name_plain','name',sourceUsername),'user name',limits.maxStringLength);
@@ -196,5 +206,7 @@ export function buildLegacyImportPlan(sourceBytes, descriptorBytes, { expectedDe
     const name=text(alias(row,'name_plain','name',`Staff ${staffId}`),'staff name',limits.maxStringLength);
     accounts.push({id:staffId,companyId,sourceType:'staff',name,usernameBase:username(name,`staff.${staffId}`),email:null,passwordHash:null,role:Number(row.is_admin)===1?'ADMIN':'STAFF',note:'',rowSha256:sha(stable(row))});
   }
-  return freezePlan({ namespace:descriptor.namespace,generationUuid:descriptor.targetGenerationId.toLowerCase(),sourceSha256,adapterVersion:ADAPTER_VERSION,rolePlanSha256:ROLE_PLAN_SHA256,approvalPlanSha256,timezone,limits,counts:{company:companies.length,location:locations.length,user:userRows.length,staff:accounts.length-userRows.length},companies,locations,accounts });
+  }
+  const data = v2 ? planLegacyData({ sourceSha256, source, companies, locations, accounts, staffRefs, accountSummary, timezone, storeTimezones, templateCompanies, limits }) : null;
+  return freezePlan({ namespace:descriptor.namespace,generationUuid:descriptor.targetGenerationId.toLowerCase(),sourceSha256,adapterVersion:v2?ADAPTER_VERSION_V2:ADAPTER_VERSION,rolePlanSha256:ROLE_PLAN_SHA256,approvalPlanSha256,timezone,limits,counts:{company:companies.length,location:locations.length,user:userRows.length,staff:accounts.length-userRows.length},companies,locations,accounts,data });
 }

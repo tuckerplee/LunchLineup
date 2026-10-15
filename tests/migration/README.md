@@ -5,6 +5,8 @@
 - `README.md`: this migration test folder guide.
 - `database-role-timeout.test.mjs`: mocked child-process credential timeout propagation and ordinary credential-result provisioning regressions.
 - `legacy-import-receipt-schema.test.mjs`: static private receipt ABI, immutability, ownership, permission and planner-bound regressions; does not execute SQL.
+- `legacy-import-v2-plan.test.mjs`: pure `legacy-combined-v2` planner and exporter-helper regressions (clock/shift parsing, DST conversion, password-hash classification, account linkage, overlap and break policy, descriptor options); needs no Docker.
+- `legacy-mysql-roundtrip.integration.test.mjs`: Docker rehearsal of the production cutover path (synthetic legacy MariaDB -> `export-legacy-mysql.mjs` -> fresh migrated PostgreSQL -> importer) with SQL count reconciliation, semantic spot checks, idempotent replay and edit-survival; skips when Docker or the exporter dependency is unavailable.
 - `legacy-import-retry.test.mjs`: actual pure legacy planner/executor and report regressions over a closed staged adapter, including replay, lost acknowledgment and cleanup.
 - `native-billing-ledger-window.test.mjs`: injected-client grant/read/revoke window, target identity, settlement, error precedence and unknown-commit regressions without a database.
 - `native-billing-source-binding.test.mjs`: canonical native source/target receipt and bounded private-file snapshot regressions; metadata never grants admission.

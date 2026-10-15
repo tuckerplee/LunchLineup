@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks';
 import { PERMISSIONS, ROLE_DEFINITIONS } from './legacy-import-plan.mjs';
+import { deterministicId } from './legacy-import-v2.mjs';
 
 function refuse(message) { throw new Error(`Legacy import conflict: ${message}`); }
 function one(rows, label, optional = false) {
@@ -144,6 +145,130 @@ async function readback(tx, plan, check) {
   }
   return { namespace: plan.namespace, targetGenerationId: plan.generationUuid, sourceSha256: plan.sourceSha256, counts: { ...plan.counts }, companies: [...companies.entries()].map(([companyId, receipt]) => ({ companyId, tenantId: receipt.target_tenant_id })), rows: report };
 }
+// ---- schedule / shift / break / configuration data (legacy-combined-v2) ----------
+// Every row has an id derived from (namespace, tenant, kind, legacy key), written
+// create-only (ON CONFLICT DO NOTHING). Replaying the same approved plan before
+// the run is COMPLETE therefore fills gaps without touching rows the application
+// has since edited; once COMPLETE nothing is recreated (deleted rows stay deleted).
+const idOf = (plan, tenantId, kind, key) => deterministicId(plan.namespace, tenantId, kind, key);
+function resolveRefs(value, maps) {
+  if (Array.isArray(value)) return value.map((item) => resolveRefs(item, maps));
+  if (value && typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length === 1 && keys[0] === '$account') return maps.accounts.get(value.$account) ?? null;
+    if (keys.length === 1 && keys[0] === '$location') return maps.locations.get(value.$location) ?? null;
+    return Object.fromEntries(Object.entries(value).map(([key, child]) => [key, resolveRefs(child, maps)]));
+  }
+  return value;
+}
+async function companyMaps(tx, plan, companyId, check) {
+  await admittedRun(tx, plan, false);
+  const company = await companyReceipt(tx, plan, companyId);
+  await tenant(tx, company, check);
+  const rows = await tx.$queryRaw`SELECT source_type, legacy_id, target_id FROM legacy_import.entity WHERE namespace = ${plan.namespace} AND company_id = ${companyId}::bigint`;
+  const maps = { tenantId: company.target_tenant_id, accounts: new Map(), locations: new Map() };
+  for (const row of rows) {
+    if (row.source_type === 'location') maps.locations.set(String(row.legacy_id), row.target_id);
+    else maps.accounts.set(`${row.source_type}:${row.legacy_id}`, row.target_id);
+  }
+  return maps;
+}
+async function openForWrites(tx, plan, companyId, check) {
+  const run = await admittedRun(tx, plan, false);
+  const company = await companyReceipt(tx, plan, companyId);
+  await tenant(tx, company, check);
+  if (run.status === 'COMPLETE') return false;
+  await tenant(tx, company, check, { writing: true });
+  return true;
+}
+function chunks(list, size) { const result = []; for (let index = 0; index < list.length; index += size) result.push(list.slice(index, index + size)); return result; }
+async function importData(db, plan, check) {
+  for (const entry of plan.data.companies) {
+    const maps = await transaction(db, plan, check, (tx) => companyMaps(tx, plan, entry.companyId, check));
+    const tenantId = maps.tenantId;
+    for (const batch of entry.batches) {
+      await transaction(db, plan, check, async (tx) => {
+        if (!(await openForWrites(tx, plan, entry.companyId, check))) return;
+        const locationId = maps.locations.get(batch.locationLegacyId);
+        if (!locationId) refuse('mapped location receipt is absent for schedule data');
+        const scheduleId = idOf(plan, tenantId, 'schedule', batch.scheduleKey);
+        // The overlap/exclusion constraints are deferrable, so ON CONFLICT cannot arbitrate:
+        // existence is decided under the tenant lifecycle lock + namespace advisory lock instead.
+        if (batch.createSchedule && !(await tx.schedule.findUnique({ where: { id: scheduleId }, select: { id: true } }))) {
+          await tx.schedule.create({ data: { id: scheduleId, tenantId, locationId, startDate: new Date(batch.startTime), endDate: new Date(batch.endTime), status: 'PUBLISHED', publishedAt: new Date(batch.startTime), revision: 0 } });
+          check();
+        }
+        const shiftIds = batch.shifts.map((shift) => idOf(plan, tenantId, 'shift', shift.legacyId));
+        const existing = new Set((await tx.shift.findMany({ where: { tenantId, id: { in: shiftIds } }, select: { id: true } })).map((row) => row.id));
+        check();
+        // Breaks belong to the freshly created shift only; an existing shift may
+        // have had its breaks edited or removed by the application since.
+        const fresh = batch.shifts.filter((shift, index) => !existing.has(shiftIds[index]));
+        const shiftData = fresh.map((shift) => {
+          let userId = null;
+          if (shift.accountKey) { userId = maps.accounts.get(shift.accountKey) ?? null; if (!userId) refuse('mapped account receipt is absent for schedule data'); }
+          return { id: idOf(plan, tenantId, 'shift', shift.legacyId), tenantId, locationId, scheduleId, userId, startTime: new Date(shift.startTime), endTime: new Date(shift.endTime), role: shift.role, notes: shift.notes };
+        });
+        if (shiftData.length) await tx.shift.createMany({ data: shiftData });
+        check();
+        const breakData = fresh.flatMap((shift) => shift.breaks.map((item) => ({ id: idOf(plan, tenantId, 'break', `${shift.legacyId}:${item.slot}`), shiftId: idOf(plan, tenantId, 'shift', shift.legacyId), type: item.type, startTime: new Date(item.startTime), endTime: new Date(item.endTime), paid: item.paid })));
+        if (breakData.length) await tx.break.createMany({ data: breakData });
+        check();
+      });
+    }
+    for (const skills of chunks(entry.skills, 500)) {
+      await transaction(db, plan, check, async (tx) => {
+        if (!(await openForWrites(tx, plan, entry.companyId, check))) return;
+        const data = skills.map((item) => {
+          const userId = maps.accounts.get(item.accountKey);
+          if (!userId) refuse('mapped account receipt is absent for staff skill data');
+          return { id: idOf(plan, tenantId, 'skill', `${item.accountKey}|${item.skill}`), tenantId, userId, skill: item.skill };
+        });
+        await tx.staffSkill.createMany({ data, skipDuplicates: true });
+        check();
+      });
+    }
+    await transaction(db, plan, check, async (tx) => {
+      if (!(await openForWrites(tx, plan, entry.companyId, check))) return;
+      const documents = [...entry.documents, entry.provenance];
+      await tx.tenantSetting.createMany({ data: documents.map((doc) => ({ id: idOf(plan, tenantId, 'setting', doc.key), tenantId, key: doc.key, value: resolveRefs(doc.value, maps) })), skipDuplicates: true });
+      check();
+    });
+  }
+}
+const PRESENCE_SQL = {
+  Schedule: 'SELECT count(*) AS n FROM public."Schedule" WHERE "id" = ANY($1::text[]) AND "tenantId" = $2',
+  Shift: 'SELECT count(*) AS n FROM public."Shift" WHERE "id" = ANY($1::text[]) AND "tenantId" = $2',
+  Break: 'SELECT count(*) AS n FROM public."Break" b JOIN public."Shift" s ON s."id" = b."shiftId" WHERE b."id" = ANY($1::text[]) AND s."tenantId" = $2',
+  StaffSkill: 'SELECT count(*) AS n FROM public."StaffSkill" WHERE "id" = ANY($1::text[]) AND "tenantId" = $2',
+  TenantSetting: 'SELECT count(*) AS n FROM public."TenantSetting" WHERE "id" = ANY($1::text[]) AND "tenantId" = $2',
+};
+async function dataReadback(db, plan, check) {
+  const companies = [];
+  for (const entry of plan.data.companies) {
+    const maps = await transaction(db, plan, check, (tx) => companyMaps(tx, plan, entry.companyId, check));
+    const tenantId = maps.tenantId;
+    const present = async (kind, keys, model) => {
+      let total = 0;
+      for (const part of chunks(keys.map((key) => idOf(plan, tenantId, kind, key)), 5000)) {
+        total += await transaction(db, plan, check, async (tx) => Number((await tx.$queryRawUnsafe(PRESENCE_SQL[model], part, tenantId))[0].n));
+      }
+      return total;
+    };
+    const scheduleKeys = [...new Set(entry.batches.map((batch) => batch.scheduleKey))];
+    const shiftKeys = entry.batches.flatMap((batch) => batch.shifts.map((shift) => shift.legacyId));
+    const breakKeys = entry.batches.flatMap((batch) => batch.shifts.flatMap((shift) => shift.breaks.map((item) => `${shift.legacyId}:${item.slot}`)));
+    const skillKeys = entry.skills.map((item) => `${item.accountKey}|${item.skill}`);
+    const documentKeys = [...entry.documents.map((doc) => doc.key), entry.provenance.key];
+    companies.push({
+      companyId: entry.companyId, tenantId,
+      planned: { schedules: scheduleKeys.length, shifts: shiftKeys.length, breaks: breakKeys.length, skills: skillKeys.length, documents: documentKeys.length },
+      present: { schedules: await present('schedule', scheduleKeys, 'Schedule'), shifts: await present('shift', shiftKeys, 'Shift'), breaks: await present('break', breakKeys, 'Break'), skills: await present('skill', skillKeys, 'StaffSkill'), documents: await present('setting', documentKeys, 'TenantSetting') },
+    });
+  }
+  return { summary: plan.data.summary, companies };
+}
+
 export async function executeLegacyImport(plan, { db }) {
   const check = budget(plan);
   await transaction(db, plan, check, (tx) => admittedRun(tx, plan, true));
@@ -178,16 +303,19 @@ export async function executeLegacyImport(plan, { db }) {
       }
       const roles = await assertRolePlan(tx, company, check);
       const username = await allocateUsername(tx, plan, company.target_tenant_id, source.usernameBase, check);
-      const row = await tx.user.create({ data: { tenantId: company.target_tenant_id, username, email: source.email, name: source.name, role: source.role, passwordHash: source.passwordHash, pinResetRequired: false } });
+      const row = await tx.user.create({ data: { tenantId: company.target_tenant_id, username, email: source.email, name: source.name, role: source.role, passwordHash: source.passwordHash, pinResetRequired: source.pinResetRequired === true } });
       check();
       await tx.roleAssignment.create({ data: { tenantId: company.target_tenant_id, userId: row.id, roleId: roles[source.role] } });
       check();
       await insertEntity(tx, plan, company, source, row.id, roles[source.role]);
     });
   }
+  if (plan.data) await importData(db, plan, check);
+  const dataReport = plan.data ? await dataReadback(db, plan, check) : null;
   return transaction(db, plan, check, async (tx) => {
     const run = await admittedRun(tx, plan, false);
     const report = await readback(tx, plan, check);
+    if (dataReport) report.data = dataReport;
     if (run.status !== 'COMPLETE') {
       await tx.$executeRaw`UPDATE legacy_import.run SET status = 'COMPLETE', completed_at = pg_catalog.clock_timestamp() WHERE namespace = ${plan.namespace} AND status = 'INITIALIZED'`;
     }
@@ -196,8 +324,10 @@ export async function executeLegacyImport(plan, { db }) {
 }
 export async function readLegacyImportReport(plan, { db }) {
   const check = budget(plan);
-  return transaction(db, plan, check, async (tx) => {
+  const report = await transaction(db, plan, check, async (tx) => {
     await admittedRun(tx, plan, false);
     return readback(tx, plan, check);
   });
+  if (plan.data) report.data = await dataReadback(db, plan, check);
+  return report;
 }

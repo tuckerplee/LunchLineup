@@ -1,0 +1,13 @@
+{
+  "name": "lunchlineup-legacy-export",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Isolated dependency set for scripts/export-legacy-mysql.mjs (read-only MySQL/MariaDB exporter). Not part of the application workspace.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "mysql2": "3.24.6"
+  }
+}
