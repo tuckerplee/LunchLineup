@@ -181,6 +181,12 @@ sys.stdout.write("\t".join(str(m[k]) for k in ("artifactName", "imageRef", "loca
     [[ "$loaded" == "$id" ]] || fail "$name: loaded image ID $loaded != metadata $id"
     if [[ "$ref" == lunchlineup-internal-ci/* ]]; then
       "$DOCKER" tag "$id" "$target"
+    else
+      # Digest-pinned third-party images load unnamed; name them so compose's
+      # name@digest reference resolves locally with --pull never.
+      base="${ref%@*}"
+      [[ "${base##*/}" == *:* ]] || base="$base:pinned"
+      "$DOCKER" tag "$id" "$base"
     fi
     IMAGE_RECORDS+="$name"$'\t'"$target"$'\t'"$id"$'\t'"$sha"$'\t'"${prev:-none}"$'\n'
     count=$((count + 1))
