@@ -118,6 +118,7 @@ lunchlineup_pitr_base_backup_last_success_timestamp_seconds $(date -u +%s)
 # TYPE lunchlineup_pitr_object_lock_retention_days gauge
 lunchlineup_pitr_object_lock_retention_days ${PITR_OBJECT_LOCK_RETENTION_DAYS}
 EOF
+  chmod 0644 "${TMP_METRICS}"
   mv "${TMP_METRICS}" "${PITR_METRICS_FILE}"
 fi
 

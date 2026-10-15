@@ -335,7 +335,10 @@ test('Postgres only acknowledges production WAL after encrypted remote durabilit
   assert.match(config, /^archive_mode = off$/m);
   assert.match(config, /archive_command = 'sh \/opt\/lunchlineup\/pitr\/archive-wal\.sh/);
   assert.match(config, /^archive_timeout = 60s$/m);
-  assert.match(archive, /--post-file="\$\{SOURCE_PATH\}"/);
+  // BusyBox wget truncates --post-file at the first NUL byte, so the segment is streamed with nc.
+  assert.doesNotMatch(archive, /--output-document|--tries=1|command -v wget/);
+  assert.match(archive, /Content-Length: %s/);
+  assert.match(archive, /\| nc -w "\$\{PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS\}" pitr-wal-provider 8080/);
   assert.match(archive, /PITR_WAL_PROVIDER_URL.*http:\/\/pitr-wal-provider:8080/);
   assert.match(archive, /pitr_wal_provider_uploaded/);
   assert.match(archive, /ARCHIVE_VERSION="\$\{provider_version#version_id=\}"/);
@@ -347,6 +350,8 @@ test('Postgres only acknowledges production WAL after encrypted remote durabilit
   assert.match(providerServer, /PITR_WAL_PROVIDER_MAX_BYTES/);
   assert.match(providerServer, /PITR_WAL_PROVIDER_REQUEST_TIMEOUT_MS/);
   assert.match(providerServer, /PITR_PROVIDER_OWNERSHIP_MODE: 'container-job'/);
+  // nc in the postgres image half-closes after the body; the server must still answer.
+  assert.match(providerServer, /server\.httpAllowHalfOpen = true;/);
   assert.match(providerServer, /exitAfterResponse\(response, 70\)/);
   assert.match(providerServer, /content-length/);
   assert.match(common, /pitr_remote_stat_json/);
@@ -645,7 +650,8 @@ esac
     const recoveryConfig = readFileSync(join(restoreData, 'postgresql.auto.conf'), 'utf8');
     assert.match(recoveryConfig, new RegExp(`^recovery_target_timeline = '${timeline}'$`, 'm'));
     assert.match(recoveryConfig, /^recovery_target_action = 'pause'$/m);
-    assert.match(recoveryConfig, /^recovery_target_time = '2026-07-16T12:30:00Z'$/m);
+    // PostgreSQL rejects the RFC3339 'Z' suffix in recovery_target_time; it must be written as +00.
+    assert.match(recoveryConfig, /^recovery_target_time = '2026-07-16 12:30:00\+00'$/m);
     assert.ok(existsSync(join(restoreData, 'recovery.signal')));
     const source = readFileSync(join(restoreData, 'lunchlineup-pitr-restore-source'), 'utf8');
     assert.match(source, new RegExp(`^recovery_target_timeline=${timeline}$`, 'm'));

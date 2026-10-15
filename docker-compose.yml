@@ -875,6 +875,9 @@ services:
       - CANDIDATE_RELEASE_PATH=${CANDIDATE_RELEASE_PATH:-}
       - CANDIDATE_SOURCE_SHA=${CANDIDATE_SOURCE_SHA:-}
       - CANDIDATE_IMAGE_DIGEST=${CANDIDATE_IMAGE_DIGEST:-}
+      # The container is read-only and runs as root with no writable HOME, so
+      # gpg cannot create ~/.gnupg; use the /tmp tmpfs for its home and agent socket.
+      - GNUPGHOME=/tmp
       - AWS_SHARED_CREDENTIALS_FILE=/run/secrets/backup-offsite/aws-credentials
       - AWS_CONFIG_FILE=/run/secrets/backup-offsite/aws-config
       - RCLONE_CONFIG=/run/secrets/backup-offsite/rclone.conf

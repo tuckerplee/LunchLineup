@@ -39,7 +39,10 @@ Example installation after the first successful artifact deploy:
 install -d -m 0750 /etc/lunchlineup
 install -d -m 0750 /run/secrets
 install -d -o lunchlineup -g lunchlineup -m 0750 /var/lib/lunchlineup
-install -d -m 0755 /var/lib/node_exporter/textfile_collector
+# Writers differ per file: root (backup, PITR base backup), uid 70 (Postgres WAL-archive metric) and
+# lunchlineup (probe/retention). Use a sticky shared directory so each can write its own file;
+# the files themselves are made 0644 so unprivileged node-exporter can read them.
+install -d -m 1777 /var/lib/node_exporter/textfile_collector
 install -o root -g lunchlineup -m 0640 infrastructure/systemd/lunchlineup-backup.env.example /etc/lunchlineup/backup.env
 install -o root -g lunchlineup -m 0640 /secure/source/backup_key /run/secrets/backup_key
 install -m 0644 infrastructure/systemd/lunchlineup-backup.service /etc/systemd/system/lunchlineup-backup.service

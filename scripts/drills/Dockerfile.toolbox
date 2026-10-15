@@ -1,0 +1,19 @@
+# Local drill only: runs the real migrations, scripts/restore.sh and the data
+# checks. It is the release backup image (bash, gpg, zstd, psql, node) plus the
+# release migrate image's production node_modules (prisma, pg) and this
+# checkout's scripts/ and Prisma schema, so the code under test is the branch.
+ARG BACKUP_IMAGE=ll-drill-backup:local
+ARG MIGRATE_IMAGE=lunchlineup/migrate:local
+FROM ${MIGRATE_IMAGE} AS deps
+
+FROM ${BACKUP_IMAGE}
+USER root
+RUN apk add --no-cache openssl libc6-compat
+WORKDIR /app
+COPY --from=deps /app/node_modules /app/node_modules
+COPY package.json package-lock.json ./
+COPY packages/db/prisma packages/db/prisma
+COPY scripts scripts
+COPY scripts/drills scripts/drills
+ENTRYPOINT []
+CMD ["sleep", "infinity"]
