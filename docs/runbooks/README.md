@@ -16,6 +16,7 @@
 - `high-error-rate.md`: high error-rate response.
 - `incident-response.md`: cross-service incident ownership, severity, status communication, evidence, and closure contract.
 - `internal-beta-operations.md`: VM107 exact-candidate launch, verification, encrypted restore drill, resource-saving pause/resume, and fail-closed readiness contract.
+- `pilot-tenant-provisioning.md`: idempotent dry-run-first provisioning of the VM107 pilot tenant (paid-plan TRIAL, internal-beta grant, locations, owner, employees with temporary PINs) from the api-v2 image.
 - `internal-beta-hands-on-signoff.md`: exact-SHA automated interaction-evidence boundary and independent unfamiliar-evaluator Calendar, touch, Lunch, and Time Cards checklist.
 - `mfa-encryption-key-rotation.md`: managed current/previous MFA key overlap, transactional re-encryption, and fail-closed old-key removal verification.
 - `outbound-delivery.md`: transactional and staff-invitation email, notification outbox, tenant webhook replay, provider suppression, privacy erasure, and dead-letter response.
