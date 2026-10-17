@@ -821,14 +821,14 @@ test('first registry bootstrap imports a retained current-live bundle only after
 
 test('release registry external commands and retained HTTPS fetches are bounded', () => {
   const script = readFileSync(join(root, 'scripts/release-bundle-registry.mjs'), 'utf8');
-  const owner = readFileSync(join(root, 'scripts/backup.sh'), 'utf8');
+  const owner = readFileSync(join(root, 'scripts/provider-command-owner.sh'), 'utf8');
   assert.match(script, /RELEASE_REGISTRY_COMMAND_TIMEOUT_MS/);
-  assert.match(script, /runBoundedProviderCommand/);
-  assert.doesNotMatch(script, /spawnSync\(/);
   assert.match(owner, /kill -TERM/);
   assert.match(owner, /kill -KILL/);
   assert.match(owner, /reason="output-cap"/);
   assert.match(owner, /reason="download-cap"/);
+  assert.match(script, /runBoundedProviderCommand/);
+  assert.doesNotMatch(script, /spawnSync\(/);
   assert.match(script, /AbortController/);
   assert.match(script, /RELEASE_REGISTRY_FETCH_MAX_BYTES/);
   assert.match(script, /remote state is unknown and requires authenticated readback reconciliation/);

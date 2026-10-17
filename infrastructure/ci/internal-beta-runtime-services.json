@@ -39,17 +39,9 @@
       "state": "running",
       "requiredOnVm107": true
     },
-    "pitr-wal-provider": {
-      "state": "running",
-      "requiredOnVm107": true
-    },
     "api-v2": {
       "state": "healthy",
       "requiredOnVm107": true
-    },
-    "pitr-lifecycle-audit": {
-      "state": "one-shot",
-      "requiredOnVm107": false
     },
     "postgres": {
       "state": "healthy",
@@ -69,50 +61,6 @@
     },
     "autoheal": {
       "state": "running",
-      "requiredOnVm107": true
-    },
-    "prometheus": {
-      "state": "healthy",
-      "requiredOnVm107": true
-    },
-    "backup": {
-      "state": "one-shot",
-      "requiredOnVm107": false
-    },
-    "pitr-base-backup": {
-      "state": "one-shot",
-      "requiredOnVm107": false
-    },
-    "pitr-restore": {
-      "state": "one-shot",
-      "requiredOnVm107": false
-    },
-    "alertmanager": {
-      "state": "healthy",
-      "requiredOnVm107": true
-    },
-    "node-exporter": {
-      "state": "running",
-      "requiredOnVm107": true
-    },
-    "loki": {
-      "state": "healthy",
-      "requiredOnVm107": true
-    },
-    "promtail": {
-      "state": "running",
-      "requiredOnVm107": true
-    },
-    "otel-collector": {
-      "state": "running",
-      "requiredOnVm107": true
-    },
-    "tempo": {
-      "state": "healthy",
-      "requiredOnVm107": true
-    },
-    "grafana": {
-      "state": "healthy",
       "requiredOnVm107": true
     }
   }

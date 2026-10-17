@@ -33,7 +33,6 @@ case "$1 $2" in
     echo "\${STUB_LOADED_ID:-${ID}}"; exit 0;;
   "volume inspect") [[ "\${STUB_VOLUME:-1}" == 1 ]] && exit 0 || exit 1;;
 esac
-if [[ "$1" == compose && "$*" == *" backup"* ]]; then echo "\${STUB_BACKUP_OUT:-}"; exit 0; fi
 cat >/dev/null 2>&1 || true
 exit 0
 `);
@@ -50,8 +49,6 @@ function runBash(snippet, { bin, env = {} } = {}) {
 }
 
 function runtimeEnv(overrides = {}, { drop = [] } = {}) {
-  const creds = tmp('rel-creds-');
-  writeFileSync(join(creds, 'aws-credentials'), 'x');
   const base = {
     APP_ORIGIN: 'https://lunchlineup.com',
     NEXT_PUBLIC_APP_ORIGIN: 'https://lunchlineup.com',
@@ -68,8 +65,6 @@ function runtimeEnv(overrides = {}, { drop = [] } = {}) {
     NODE_ENV: 'production',
     MIGRATION_PRODUCTION_CONFIRM: 'apply-lunchlineup-production-migrations',
     DEPLOY_RELEASE_SHA: SHA,
-    BACKUP_OFFSITE_URI: 's3://ll-backups/prod/db',
-    BACKUP_OFFSITE_CREDENTIALS_DIR: toPosix(creds),
     IMAGE_TAG: 'rel1',
     ...overrides,
   };
@@ -95,13 +90,13 @@ test('safety rules present; forbidden operations and signing machinery absent', 
   assert.match(source, /vm107-launch\.hold/);
   assert.doesNotMatch(source, /--build\b|docker system prune|volume rm|volume prune|compose down|git clean|git reset/);
   assert.doesNotMatch(source, /cosign|sigstore|oidc|attestation|admission window|expir/i);
-  assert.doesNotMatch(source, /I_ACCEPT_NO_BACKUP.*production|OFFSITE_ENABLED=false/);
+  assert.doesNotMatch(source, /I_ACCEPT_NO_BACKUP|OFFSITE_ENABLED|compose[^\n]* run [^\n]* backup/);
 });
 
 test('pilot target keeps the pilot constants', { skip: !bash }, () => {
-  const r = runBash('configure_target pilot; echo "$APP_HOST $BIND_IP $EXPECTED_HOSTNAME $OVERLAY $OFFSITE_REQUIRED"');
+  const r = runBash('configure_target pilot; echo "$APP_HOST $BIND_IP $EXPECTED_HOSTNAME $OVERLAY"');
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), 'dev.lunchlineup.com 10.231.10.108 lunchlineup-dev infrastructure/development-admission/compose.private-proxy.yml false');
+  assert.equal(r.stdout.trim(), 'dev.lunchlineup.com 10.231.10.108 lunchlineup-dev infrastructure/development-admission/compose.private-proxy.yml');
 });
 
 test('unknown target and missing/public production bind IP are refused', { skip: !bash }, () => {
@@ -126,8 +121,6 @@ for (const [name, overrides, drop, pattern] of [
   ['development data target', { DATA_TARGET_ENV: 'development' }, [], /DATA_TARGET_ENV/],
   ['missing migration confirm', { MIGRATION_PRODUCTION_CONFIRM: 'yes' }, [], /MIGRATION_PRODUCTION_CONFIRM/],
   ['bad release sha', { DEPLOY_RELEASE_SHA: 'local' }, [], /DEPLOY_RELEASE_SHA/],
-  ['missing offsite uri', {}, ['BACKUP_OFFSITE_URI'], /BACKUP_OFFSITE_URI/],
-  ['local offsite uri', { BACKUP_OFFSITE_URI: '/var/backups' }, [], /BACKUP_OFFSITE_URI must be s3/],
   ['local image tag', { IMAGE_TAG: 'local' }, [], /IMAGE_TAG/],
 ]) {
   test(`production runtime env refuses: ${name}`, { skip: !bash }, () => {
@@ -137,9 +130,11 @@ for (const [name, overrides, drop, pattern] of [
   });
 }
 
-test('production refuses missing offsite credentials directory', { skip: !bash }, () => {
-  const file = runtimeEnv({ BACKUP_OFFSITE_CREDENTIALS_DIR: '/nonexistent/creds' });
-  assert.match(checkProd(file).stderr, /offsite credentials directory/);
+test('production runtime env needs no backup or offsite keys (backups are an estate system)', { skip: !bash }, () => {
+  const file = runtimeEnv({ SOME_UNRELATED_KEY: 'x' });
+  const r = checkProd(file);
+  assert.equal(r.status, 0, r.stderr);
+  assert.doesNotMatch(source, /BACKUP_OFFSITE|offsite|backup_ok|ensure_volume_ownership|grafana|promtail/);
 });
 
 test('pilot runtime env still refuses production hosts and accepts its own', { skip: !bash }, () => {
@@ -210,47 +205,22 @@ test('load_images refuses sha256 and image-ID mismatches', { skip: !bash }, () =
   assert.match(r2.stderr, /loaded image ID/);
 });
 
-const GOOD_PROOF = 'backup_ok backup_file=/backups/x checksum_file=/backups/x.sha256 backup_sha256=abc size_bytes=1 offsite_uri=s3://ll-backups/prod/db/ offsite_version=v1 checksum_version=v2 provider_principal=arn provider_observed_at=t expiry_owner=lifecycle completed_at=t';
-
-test('production pre-deploy backup requires an immutable offsite version and records the proof', { skip: !bash }, () => {
-  const { bin } = stubBin();
-  const run = (out, extra = {}) => runBash('configure_target production; RUNTIME_ENV=/dev/null; pre_deploy_backup; echo "PROOF=$BACKUP_PROOF_LINE"',
-    { bin, env: { ...prodEnv, STUB_BACKUP_OUT: out, ...extra } });
-  const ok = run(GOOD_PROOF);
-  assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /PROOF=backup_ok .*offsite_version=v1/);
-  assert.match(run(GOOD_PROOF.replace('offsite_version=v1', 'offsite_version=none')).stderr, /lacks an immutable offsite/);
-  assert.match(run(GOOD_PROOF.replace('offsite_uri=s3://ll-backups/prod/db/', 'offsite_uri=none')).stderr, /lacks an immutable offsite/);
-  assert.match(run('encrypted but no proof line').stderr, /no backup_ok proof/);
-});
-
-test('production ignores the no-backup override; pilot honours it', { skip: !bash }, () => {
-  const { bin, log } = stubBin();
-  const env = { ...prodEnv, PILOT_SKIP_BACKUP: 'I_ACCEPT_NO_BACKUP', STUB_BACKUP_OUT: 'no proof' };
-  const prod = runBash('configure_target production; RUNTIME_ENV=/dev/null; pre_deploy_backup', { bin, env });
-  assert.notEqual(prod.status, 0);
-  assert.match(readFileSync(log, 'utf8'), /backup/);
-  const pilot = runBash('configure_target pilot; RUNTIME_ENV=/dev/null; pre_deploy_backup', { bin, env });
-  assert.equal(pilot.status, 0, pilot.stderr);
-  assert.match(pilot.stdout, /skipped by explicit operator override/);
-});
-
 test('production with no postgres volume refuses unless this is declared the first install', { skip: !bash }, () => {
   const { bin } = stubBin();
   const env = { ...prodEnv, STUB_VOLUME: '0' };
-  const snippet = 'configure_target production; RUNTIME_ENV=/dev/null; pre_deploy_backup';
+  const snippet = 'configure_target production; RUNTIME_ENV=/dev/null; check_existing_database';
   assert.match(runBash(snippet, { bin, env }).stderr, /no postgres volume on production/);
   assert.equal(runBash(snippet, { bin, env: { ...env, DEPLOY_FIRST_INSTALL: 'yes' } }).status, 0);
 });
 
-test('receipt records sha, image IDs, migrations, backup proof and timestamps', { skip: !bash }, () => {
+test('receipt records sha, image IDs, migrations and timestamps and no backup proof', { skip: !bash }, () => {
   const app = tmp('rel-app-');
   mkdirSync(join(app, 'packages/db/prisma/migrations/20260101_init'), { recursive: true });
   writeFileSync(join(app, 'packages/db/prisma/migrations/20260101_init/migration.sql'), 'select 1;');
   writeFileSync(join(app, 'packages/db/prisma/migrations/20261004_extra.sql'), 'select 1;');
   const state = tmp('rel-state-');
   const r = runBash(`configure_target production; APP_DIR="${toPosix(app)}"; STATE_DIR="${toPosix(state)}"; IMAGE_TAG_VALUE=rel1; RELEASE_SHA_VALUE=${SHA}; ` +
-    `IMAGE_RECORDS=$'web\\tlunchlineup/web:rel1\\t${ID}\\t${'d'.repeat(64)}\\t${PREV}\\n'; BACKUP_PROOF_LINE='${GOOD_PROOF}'; begin_receipt; write_receipt ok; echo "$RECEIPT_DIR"`,
+    `IMAGE_RECORDS=$'web\\tlunchlineup/web:rel1\\t${ID}\\t${'d'.repeat(64)}\\t${PREV}\\n'; begin_receipt; write_receipt ok; echo "$RECEIPT_DIR"`,
     { env: prodEnv });
   assert.equal(r.status, 0, r.stderr);
   const doc = JSON.parse(readFileSync(join(r.stdout.trim(), 'receipt.json'), 'utf8'));
@@ -261,7 +231,7 @@ test('receipt records sha, image IDs, migrations, backup proof and timestamps', 
   assert.equal(doc.images[0].imageId, ID);
   assert.equal(doc.images[0].previousImageId, PREV);
   assert.ok(doc.migrations.includes('20260101_init') && doc.migrations.includes('20261004_extra.sql'));
-  assert.match(doc.preDeployBackup, /^backup_ok /);
+  assert.equal(doc.preDeployBackup, undefined);
   assert.match(doc.startedAt, /^\d{4}-\d\d-\d\dT.*Z$/);
   assert.match(doc.finishedAt, /^\d{4}-\d\d-\d\dT.*Z$/);
 });
@@ -285,13 +255,13 @@ test('rollback_images retags the recorded previous IDs and refuses missing ones'
   assert.match(gone.stderr, /no longer present/);
 });
 
-test('production overlay and Caddyfile: private bind, trusted CT940 only, no dev/beta host, no local-only backup', () => {
+test('production overlay and Caddyfile: private bind, trusted CT940 only, no dev/beta host, estate metrics gateway, no backup service', () => {
   const overlay = readFileSync(join(root, 'infrastructure/production/compose.production-proxy.yml'), 'utf8');
   assert.match(overlay, /PROXY_HTTP_BIND/);
   assert.match(overlay, /CADDY_SITE_ADDRESSES: http:\/\/lunchlineup\.com\s/);
   assert.match(overlay, /Caddyfile\.production/);
-  assert.match(overlay, /BACKUP_OFFSITE_ENABLED: "true"/);
-  assert.doesNotMatch(overlay, /OFFSITE_ENABLED: "false"|dev\.lunchlineup|beta\.lunchlineup|0\.0\.0\.0/);
+  assert.match(overlay, /target: 9180\s+published: "9180"/);
+  assert.doesNotMatch(overlay, /backup|OFFSITE|dev\.lunchlineup|beta\.lunchlineup|0\.0\.0\.0/);
   const caddy = readFileSync(join(root, 'infrastructure/caddy/Caddyfile.production'), 'utf8');
   assert.match(caddy, /trusted_proxies static 10\.231\.10\.30\/32/);
   assert.match(caddy, /trusted_proxies_strict/);

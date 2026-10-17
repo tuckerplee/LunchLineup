@@ -18,19 +18,8 @@ const capabilityLockedServices = [
   'engine',
   'worker',
   'pdf-parser',
-  'pitr-wal-provider',
-  'pitr-lifecycle-audit',
   'control',
   'autoheal',
-  'prometheus',
-  'backup',
-  'alertmanager',
-  'node-exporter',
-  'loki',
-  'promtail',
-  'otel-collector',
-  'tempo',
-  'grafana',
 ];
 
 const startupCapabilityServices = [
@@ -38,8 +27,6 @@ const startupCapabilityServices = [
   'postgres',
   'redis',
   'rabbitmq',
-  'pitr-base-backup',
-  'pitr-restore',
 ];
 
 test('production services use read-only roots and deny privilege escalation', () => {

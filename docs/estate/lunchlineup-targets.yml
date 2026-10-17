@@ -1,0 +1,61 @@
+# LunchLineup scrape targets for the ESTATE Prometheus (prometheus.int.tuckerl.ee).
+#
+# estate-infra copies this into the estate Prometheus configuration, for example
+# with `scrape_config_files: [ lunchlineup-targets.yml ]` (Prometheus 2.43+), or
+# pastes the scrape_configs entry into prometheus.yml. The application ships no
+# Prometheus of its own.
+#
+# One job, `lunchlineup`, scrapes the token-protected metrics gateway that the
+# VM's proxy container publishes on the VM private IP (docker-compose.yml proxy
+# service, Caddyfile.private-pilot / Caddyfile.production listener :9180):
+#
+#   http://10.231.10.108:9180/metrics/<service>
+#
+# <service> is one of api, api-v2, worker, engine, webhook-replay, control. The
+# gateway forwards each path to the service's own /metrics endpoint inside the
+# stack, so nothing else on the VM needs to be reachable. Every request must carry
+#
+#   Authorization: Bearer <contents of the app's metrics_token secret>
+#
+# The secret is the file named by METRICS_TOKEN_FILE in the VM's runtime env
+# (/opt/lunchlineup-secrets/secrets/metrics_token on VM107). Put a copy of those
+# bytes (mode 0640, readable by the prometheus user, no trailing text) at the
+# path below. The gateway answers 401 without the token and 404 for unknown paths.
+#
+# Host metrics (job `node`, the VM's node_exporter plus its textfile collector for
+# the public web probe and retention timers) are scraped by the estate's normal
+# node_exporter job; lunchlineup-rules.yml expects instance 10.231.10.108:<port>.
+scrape_configs:
+  - job_name: lunchlineup
+    scrape_interval: 15s
+    scrape_timeout: 10s
+    scheme: http
+    body_size_limit: 8MB
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/secrets/lunchlineup_metrics_token
+    static_configs:
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: api
+          __metrics_path__: /metrics/api
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: api-v2
+          __metrics_path__: /metrics/api-v2
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: worker
+          __metrics_path__: /metrics/worker
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: engine
+          __metrics_path__: /metrics/engine
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: webhook-replay
+          __metrics_path__: /metrics/webhook-replay
+      - targets: ['10.231.10.108:9180']
+        labels:
+          service: control
+          __metrics_path__: /metrics/control

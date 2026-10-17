@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -7,46 +7,38 @@ import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 
-test('Compose keeps trace ingestion internal and wires all application tracers', () => {
+test('Compose runs no tracing, log-storage or log-shipping services and sets no OTLP endpoint', () => {
   const compose = read('docker-compose.yml');
-  assert.match(compose, /otel-collector:[\s\S]*Dockerfile\.otel-collector/);
-  assert.match(compose, /telemetry:[\s\S]*internal: true/);
-  assert.doesNotMatch(compose.match(/  otel-collector:[\s\S]*?(?=\n  [a-z-]+:|\nnetworks:)/)?.[0] ?? '', /\n\s+ports:/);
 
-  for (const serviceName of ['lunchlineup-api', 'lunchlineup-worker', 'lunchlineup-engine']) {
-    const source = serviceName === 'lunchlineup-api'
-      ? `${read('apps/api/src/common/telemetry.ts')}\n${compose}`
-      : serviceName === 'lunchlineup-worker'
-        ? `${read('apps/worker/main.py')}\n${compose}`
-        : `${read('apps/engine/main.py')}\n${compose}`;
-    assert.match(source, /OTEL_EXPORTER_OTLP_TRACES_ENDPOINT/);
-    assert.match(source, new RegExp(serviceName));
+  for (const removed of ['otel-collector', 'tempo', 'loki', 'promtail']) {
+    assert.doesNotMatch(compose, new RegExp(`^  ${removed}:`, 'm'));
+    assert.ok(!compose.includes(removed), `docker-compose.yml must not mention ${removed}`);
+  }
+  assert.doesNotMatch(compose, /OTEL_EXPORTER_OTLP/);
+  assert.doesNotMatch(compose, /^  telemetry:/m);
+  for (const removedFile of [
+    'infrastructure/otel-collector/otel-collector-config.yml',
+    'infrastructure/tempo/tempo-config.yml',
+    'infrastructure/loki/loki-config.yml',
+    'infrastructure/promtail/promtail-config.yml',
+    'infrastructure/docker/Dockerfile.otel-collector',
+  ]) {
+    assert.ok(!existsSync(join(root, removedFile)), `${removedFile} must stay removed`);
   }
 });
 
-test('collector applies memory protection, batching, queued retry, and exports to Tempo', () => {
-  const config = read('infrastructure/otel-collector/otel-collector-config.yml');
-  assert.match(config, /memory_limiter:/);
-  assert.match(config, /batch:/);
-  assert.match(config, /sending_queue:[\s\S]*enabled: true/);
-  assert.match(config, /retry_on_failure:[\s\S]*enabled: true/);
-  assert.match(config, /endpoint: http:\/\/tempo:4318/);
-  assert.match(config, /receivers: \[otlp\][\s\S]*processors: \[memory_limiter, batch\][\s\S]*exporters: \[otlphttp\/tempo\]/);
+test('application containers log to the Docker json-file driver that the estate Alloy shipper reads', () => {
+  const compose = read('docker-compose.yml');
+
+  assert.match(compose, /x-locked-runtime: &locked-runtime[\s\S]*?logging:\s*\n\s*driver: json-file/);
+  assert.match(compose, /x-read-only-runtime: &read-only-runtime[\s\S]*?logging:\s*\n\s*driver: json-file/);
+  assert.doesNotMatch(compose, /driver: (?:loki|fluentd|gelf|syslog|awslogs)/);
 });
 
-test('the Promtail compatibility service ships Docker JSON logs through the clean OTel collector', () => {
-  const compose = read('docker-compose.yml');
-  const config = read('infrastructure/promtail/promtail-config.yml');
-  const block = compose.match(/  promtail:[\s\S]*?(?=\n  [a-z-]+:|\nnetworks:)/)?.[0] ?? '';
-
-  assert.match(block, /\$\{IMAGE_PREFIX:-lunchlineup\}\/otel-collector:\$\{IMAGE_TAG:-local\}/);
-  assert.match(block, /\/var\/lib\/docker\/containers:\/var\/lib\/docker\/containers:ro/);
-  assert.doesNotMatch(block, /docker\.sock/);
-  assert.doesNotMatch(block, /\n\s+ports:/);
-  assert.match(config, /\/var\/lib\/docker\/containers\/\*\/\*-json\.log/);
-  assert.match(config, /storage: file_storage/);
-  assert.match(config, /endpoint: http:\/\/loki:3100\/otlp/);
-  assert.match(config, /receivers: \[filelog\/docker\][\s\S]*exporters: \[otlphttp\/loki\]/);
+test('tracers stay dormant without an OTLP endpoint (tracing is not an estate system)', () => {
+  assert.match(read('apps/api/src/common/telemetry.ts'), /if \(!endpoint\) \{\s*return null;/);
+  assert.match(read('apps/worker/src/telemetry.py'), /OTEL_EXPORTER_OTLP_TRACES_ENDPOINT/);
+  assert.match(read('apps/engine/src/telemetry.py'), /OTEL_EXPORTER_OTLP_TRACES_ENDPOINT/);
 });
 
 test('Python tracers propagate W3C context across the worker-engine gRPC boundary', () => {

@@ -6,28 +6,13 @@ import test from 'node:test';
 const root = resolve(import.meta.dirname, '../..');
 const read = (path) => readFileSync(join(root, path), 'utf8');
 
-test('Prometheus runtime glob sees production groups but not promtool fixtures', () => {
-  const compose = read('docker-compose.yml');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
-  const alertsDir = join(root, 'infrastructure/prometheus/alerts');
-  const fixtureDir = join(alertsDir, 'tests');
+test('estate rule bundle ships the production groups and promtool fixtures separately', () => {
+  const rules = read('docs/estate/lunchlineup-rules.yml');
+  const fixtureDir = join(root, 'docs/estate/tests');
 
-  assert.match(
-    compose,
-    /\.\/infrastructure\/prometheus\/alerts:\/etc\/prometheus\/alerts:ro/,
-  );
-  assert.match(prometheus, /rule_files:\s*\n\s*- \/etc\/prometheus\/alerts\/\*\.yml/);
-
-  const runtimeFiles = readdirSync(alertsDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.yml'))
-    .map((entry) => entry.name)
-    .sort();
-  assert.deepEqual(runtimeFiles, ['lunchlineup.yml', 'tenant-deletion-billing.yml']);
-  for (const file of runtimeFiles) {
-    const rules = read(`infrastructure/prometheus/alerts/${file}`);
-    assert.match(rules, /^groups:/m, `${file} must contain production rule groups`);
-    assert.doesNotMatch(rules, /^(?:rule_files|tests):/m, `${file} must not contain promtool fixture syntax`);
-  }
+  assert.match(rules, /^groups:/m);
+  assert.match(rules, /- name: lunchlineup\.tenant-deletion-billing/);
+  assert.doesNotMatch(rules, /^(?:rule_files|tests):/m, 'rules must not contain promtool fixture syntax');
 
   const fixtureFiles = readdirSync(fixtureDir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith('.test.yml'))
@@ -35,17 +20,17 @@ test('Prometheus runtime glob sees production groups but not promtool fixtures',
     .sort();
   assert.deepEqual(fixtureFiles, ['lunchlineup.test.yml', 'native-api.test.yml', 'tenant-deletion-billing.test.yml']);
   for (const file of fixtureFiles) {
-    const fixture = read(`infrastructure/prometheus/alerts/tests/${file}`);
+    const fixture = read(`docs/estate/tests/${file}`);
     assert.match(fixture, /^rule_files:/m);
     assert.match(fixture, /^tests:/m);
   }
 });
 
 test('deletion-billing critical freshness uses successful sweeps and fixtures cover reverse health', () => {
-  const alerts = read('infrastructure/prometheus/alerts/tenant-deletion-billing.yml');
-  const fixture = read('infrastructure/prometheus/alerts/tests/tenant-deletion-billing.test.yml');
-  const dashboard = JSON.parse(read('infrastructure/grafana/dashboards/tenant-deletion-billing.json'));
-  const freshnessRule = alerts.slice(alerts.indexOf('alert: TenantDeletionBillingSweepStale'));
+  const rules = read('docs/estate/lunchlineup-rules.yml');
+  const fixture = read('docs/estate/tests/tenant-deletion-billing.test.yml');
+  const dashboard = JSON.parse(read('docs/estate/dashboards/tenant-deletion-billing.json'));
+  const freshnessRule = rules.slice(rules.indexOf('alert: TenantDeletionBillingSweepStale'));
 
   assert.match(
     freshnessRule,
@@ -69,5 +54,5 @@ test('deletion-billing critical freshness uses successful sweeps and fixtures co
     panels.get('Deletion Billing Last Healthy Sweep Age')?.targets?.[0]?.expr ?? '',
     /last_success_timestamp_seconds/,
   );
-  assert.doesNotMatch(alerts + fixture, /tenant_cancellation|cancellation_reconciliation/);
+  assert.doesNotMatch(rules + fixture, /tenant_cancellation|cancellation_reconciliation/);
 });

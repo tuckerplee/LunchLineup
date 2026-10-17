@@ -24,20 +24,18 @@ LEGACY_BETA_HOST="${BETA_HOST:-}"
 BETA_HOST=""
 PUBLIC_ORIGIN=""
 BUILD_IMAGES="${BETA_BUILD_IMAGES:-false}"
-RUN_BACKUP_RESTORE_PROOF="${BETA_RUN_BACKUP_RESTORE_PROOF:-true}"
 START_TIMEOUT_SECONDS="${BETA_START_TIMEOUT_SECONDS:-600}"
 COMMAND_TIMEOUT_SECONDS="${BETA_COMMAND_TIMEOUT_SECONDS:-600}"
 REQUEST_TIMEOUT_SECONDS="${BETA_REQUEST_TIMEOUT_SECONDS:-15}"
 MONITORING_TIMEOUT_SECONDS="${BETA_MONITORING_TIMEOUT_SECONDS:-120}"
+# Metrics and alerts are estate systems; the readiness gate queries the estate Prometheus.
+ESTATE_PROMETHEUS_URL="${BETA_ESTATE_PROMETHEUS_URL:-http://prometheus.int.tuckerl.ee:9090}"
 STOP_TIMEOUT_SECONDS="${BETA_STOP_TIMEOUT_SECONDS:-45}"
-BACKUP_PROOF_MAX_AGE_SECONDS="${BETA_BACKUP_PROOF_MAX_AGE_SECONDS:-3600}"
-BACKUP_PROOF_PATH="${BETA_BACKUP_RESTORE_PROOF_PATH:-/var/lib/lunchlineup/proofs/internal-beta-backup-restore.json}"
 READINESS_PROOF_PATH="${BETA_READINESS_PROOF_PATH:-/var/lib/lunchlineup/proofs/internal-beta-readiness.json}"
 
 required_services=(
-  proxy web api webhook-replay engine pdf-parser worker pgbouncer pitr-wal-provider api-v2
-  postgres redis rabbitmq control prometheus alertmanager node-exporter loki
-  promtail otel-collector tempo grafana autoheal
+  proxy web api webhook-replay engine pdf-parser worker pgbouncer api-v2
+  postgres redis rabbitmq control autoheal
 )
 all_image_ids_matched=false
 
@@ -147,14 +145,11 @@ validate_inputs() {
   fi
   require_boolean BETA_BUILD_IMAGES "$BUILD_IMAGES"
   [[ "$BUILD_IMAGES" == false ]] || fail "VM107 must only load qualified CI image archives; image builds are forbidden"
-  require_boolean BETA_RUN_BACKUP_RESTORE_PROOF "$RUN_BACKUP_RESTORE_PROOF"
   require_bounded_integer BETA_START_TIMEOUT_SECONDS "$START_TIMEOUT_SECONDS" 60 1800
   require_bounded_integer BETA_COMMAND_TIMEOUT_SECONDS "$COMMAND_TIMEOUT_SECONDS" 10 1800
   require_bounded_integer BETA_REQUEST_TIMEOUT_SECONDS "$REQUEST_TIMEOUT_SECONDS" 2 60
   require_bounded_integer BETA_MONITORING_TIMEOUT_SECONDS "$MONITORING_TIMEOUT_SECONDS" 30 600
   require_bounded_integer BETA_STOP_TIMEOUT_SECONDS "$STOP_TIMEOUT_SECONDS" 30 120
-  require_bounded_integer BETA_BACKUP_PROOF_MAX_AGE_SECONDS "$BACKUP_PROOF_MAX_AGE_SECONDS" 60 86400
-  require_beta_proof_path BETA_BACKUP_RESTORE_PROOF_PATH "$BACKUP_PROOF_PATH"
   require_beta_proof_path BETA_READINESS_PROOF_PATH "$READINESS_PROOF_PATH"
   for command_name in docker git curl grep cut awk timeout mktemp stat date hostname wc cmp sed tr sha256sum dirname cat tail sleep realpath node; do
     require_command "$command_name"
@@ -299,16 +294,6 @@ verify_source_and_runtime() {
   [[ "$email_from" == *'@'* && "$email_from" != *'.example'* && "$email_from" != *'dev.lunchlineup.com'* ]] \
     || fail "EMAIL_FROM is not a beta provider sender"
 
-  alert_route_file="$(env_path ALERTMANAGER_WEBHOOK_URL_FILE)"
-  backup_key_file="$(env_path BACKUP_ENCRYPTION_KEY_SECRET_FILE)"
-  [[ -s "$alert_route_file" && ! -L "$alert_route_file" ]] \
-    || fail "Alertmanager route secret is missing"
-  [[ -s "$backup_key_file" && ! -L "$backup_key_file" ]] \
-    || fail "backup encryption key is missing"
-  alert_route="$(tr -d '\r\n' < "$alert_route_file")"
-  [[ "$alert_route" == https://* && "$alert_route" != *localhost* && "$alert_route" != *127.0.0.1* && "$alert_route" != *'.example'* ]] \
-    || fail "Alertmanager route is still a local or placeholder sink"
-
   compose config --quiet
 }
 
@@ -445,7 +430,7 @@ prometheus_query() {
     --connect-timeout "$REQUEST_TIMEOUT_SECONDS" \
     --get --data-urlencode "query=$expression" \
     --output "$output" \
-    http://127.0.0.1:9090/api/v1/query
+    "$ESTATE_PROMETHEUS_URL/api/v1/query"
   grep -Eq '"status"[[:space:]]*:[[:space:]]*"success"' "$output"
 }
 
@@ -456,11 +441,9 @@ empty_prometheus_result() {
 verify_monitoring_and_outboxes() {
   current_check="monitoring"
   curl --silent --show-error --fail --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    http://127.0.0.1:9090/-/ready >/dev/null
-  curl --silent --show-error --fail --max-time "$REQUEST_TIMEOUT_SECONDS" \
-    http://127.0.0.1:9093/-/ready >/dev/null
+    "$ESTATE_PROMETHEUS_URL/-/ready" >/dev/null
 
-  local readiness_expression='absent(lunchlineup_worker_ready{job="worker"}) or (lunchlineup_worker_ready{job="worker"} != 1) or absent(lunchlineup_solver_queue_telemetry_available{job="worker"}) or (lunchlineup_solver_queue_telemetry_available{job="worker"} != 1) or absent(lunchlineup_solver_queue_messages{job="worker",state="dead_letter"}) or absent(lunchlineup_password_reset_email_sweep_ready{job="worker"}) or (lunchlineup_password_reset_email_sweep_ready{job="worker"} != 1) or absent(lunchlineup_password_reset_email_dead_lettered{job="worker"}) or absent(lunchlineup_staff_invitation_sweep_ready{job="worker"}) or (lunchlineup_staff_invitation_sweep_ready{job="worker"} != 1) or absent(lunchlineup_staff_invitation_dead_lettered{job="worker"}) or absent(lunchlineup_notification_outbox_dead_lettered{job="api"})'
+  local readiness_expression='absent(lunchlineup_worker_ready{job="lunchlineup",service="worker"}) or (lunchlineup_worker_ready{job="lunchlineup",service="worker"} != 1) or absent(lunchlineup_solver_queue_telemetry_available{job="lunchlineup",service="worker"}) or (lunchlineup_solver_queue_telemetry_available{job="lunchlineup",service="worker"} != 1) or absent(lunchlineup_solver_queue_messages{job="lunchlineup",service="worker",state="dead_letter"}) or absent(lunchlineup_password_reset_email_sweep_ready{job="lunchlineup",service="worker"}) or (lunchlineup_password_reset_email_sweep_ready{job="lunchlineup",service="worker"} != 1) or absent(lunchlineup_password_reset_email_dead_lettered{job="lunchlineup",service="worker"}) or absent(lunchlineup_staff_invitation_sweep_ready{job="lunchlineup",service="worker"}) or (lunchlineup_staff_invitation_sweep_ready{job="lunchlineup",service="worker"} != 1) or absent(lunchlineup_staff_invitation_dead_lettered{job="lunchlineup",service="worker"}) or absent(lunchlineup_notification_outbox_dead_lettered{job="lunchlineup",service="api"})'
   local deadline=$(( $(date +%s) + MONITORING_TIMEOUT_SECONDS ))
   local readiness_output="$scratch_dir/readiness-query.json"
   until prometheus_query "$readiness_expression" "$readiness_output" \
@@ -470,7 +453,7 @@ verify_monitoring_and_outboxes() {
   done
 
   current_check="outbox_health"
-  local outbox_expression='(lunchlineup_solver_queue_messages{job="worker",state="dead_letter"} > 0) or (lunchlineup_password_reset_email_dead_lettered{job="worker"} > 0) or (lunchlineup_staff_invitation_dead_lettered{job="worker"} > 0) or (lunchlineup_notification_outbox_dead_lettered{job="api"} > 0)'
+  local outbox_expression='(lunchlineup_solver_queue_messages{job="lunchlineup",service="worker",state="dead_letter"} > 0) or (lunchlineup_password_reset_email_dead_lettered{job="lunchlineup",service="worker"} > 0) or (lunchlineup_staff_invitation_dead_lettered{job="lunchlineup",service="worker"} > 0) or (lunchlineup_notification_outbox_dead_lettered{job="lunchlineup",service="api"} > 0)'
   local outbox_output="$scratch_dir/outbox-query.json"
   prometheus_query "$outbox_expression" "$outbox_output" \
     || fail "outbox health query failed"
@@ -486,43 +469,12 @@ verify_monitoring_and_outboxes() {
     || fail "a beta launch-critical alert is pending or firing"
 }
 
-run_backup_restore_proof() {
-  current_check="backup_restore_proof"
-  if [[ "$RUN_BACKUP_RESTORE_PROOF" == true ]]; then
-    BETA_RUNTIME_ENV_FILE="$RUNTIME_ENV" \
-    BETA_CANDIDATE_SHA="$SOURCE_SHA" \
-    BETA_BACKUP_RESTORE_PROOF_PATH="$BACKUP_PROOF_PATH" \
-    COMPOSE_PROJECT_NAME="$COMPOSE_PROJECT_NAME" \
-    APP_DIR="$APP_DIR" \
-      bash "$APP_DIR/scripts/internal-beta-backup-restore-proof.sh"
-  fi
-  [[ -f "$BACKUP_PROOF_PATH" && ! -L "$BACKUP_PROOF_PATH" ]] \
-    || fail "backup/restore proof is missing"
-  grep -Fq '"status": "passed"' "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof did not pass"
-  grep -Fq "\"sourceSha\": \"$SOURCE_SHA\"" "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof is for another release"
-  grep -Fq '"temporaryDatabaseRemoved": true' "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof lacks cleanup confirmation"
-  grep -Fq '"encryptedSnapshot": true' "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof lacks encrypted snapshot confirmation"
-  grep -Fq '"schemaAndMigrationInventoryMatched": true' "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof lacks schema and migration comparison"
-  grep -Fq '"criticalDataInventoryMatched": true' "$BACKUP_PROOF_PATH" \
-    || fail "backup/restore proof lacks critical data comparison"
-  proof_age=$(( $(date +%s) - $(stat -c '%Y' "$BACKUP_PROOF_PATH") ))
-  (( proof_age >= 0 && proof_age <= BACKUP_PROOF_MAX_AGE_SECONDS )) \
-    || fail "backup/restore proof is stale"
-}
-
 write_readiness_proof() {
   current_check="readiness_proof"
-  local proof_dir proof_tmp checked_at backup_proof_sha receipt_sha signature_key_id release_manifest_sha artifact_manifest_sha artifact_root_sha pipeline_sha
+  local proof_dir proof_tmp checked_at receipt_sha signature_key_id release_manifest_sha artifact_manifest_sha artifact_root_sha pipeline_sha
   proof_dir="$(dirname "$READINESS_PROOF_PATH")"
   mkdir -p "$proof_dir"
   chmod 0700 "$proof_dir"
-  backup_proof_sha="$(sha256sum "$BACKUP_PROOF_PATH" | awk '{print $1}')"
-  [[ "$backup_proof_sha" =~ ^[a-f0-9]{64}$ ]] || fail "backup proof digest is invalid"
   receipt_sha="$(sha256sum "$CANDIDATE_RECEIPT" | awk '{print $1}')"
   release_manifest_sha="$(sha256sum "$RELEASE_MANIFEST" | awk '{print $1}')"
   artifact_manifest_sha="$(sha256sum "$ARTIFACT_MANIFEST" | awk '{print $1}')"
@@ -551,7 +503,6 @@ write_readiness_proof() {
   "resendProviderAccepted": true,
   "outboxesReady": true,
   "launchCriticalAlertsClear": true,
-  "backupRestoreProofSha256": "$backup_proof_sha",
   "candidateReceiptSha256": "$receipt_sha",
   "candidateReceiptSignatureKeyId": "$signature_key_id",
   "releaseManifestSha256": "$release_manifest_sha",
@@ -622,14 +573,12 @@ main() {
     wait_for_services
     verify_migration
     verify_http_surfaces
-    run_backup_restore_proof
     verify_monitoring_and_outboxes
     write_readiness_proof
   else
     wait_for_services
     verify_migration
     verify_http_surfaces
-    run_backup_restore_proof
     verify_monitoring_and_outboxes
     verify_deployed_marker
     write_readiness_proof

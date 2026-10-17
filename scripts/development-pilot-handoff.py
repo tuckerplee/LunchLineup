@@ -11,10 +11,8 @@ import re
 
 MAX_BYTES = 1048576
 SERVICES = frozenset(('proxy', 'web', 'api', 'webhook-replay', 'migrate', 'engine',
-    'pdf-parser', 'worker', 'pgbouncer', 'pitr-wal-provider', 'api-v2',
-    'pitr-lifecycle-audit', 'postgres', 'redis', 'rabbitmq', 'control', 'autoheal',
-    'prometheus', 'backup', 'pitr-base-backup', 'pitr-restore', 'alertmanager',
-    'node-exporter', 'loki', 'promtail', 'otel-collector', 'tempo', 'grafana'))
+    'pdf-parser', 'worker', 'pgbouncer', 'api-v2', 'postgres', 'redis', 'rabbitmq',
+    'control', 'autoheal'))
 EFFECTS = frozenset(('cohort-access', 'application-writes', 'queue-consumption',
     'mail-delivery', 'webhook-delivery', 'export-jobs', 'deletion-jobs',
     'retention-jobs', 'billing-effects'))

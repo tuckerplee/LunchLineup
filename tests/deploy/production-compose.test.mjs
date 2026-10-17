@@ -267,16 +267,9 @@ function sampleReleaseManifest(sourceSha = '0123456789abcdef0123456789abcdef0123
     worker: 'Dockerfile.worker',
     migrate: 'Dockerfile.migrations',
     control: 'Dockerfile.control',
-    backup: 'Dockerfile.backup',
     proxy: 'Dockerfile.proxy',
     pgbouncer: 'Dockerfile.pgbouncer',
     postgres: 'Dockerfile.postgres',
-    'node-exporter': 'Dockerfile.node-exporter',
-    loki: 'Dockerfile.loki',
-    tempo: 'Dockerfile.tempo',
-    grafana: 'Dockerfile.grafana',
-    alertmanager: 'Dockerfile.alertmanager',
-    'otel-collector': 'Dockerfile.otel-collector',
   };
 
   return {
@@ -380,18 +373,19 @@ function sampleLaunchProof(sourceSha = '0123456789abcdef0123456789abcdef01234567
 
 test('Compose services are project-scoped and discover each other by service DNS', () => {
   const compose = read('docker-compose.yml');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
+  const targets = read('docs/estate/lunchlineup-targets.yml');
 
   assert.doesNotMatch(compose, /^\s*container_name:/m);
-  assert.match(serviceBlock(compose, 'prometheus'), /infrastructure\/prometheus\/alerts:\/etc\/prometheus\/alerts:ro/);
-  assert.match(prometheus, /targets:\s*\['api:3000'\]/);
-  assert.match(prometheus, /targets:\s*\['engine:8000'\]/);
-  assert.match(prometheus, /targets:\s*\['worker:3003'\]/);
-  assert.match(prometheus, /targets:\s*\['webhook-replay:3004'\]/);
-  assert.match(prometheus, /targets:\s*\['control:3001'\]/);
-  assert.match(prometheus, /targets:\s*\['node-exporter:9100'\]/);
-  assert.match(prometheus, /alertmanagers:[\s\S]*targets:\s*\['alertmanager:9093'\]/);
-  assert.doesNotMatch(prometheus, /lunchlineup-(api|engine|worker|control)/);
+  for (const service of ['prometheus', 'alertmanager', 'grafana', 'loki', 'tempo', 'node-exporter', 'otel-collector', 'promtail']) {
+    assert.doesNotMatch(compose, new RegExp(`^  ${service}:`, 'm'), `${service} is an estate system`);
+  }
+  // The estate Prometheus reaches every service through the VM metrics gateway, never by container name.
+  assert.match(targets, /targets: \['10\.231\.10\.108:9180'\]/);
+  assert.doesNotMatch(targets, /lunchlineup-(api|engine|worker|control)|api:3000|worker:3003/);
+  const gateway = read('infrastructure/caddy/Caddyfile.production');
+  for (const upstream of ['api:3000', 'engine:8000', 'worker:3003', 'webhook-replay:3004', 'control:3001', 'api-v2:3002']) {
+    assert.ok(gateway.includes(`reverse_proxy ${upstream}`), upstream);
+  }
 });
 
 test('RabbitMQ persists broker state on a declared project-scoped named volume', () => {
@@ -411,9 +405,8 @@ test('Compose build services are tagged for release-image smoke checks', () => {
   const compose = read('docker-compose.yml');
 
   for (const service of [
-    'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
-    'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
-    'alertmanager', 'otel-collector',
+    'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control',
+    'proxy', 'pgbouncer', 'postgres',
   ]) {
     assert.match(
       serviceBlock(compose, service),
@@ -498,17 +491,12 @@ test('Dockerfile base images are digest-pinned', () => {
   for (const dockerfile of [
     'Dockerfile.api',
     'Dockerfile.api-v2',
-    'Dockerfile.backup',
     'Dockerfile.control',
     'Dockerfile.engine',
-    'Dockerfile.grafana',
-    'Dockerfile.loki',
     'Dockerfile.migrations',
-    'Dockerfile.node-exporter',
     'Dockerfile.pgbouncer',
     'Dockerfile.postgres',
     'Dockerfile.proxy',
-    'Dockerfile.tempo',
     'Dockerfile.web',
     'Dockerfile.worker',
   ]) {
@@ -522,86 +510,20 @@ test('Dockerfile base images are digest-pinned', () => {
     }
   }
 
-  const backupDockerfile = read('infrastructure/docker/Dockerfile.backup');
-  assert.match(backupDockerfile, /apk add --no-cache[^\n]*aws-cli[^\n]*rclone/);
-});
-
-test('Grafana runtime assembles only application assets over the static base', () => {
-  const dockerfile = read('infrastructure/docker/Dockerfile.grafana');
-  const compose = read('docker-compose.yml');
-  assert.match(dockerfile, /ENV GOTMPDIR=\/src\/\.go-tmp/);
-  assert.match(dockerfile, /RUN mkdir -p "\$GOTMPDIR"/);
-  assert.match(dockerfile, /COPY --from=upstream \/usr\/share\/grafana \/rootfs\/usr\/share\/grafana/);
-  assert.match(dockerfile, /COPY --from=upstream \/etc\/grafana \/rootfs\/etc\/grafana/);
-  assert.match(dockerfile, /COPY --from=rootfs \/rootfs\/usr\/share\/grafana \/usr\/share\/grafana/);
-  assert.match(dockerfile, /COPY --from=rootfs \/rootfs\/etc\/grafana \/etc\/grafana/);
-  assert.match(dockerfile, /COPY --from=build \/out\/grafana-healthcheck \/usr\/local\/bin\/grafana-healthcheck/);
-  assert.doesNotMatch(dockerfile, /COPY --from=(?:upstream|rootfs) \/(?: \/rootfs\/|rootfs\/ \/)/);
-  assert.match(compose, /test: \[ "CMD", "\/usr\/local\/bin\/grafana-healthcheck" \]/);
-});
-
-test('shell-free observability images use healthchecks whose binaries exist in the image', () => {
-  const compose = read('docker-compose.yml');
-  const block = (name) => {
-    const start = compose.indexOf(`\n  ${name}:\n`);
-    assert.ok(start >= 0, name);
-    const rest = compose.slice(start + 1);
-    const end = rest.slice(1).search(/\n {2}[a-z][a-z0-9-]*:\n|\nnetworks:\n/);
-    return end < 0 ? rest : rest.slice(0, end + 1);
-  };
-  const expected = {
-    prometheus: 'test: [ "CMD", "/bin/promtool", "check", "healthy", "--url=http://127.0.0.1:9090" ]',
-    loki: 'test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3100/ready" ]',
-    tempo: 'test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3200/ready" ]',
-  };
-  for (const [name, line] of Object.entries(expected)) {
-    assert.ok(block(name).includes(line), `${name} healthcheck`);
-    assert.doesNotMatch(block(name), /wget/, name);
+  for (const removed of ['backup', 'grafana', 'loki', 'tempo', 'node-exporter', 'alertmanager', 'otel-collector']) {
+    assert.equal(existsSync(join(root, `infrastructure/docker/Dockerfile.${removed}`)), false, `Dockerfile.${removed} must stay removed`);
   }
-  for (const name of ['loki', 'tempo']) {
-    const dockerfile = read(`infrastructure/docker/Dockerfile.${name}`);
-    assert.ok(dockerfile.includes('COPY infrastructure/docker/http-healthcheck.go /src-healthcheck/main.go'), name);
-    assert.ok(dockerfile.includes('-o /out/http-healthcheck /src-healthcheck/main.go'), name);
-    assert.ok(dockerfile.includes('COPY --from=build /out/http-healthcheck /usr/local/bin/http-healthcheck'), name);
-  }
-  assert.ok(read('infrastructure/docker/http-healthcheck.go').includes('http.StatusOK'));
 });
 
-test('release-built observability and proxy binaries enforce patched dependency floors', () => {
+test('release-built proxy binary enforces patched dependency floors', () => {
   const proxy = read('infrastructure/docker/Dockerfile.proxy');
-  const tempo = read('infrastructure/docker/Dockerfile.tempo');
-  const grafana = read('infrastructure/docker/Dockerfile.grafana');
-  const alertmanager = read('infrastructure/docker/Dockerfile.alertmanager');
-  const collector = read('infrastructure/docker/Dockerfile.otel-collector');
 
   assert.match(proxy, /e2eee6a7fce366321294c9c2a79f3146891dcbdf/);
   assert.match(proxy, /github\.com\/caddyserver\/caddy\/v2@v2\.11\.4/);
   assert.match(proxy, /CustomVersion=v2\.11\.4-lunchlineup/);
   assert.match(proxy, /cat > main\.go[\s\S]*go mod tidy[\s\S]*CGO_ENABLED=0 go build/);
-  assert.match(tempo, /f0f3ed59197bfe9f54f3b0f8015ccca112f9e544/);
-  assert.match(tempo, /main\.Version=2\.10\.8/);
-  assert.match(tempo, /grafana\/tempo:2\.10\.8@sha256:f0561deb1c68ec44d6e6e7e4487f30106c4e5e768642077695b37958b105812a/);
-  for (const dependency of [
-    'github.com/prometheus/prometheus v0.311.3',
-    'go.opentelemetry.io/otel v1.44.0',
-    'go.opentelemetry.io/otel/sdk v1.43.0',
-    'golang.org/x/crypto v0.53.0',
-    'golang.org/x/net v0.56.0',
-    'golang.org/x/text v0.39.0',
-    'google.golang.org/grpc v1.82.1',
-  ]) {
-    assert.match(tempo, new RegExp(dependency.replaceAll('.', '\\.'), 'u'));
-  }
-  const trivyIgnore = read('.trivyignore.yaml');
-  assert.match(trivyIgnore, /CVE-2026-28377/);
-  assert.match(trivyIgnore, /pkg:golang\/github\.com\/grafana\/tempo@v0\.0\.0-20260813170847-f0f3ed59197b/);
-  assert.match(trivyIgnore, /expired_at: 2026-09-30/);
+  assert.doesNotMatch(read('.trivyignore.yaml'), /tempo/);
   assert.match(read('docs/legacy/github-actions-ci.yml'), /trivyignores: '\.trivyignore\.yaml'/);
-  for (const dockerfile of [grafana, alertmanager, collector]) {
-    assert.match(dockerfile, /golang\.org\/x\/mod@v0\.40\.0/);
-  }
-  assert.match(alertmanager, /cd ui\/app[\s\S]*npm ci[\s\S]*npm run build/);
-  assert.match(collector, /builder --skip-compilation --config=\/src\/otelcol-builder\.yaml/);
 });
 
 test('Compose external third-party service images are digest-pinned', () => {
@@ -611,7 +533,6 @@ test('Compose external third-party service images are digest-pinned', () => {
     'redis',
     'rabbitmq',
     'autoheal',
-    'prometheus',
   ]) {
     const ref = serviceImageRef(compose, service);
     assert.match(ref, immutableImageRefPattern, service);
@@ -651,33 +572,16 @@ test('Compose host ports default to loopback and require explicit edge exposure'
   assert.match(serviceBlock(compose, 'api'), /RETENTION_PURGE_SERVICE_TOKEN_FILE=\/run\/secrets\/retention_purge_token/);
   assert.match(serviceBlock(compose, 'api'), /secrets:[\s\S]*- metrics_token[\s\S]*- retention_purge_token/);
   assert.match(compose, /retention_purge_token:[\s\S]*RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE/);
-  assert.match(
-    serviceBlock(compose, 'alertmanager'),
-    /^ {4}ports:\r?\n {6}- "127\.0\.0\.1:9093:9093"\r?$/m,
-  );
+  assert.doesNotMatch(compose, /9093|9090|3002:3000/, 'estate systems publish no ports from this stack');
   assert.match(control, /ports:[\s\S]*- "127\.0\.0\.1:3001:3001"/);
   assert.match(control, /CONTROL_PLANE_HOST=0\.0\.0\.0/);
   assert.match(control, /CONTROL_PLANE_DOCKER_STATUS=disabled/);
   assert.doesNotMatch(control, /\/var\/run\/docker\.sock/);
   assert.doesNotMatch(control, /^\s{6}- data$/m);
   assert.match(control, /networks:\s*\n\s+- management/);
-  assert.match(serviceBlock(compose, 'grafana'), /ports:[\s\S]*- "127\.0\.0\.1:3002:3000"/);
   assert.match(autoheal, /profiles:\s*\n\s+- ops/);
   assert.match(autoheal, /\/var\/run\/docker\.sock/);
   assert.equal((compose.match(/^\s+- \/var\/run\/docker\.sock:\/var\/run\/docker\.sock\s*$/gm) ?? []).length, 1);
-});
-
-test('Alertmanager has dedicated outbound paging egress without public ingress', () => {
-  const compose = read('docker-compose.yml');
-  const alertmanager = serviceBlock(compose, 'alertmanager');
-
-  assert.match(alertmanager, /networks:\s*\n\s+management:\s*\n\s+alertmanager-egress:\s*\n\s+gw_priority: 1/);
-  assert.match(alertmanager, /^ {4}ports:\r?\n {6}- "127\.0\.0\.1:9093:9093"\r?$/m);
-  assert.match(
-    compose,
-    /  alertmanager-egress:\s*\n    driver: bridge\s*\n    internal: false\s*\n    driver_opts:\s*\n      com\.docker\.network\.bridge\.enable_icc: "false"/,
-  );
-  assert.equal((compose.match(/alertmanager-egress/g) ?? []).length, 2);
 });
 
 test('control healthcheck uses the IPv4 loopback endpoint with the admin token', () => {
@@ -690,12 +594,11 @@ test('control healthcheck uses the IPv4 loopback endpoint with the admin token',
   assert.doesNotMatch(control, /http:\/\/localhost:3001\/api\/status/);
 });
 
-test('worker metrics endpoint is healthchecked and scraped', () => {
+test('worker metrics endpoint is healthchecked and scraped by the estate Prometheus', () => {
   const compose = read('docker-compose.yml');
   const worker = serviceBlock(compose, 'worker');
   const workerDockerfile = read('infrastructure/docker/Dockerfile.worker');
   const workerHealthcheck = read('apps/worker/src/healthcheck.py');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
 
   assert.match(workerDockerfile, /cgr\.dev\/chainguard\/python@sha256:/);
   assert.doesNotMatch(workerDockerfile, /\bcurl\b|CMD-SHELL/);
@@ -714,7 +617,7 @@ test('worker metrics endpoint is healthchecked and scraped', () => {
   assert.match(workerHealthcheck, /lunchlineup_staff_invitation/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD=\$\{PASSWORD_RESET_EMAIL_PROVIDER_FAILURE_THRESHOLD:-3\}/);
   assert.match(worker, /PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS=\$\{PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60\}/);
-  assert.match(prometheus, /job_name: 'worker'[\s\S]*targets:\s*\['worker:3003'\]/);
+  assert.match(read('docs/estate/lunchlineup-targets.yml'), /service: worker\s+__metrics_path__: \/metrics\/worker/);
 });
 
 test('worker health requires parser readiness and enabled password-reset sweep readiness', () => {
@@ -749,25 +652,17 @@ test('engine healthcheck requires the bound and started gRPC scheduling path', (
 
 test('observability alerts have live metric sources', () => {
   const compose = read('docker-compose.yml');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
-  const alerts = read('infrastructure/prometheus/alerts/lunchlineup.yml');
-  const alertmanager = read('infrastructure/alertmanager/alertmanager.yml');
+  const targets = read('docs/estate/lunchlineup-targets.yml');
+  const alerts = read('docs/estate/lunchlineup-rules.yml');
 
-  assert.match(compose, /alertmanager:[\s\S]*Dockerfile\.alertmanager/);
-  assert.match(compose, /alertmanager:[\s\S]*alertmanager_webhook_url/);
-  assert.match(compose, /alertmanager_webhook_url:[\s\S]*ALERTMANAGER_WEBHOOK_URL_FILE/);
-  assert.match(prometheus, /environment: lunchlineup-compose/);
-  assert.match(prometheus, /alerting:[\s\S]*targets:\s*\['alertmanager:9093'\]/);
-  assert.match(alertmanager, /receiver: production-paging-webhook/);
-  assert.match(alertmanager, /url_file: \/run\/secrets\/alertmanager_webhook_url/);
-  assert.match(compose, /node-exporter:[\s\S]*Dockerfile\.node-exporter/);
-  assert.match(prometheus, /job_name: 'node'[\s\S]*targets:\s*\['node-exporter:9100'\]/);
+  assert.doesNotMatch(compose, /alertmanager|ALERTMANAGER_WEBHOOK_URL|node-exporter/);
+  assert.doesNotMatch(targets + alerts, /hooks\.slack|pagerduty|url_file|webhook_configs/i);
   assert.match(alerts, /alert: ServiceDown/);
   assert.match(alerts, /alert: WorkerJobFailures/);
   assert.match(alerts, /alert: WebhookReplayNotReady/);
   assert.match(alerts, /alert: WebhookReplayFailures/);
   assert.match(alerts, /node_filesystem_avail_bytes\{job="node"/);
-  assert.match(alerts, /sum by \((job, )?route\) \(rate\(http_requests_total\{job="api",status=~"5\.\."\}\[5m\]\)\)/);
+  assert.match(alerts, /sum by \((job, service, )?route\) \(rate\(http_requests_total\{job="lunchlineup",service="api",status=~"5\.\."\}\[5m\]\)\)/);
   assert.doesNotMatch(alerts, /rate\(http_requests_total\{job="api",status=~"5\.\."\}\[2m\]\) \//);
 });
 
@@ -785,7 +680,7 @@ test('control plane Docker status is opt-in and exports service gauges', () => {
 
 test('control plane defaults private and protects operational endpoints with an admin token', () => {
   const compose = read('docker-compose.yml');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
+  const targets = read('docs/estate/lunchlineup-targets.yml');
   const source = read('apps/control-plane/src/main.ts');
   const control = serviceBlock(compose, 'control');
 
@@ -801,7 +696,8 @@ test('control plane defaults private and protects operational endpoints with an 
   assert.match(control, /secrets:[\s\S]*- control_plane_admin_token[\s\S]*- metrics_token/);
   assert.match(compose, /control_plane_admin_token:[\s\S]*CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE/);
   assert.match(control, /secrets:[\s\S]*- metrics_token/);
-  assert.match(prometheus, /job_name: 'control'[\s\S]*authorization:[\s\S]*type: Bearer[\s\S]*credentials_file: \/run\/secrets\/metrics_token/);
+  assert.match(targets, /authorization:\s+type: Bearer\s+credentials_file: \/etc\/prometheus\/secrets\/lunchlineup_metrics_token/);
+  assert.match(targets, /service: control\s+__metrics_path__: \/metrics\/control/);
 });
 
 test('database migrations gate API and worker startup', () => {
@@ -821,7 +717,7 @@ test('only the migration container imports the shared service env file', () => {
   const smokeWriter = read('scripts/write-smoke-env.mjs');
 
   assert.match(serviceBlock(compose, 'migrate'), /env_file: \$\{COMPOSE_SERVICE_ENV_FILE:-\.env\}/);
-  for (const service of ['api', 'api-v2', 'webhook-replay', 'worker', 'backup']) {
+  for (const service of ['api', 'api-v2', 'webhook-replay', 'worker']) {
     const block = serviceBlock(compose, service);
     assert.doesNotMatch(block, /env_file:/);
     assert.doesNotMatch(block, /MIGRATION_DATABASE_URL/);
@@ -862,7 +758,7 @@ test('worker and webhook replay have isolated NAT egress without published ingre
   for (const service of ['worker', 'webhook-replay']) {
     const block = serviceBlock(compose, service);
     const expectedNetworks = service === 'worker'
-      ? /networks:\s*\n\s+app:\s*\n\s+data:\s*\n\s+telemetry:\s*\n\s+outbound-egress:\s*\n\s+gw_priority: 1/
+      ? /networks:\s*\n\s+app:\s*\n\s+data:\s*\n\s+outbound-egress:\s*\n\s+gw_priority: 1/
       : /networks:\s*\n\s+app:\s*\n\s+data:\s*\n\s+outbound-egress:\s*\n\s+gw_priority: 1/;
     assert.match(block, expectedNetworks, service);
     assert.doesNotMatch(block, /^\s+ports:/m, service);
@@ -949,7 +845,6 @@ test('example env and deploy helpers do not encode copyable weak secrets', () =>
     'EMAIL_FROM',
     'STRIPE_SECRET_KEY',
     'STRIPE_WEBHOOK_SECRET',
-    'GRAFANA_PASSWORD',
     'CONTROL_PLANE_PASSWORD',
   ]) {
     assert.match(envExample, new RegExp(`^${key}=$`, 'm'));
@@ -986,8 +881,7 @@ test('CI smoke jobs use the shared smoke environment generator', () => {
   assert.match(smokeWriter, /CADDY_SITE_ADDRESSES/);
   assert.match(smokeWriter, /PROXY_HTTP_BIND/);
   assert.match(smokeWriter, /PROXY_HTTP_PORT/);
-  assert.match(smokeWriter, /ALERTMANAGER_WEBHOOK_URL_FILE/);
-  assert.match(smokeWriter, /alertmanager_webhook_url/);
+  assert.doesNotMatch(smokeWriter, /ALERTMANAGER_WEBHOOK_URL_FILE|alertmanager_webhook_url|BACKUP_ENCRYPTION_KEY|GRAFANA_/);
   assert.match(smokeWriter, /\.env\.smoke/);
   assert.match(smokeWriter, /metrics-token-path/);
   assert.match(smokeWriter, /randomBytes/);
@@ -1869,47 +1763,10 @@ test('DAST and load helper scripts execute real smoke tools', () => {
   assert.doesNotMatch(load, /\bnpx\b|npm exec/);
 });
 
-test('backup restore scripts are encrypted, atomic, telemetry-producing, and fail-closed', () => {
-  const backup = read('scripts/backup.sh');
-  const restore = read('scripts/restore.sh');
-  const drill = read('scripts/dr-drill.sh');
+test('Grafana dashboard copy exposes host filesystem pressure and native availability', () => {
+  const dashboard = read('docs/estate/dashboards/platform-overview.json');
 
-  assert.match(backup, /BACKUP_ENCRYPTION_KEY_FILE/);
-  assert.match(backup, /mktemp/);
-  assert.match(backup, /mv "\$\{TMP_BACKUP_FILE\}" "\$\{BACKUP_FILE\}"/);
-  assert.match(backup, /sha256sum "\$\{BACKUP_FILE\}"/);
-  assert.match(backup, /--pinentry-mode loopback/);
-  assert.match(backup, /--passphrase-fd 3/);
-  assert.match(backup, /BACKUP_METRICS_FILE/);
-  assert.match(backup, /lunchlineup_backup_last_success_timestamp_seconds/);
-  assert.match(backup, /lunchlineup_backup_last_success_size_bytes/);
-  assert.doesNotMatch(backup, /--passphrase "\$\{BACKUP_ENCRYPTION_KEY\}"/);
-
-  assert.match(restore, /RESTORE_TARGET_ENV/);
-  assert.match(restore, /RESTORE_ALLOW_PRODUCTION=YES_RESTORE_PRODUCTION/);
-  assert.match(restore, /RESTORE_CONFIRM=restore-<POSTGRES_DB>/);
-  assert.match(restore, /RESTORE_ALLOW_NONEMPTY=YES_OVERWRITE/);
-  assert.match(restore, /information_schema\.tables/);
-  assert.match(restore, /sha256sum -c/);
-  assert.match(restore, /ON_ERROR_STOP=1/);
-  assert.match(restore, /--single-transaction/);
-  assert.match(restore, /Refusing vague restore target/);
-  assert.doesNotMatch(restore, /read -p "Are you sure/);
-
-  assert.match(drill, /\*\.sql\.zst\.gpg/);
-  assert.match(drill, /docker run/);
-  assert.match(drill, /docker exec[\s\S]*psql/);
-  assert.match(drill, /DR_SANITY_SQL/);
-  assert.match(drill, /trap cleanup EXIT/);
-  assert.doesNotMatch(drill, /simplified logic|# zstd -d -c|# psql/);
-});
-
-test('Grafana dashboard exposes backup freshness and host filesystem pressure', () => {
-  const dashboard = read('infrastructure/grafana/dashboards/platform-overview.json');
-  const datasources = read('infrastructure/grafana/datasources/datasources.yml');
-
-  assert.match(dashboard, /Backup Age/);
-  assert.match(dashboard, /time\(\) - lunchlineup_backup_last_success_timestamp_seconds/);
+  assert.doesNotMatch(dashboard, /Backup Age|lunchlineup_backup_last_success_timestamp_seconds/);
   assert.match(dashboard, /Host Filesystem Free/);
   assert.match(dashboard, /node_filesystem_avail_bytes/);
   const nativeAvailability = JSON.parse(dashboard).panels.filter((panel) => panel.id === 13);
@@ -1917,23 +1774,21 @@ test('Grafana dashboard exposes backup freshness and host filesystem pressure', 
   const [availability] = nativeAvailability;
   assert.equal(availability.title, 'Native API Availability (30d, provisional)');
   assert.deepEqual(availability.datasource, { type: 'prometheus', uid: 'prometheus' });
-  const failures = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class="5xx"}[30d]))';
-  const eligible = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30d]))';
+  const failures = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="lunchlineup",service="api-v2",scope="application",status_class="5xx"}[30d]))';
+  const eligible = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="lunchlineup",service="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30d]))';
   assert.deepEqual(availability.targets, [{ refId: 'A', expr: `(100 * (1 - ((${failures} or vector(0)) / ${eligible}))) and (${eligible} > 0)`, legendFormat: 'availability', instant: true }]);
   assert.match(availability.description, /No traffic yields no data/);
   assert.match(availability.description, /provisional until complete historical collection and independent launch evidence exist/);
   assert.match(availability.description, /cannot certify a complete 30-day SLO or months of private testing/);
   assert.match(dashboard, /Public Web Availability SLO \(30d\)/);
   assert.match(dashboard, /lunchlineup_public_web_probe_success/);
-  assert.match(dashboard, /"id": "tempo"/);
+  assert.doesNotMatch(dashboard, /"id": "tempo"/);
   assert.match(dashboard, /LunchLineup Platform Overview/);
-  assert.match(datasources, /name: Prometheus[\s\S]*uid: prometheus/);
-  assert.match(datasources, /name: Loki[\s\S]*uid: loki/);
-  assert.match(datasources, /name: Tempo[\s\S]*uid: tempo/);
+  assert.equal(existsSync(join(root, 'infrastructure/grafana')), false, 'Grafana provisioning belongs to the estate');
 });
 
-test('Prometheus alerts point at checked-in runbooks and cover backup freshness', () => {
-  const alerts = read('infrastructure/prometheus/alerts/lunchlineup.yml');
+test('Estate Prometheus alerts point at checked-in runbooks and cover the application', () => {
+  const alerts = read('docs/estate/lunchlineup-rules.yml');
   const alertNames = [...alerts.matchAll(/^\s*- alert:\s*([A-Za-z0-9_]+)/gm)].map((match) => match[1]);
   const runbookPaths = [...alerts.matchAll(/runbook:\s*"([^"]+)"/g)].map((match) => match[1]);
 
@@ -1963,8 +1818,6 @@ test('Prometheus alerts point at checked-in runbooks and cover backup freshness'
     'SolverErrors',
     'DiskSpaceLow',
     'HostFilesystemTelemetryMissing',
-    'BackupMissingTelemetry',
-    'BackupStale',
     'RetentionPurgeTelemetryMissing',
     'RetentionPurgeStale',
     'RetentionPurgeFailed',
@@ -1973,7 +1826,7 @@ test('Prometheus alerts point at checked-in runbooks and cover backup freshness'
     assert.ok(alertNames.includes(expected), `${expected} alert is required`);
   }
 
-  assert.match(alerts, /lunchlineup_backup_last_success_timestamp_seconds/);
+  assert.doesNotMatch(alerts, /lunchlineup_backup_last_success_timestamp_seconds|lunchlineup_pitr_/);
   assert.match(
     alerts,
     /RequiredApiDependencyUnavailable[\s\S]*dependency=~"database\|redis\|rabbitmq"[\s\S]*dependency="database"[\s\S]*dependency="redis"[\s\S]*dependency="rabbitmq"/,
@@ -2060,7 +1913,7 @@ test('production runbooks use project-scoped Compose operations', () => {
 
   assert.doesNotMatch(runbooks, /lunchlineup-(api|web|engine|worker|postgres|pgbouncer|proxy|control)\b/);
   assert.doesNotMatch(runbooks, /guest:guest|docker service update|generate-secrets\.sh/);
-  assert.doesNotMatch(runbooks, /curl -fsS 'http:\/\/localhost:9090/);
+  assert.doesNotMatch(runbooks, /curl -fsS 'http:\/\/localhost:9090|exec prometheus|BACKUP_ENCRYPTION_KEY|scripts\/restore\.sh|scripts\/dr-drill\.sh/);
   assert.doesNotMatch(rollbackRunbook, /^\s+docker compose pull/m);
   assert.doesNotMatch(rollbackRunbook, /^\s+docker compose up -d/m);
   assert.match(rollbackRunbook, /Do not run raw `docker compose pull`/);
@@ -2068,10 +1921,8 @@ test('production runbooks use project-scoped Compose operations', () => {
   assert.match(rollbackRunbook, /PREVIOUS_RELEASE_SOURCE_SHA/);
   assert.match(rollbackRunbook, /PRODUCTION_POST_DEPLOY_PROOF_COMMAND/);
   assert.match(rollbackRunbook, /post-deploy proof JSON/);
-  assert.match(runbooks, /docker compose[\s\S]*exec prometheus/);
   assert.match(runbooks, /verify-deploy-source/);
   assert.match(runbooks, /DEPLOYED_GIT_SHA/);
-  assert.match(runbooks, /BACKUP_ENCRYPTION_KEY/);
   assert.match(runbooks, /backup_metrics_collector/);
   assert.match(runbooks, /PRODUCTION_RUNTIME_SECRET_REFERENCE/);
   assert.match(runbooks, /PRODUCTION_RUNTIME_SECRET_VERSION/);

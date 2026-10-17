@@ -11,9 +11,8 @@ import { buildReleaseImageReportEvidence } from '../../scripts/write-release-ima
 const root = resolve(import.meta.dirname, '../..');
 const fakeCosign = join(root, 'tests/deploy/fake-cosign-release-report.mjs');
 const releaseServices = [
-  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
-  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
-  'alertmanager', 'otel-collector',
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control',
+  'proxy', 'pgbouncer', 'postgres',
 ];
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const certificateIdentity = 'https://github.com/tuckerplee/LunchLineup/.github/workflows/ci.yml@refs/heads/main';

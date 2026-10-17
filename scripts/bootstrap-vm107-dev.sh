@@ -30,12 +30,11 @@ export COMPOSE_PARALLEL_LIMIT
 services=(
   proxy web api api-v2 webhook-replay engine worker control
   migrate pgbouncer postgres redis rabbitmq
-  prometheus alertmanager node-exporter loki promtail otel-collector tempo grafana
   autoheal
 )
 
 build_services=(
-  web api api-v2 migrate engine worker pitr-wal-provider control
+  web api api-v2 migrate engine worker control
 )
 
 candidate_api_built=false
@@ -165,8 +164,6 @@ prepare_secret_files() {
   ensure_secret_file metrics_token "$(generated_secret 32)"
   ensure_secret_file control_plane_admin_token "$(generated_secret 32)"
   ensure_secret_file retention_purge_token "$(generated_secret 32)"
-  ensure_secret_file backup_key "$(generated_secret 32)"
-  ensure_secret_file alertmanager_webhook_url "${ALERTMANAGER_WEBHOOK_URL:-http://127.0.0.1:9/lunchlineup-dev}"
 }
 
 upsert_if_empty_or_placeholder() {
@@ -216,8 +213,6 @@ prepare_runtime_env() {
   upsert_if_empty_or_placeholder APP_DB_PASSWORD "$(generated_secret 24)"
   upsert_if_empty_or_placeholder RABBITMQ_USER lunchlineup
   upsert_if_empty_or_placeholder RABBITMQ_PASSWORD "$(generated_secret 24)"
-  upsert_if_empty_or_placeholder GRAFANA_USER lunchlineup_admin
-  upsert_if_empty_or_placeholder GRAFANA_PASSWORD "$(generated_secret 24)"
   upsert_if_empty_or_placeholder CONTROL_PLANE_PASSWORD "$(generated_secret 24)"
   upsert_if_empty_or_placeholder JWT_SECRET "$(generated_secret 64)"
   upsert_if_empty_or_placeholder JWT_REFRESH_SECRET "$(generated_secret 64)"
@@ -287,8 +282,6 @@ prepare_runtime_env() {
   upsert_env CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE "$SECRETS_DIR/control_plane_admin_token"
   upsert_env CONTROL_PLANE_ADMIN_TOKEN_FILE "/run/secrets/control_plane_admin_token"
   upsert_env CONTROL_PLANE_METRICS_TOKEN_FILE "/run/secrets/metrics_token"
-  upsert_env ALERTMANAGER_WEBHOOK_URL_FILE "$SECRETS_DIR/alertmanager_webhook_url"
-  upsert_env BACKUP_ENCRYPTION_KEY_SECRET_FILE "$SECRETS_DIR/backup_key"
   upsert_env STRIPE_METER_AGGREGATION "last"
   upsert_env STRIPE_METERED_USAGE_ENABLED "false"
   upsert_env PASSWORD_RESET_EMAIL_OUTBOX_ENABLED "true"
@@ -453,17 +446,8 @@ restore_backup_if_requested() {
     *.sql.zst)
       zstd -d -c "$BACKUP_FILE" | docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(env_value POSTGRES_USER)" -d "$(env_value POSTGRES_DB)"
       ;;
-    *.sql.zst.gpg)
-      if [[ -z "${BACKUP_ENCRYPTION_KEY:-}" ]]; then
-        echo "BACKUP_ENCRYPTION_KEY is required for encrypted backups." >&2
-        exit 1
-      fi
-      gpg --decrypt --batch --passphrase "$BACKUP_ENCRYPTION_KEY" "$BACKUP_FILE" \
-        | zstd -d -c \
-        | docker compose --env-file "$SECRET_ENV_PATH" exec -T postgres psql -v ON_ERROR_STOP=1 -U "$(env_value POSTGRES_USER)" -d "$(env_value POSTGRES_DB)"
-      ;;
     *)
-      echo "Unsupported BACKUP_FILE format. Use .sql, .sql.zst, or .sql.zst.gpg." >&2
+      echo "Unsupported BACKUP_FILE format. Use .sql or .sql.zst." >&2
       exit 1
       ;;
   esac

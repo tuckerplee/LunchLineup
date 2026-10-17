@@ -9,9 +9,10 @@
 # prunes, never deletes volumes, and never tears the stack down. Integrity =
 # sha256 of each archive plus the loaded image ID, both from exporter metadata.
 # By owner decision there is no signing or release-gating machinery.
+# Backups are an estate system (pgBackRest + restic); this script takes none.
 #
 # pilot       dev.lunchlineup.com on VM107 (same behaviour as deploy-private-pilot.sh)
-# production  https://lunchlineup.com; offsite backup REQUIRED; deploy receipt kept
+# production  https://lunchlineup.com; deploy receipt kept
 #
 # Public routing is Cloudflare Tunnel -> nginx CT940 (10.231.10.30) -> VM port 80.
 # TLS ends at Cloudflare; nginx must send X-Forwarded-Proto https. The www host is
@@ -30,7 +31,6 @@ RELEASE_SHA_VALUE=""
 RELEASE_ID=""
 RECEIPT_DIR=""
 RECEIPT_STARTED=""
-BACKUP_PROOF_LINE=""
 IMAGE_RECORDS=""
 TARGET=""
 
@@ -49,7 +49,6 @@ configure_target() {
       OVERLAY=infrastructure/development-admission/compose.private-proxy.yml
       HOLD_FILES=(/etc/lunchlineup/vm107-launch.hold /etc/lunchlineup/private-launch.hold)
       DATA_TARGETS_RE='^(disposable|development)$'
-      OFFSITE_REQUIRED=false
       ;;
     production)
       RUNTIME_ENV="${PROD_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
@@ -60,7 +59,6 @@ configure_target() {
       OVERLAY=infrastructure/production/compose.production-proxy.yml
       HOLD_FILES=(/etc/lunchlineup/production-launch.hold)
       DATA_TARGETS_RE='^production$'
-      OFFSITE_REQUIRED=true
       [[ "$BIND_IP" =~ ^(10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})$ ]] \
         || fail "PROD_BIND_IP must be the app VM private IPv4 address"
       ;;
@@ -98,7 +96,7 @@ check_host() {
 
 check_runtime_env() {
   step "runtime env check ($TARGET)"
-  local key value creds
+  local key value
   for key in APP_ORIGIN NEXT_PUBLIC_APP_ORIGIN NEXT_PUBLIC_APP_URL ALLOWED_ORIGINS; do
     [[ "$(env_value "$key")" == "$APP_ORIGIN_VALUE" ]] || fail "$key must be exactly $APP_ORIGIN_VALUE"
   done
@@ -127,12 +125,6 @@ check_runtime_env() {
         || fail "MIGRATION_PRODUCTION_CONFIRM must be apply-lunchlineup-production-migrations"
       RELEASE_SHA_VALUE="$(env_value DEPLOY_RELEASE_SHA)"
       [[ "$RELEASE_SHA_VALUE" =~ ^[a-f0-9]{40}$ ]] || fail "DEPLOY_RELEASE_SHA must be the 40-hex release commit"
-      value="$(env_value BACKUP_OFFSITE_URI)"
-      [[ "$value" =~ ^s3://[a-z0-9][a-z0-9.-]{1,62}/[A-Za-z0-9._/-]+$ ]] \
-        || fail "BACKUP_OFFSITE_URI must be s3://bucket/prefix (offsite backup is required in production)"
-      creds="$(grep '^BACKUP_OFFSITE_CREDENTIALS_DIR=' "$RUNTIME_ENV" | cut -d= -f2- || true)"
-      creds="${creds:-$APP_DIR/secrets/backup-offsite}"
-      [[ -d "$creds" && -n "$(ls -A "$creds" 2>/dev/null)" ]] || fail "offsite credentials directory missing or empty: $creds"
       ;;
   esac
   IMAGE_TAG_VALUE="$(env_value IMAGE_TAG)"
@@ -205,7 +197,7 @@ migration_list() { # sorted migration entries shipped in the checkout
 
 write_receipt() { # $1 = status
   [[ -n "$RECEIPT_DIR" ]] || return 0
-  IMAGE_RECORDS="$IMAGE_RECORDS" MIGRATIONS="$(migration_list)" BACKUP_PROOF="$BACKUP_PROOF_LINE" \
+  IMAGE_RECORDS="$IMAGE_RECORDS" MIGRATIONS="$(migration_list)" \
   python3 - "$RECEIPT_DIR/receipt.json" "$1" "$TARGET" "$RELEASE_ID" "$IMAGE_TAG_VALUE" "$RELEASE_SHA_VALUE" \
       "$APP_ORIGIN_VALUE" "$RECEIPT_STARTED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" <<'PY'
 import json, os, sys
@@ -217,8 +209,7 @@ for line in os.environ["IMAGE_RECORDS"].splitlines():
                    "previousImageId": None if prev == "none" else prev})
 doc = {"schemaVersion": 1, "status": status, "target": target, "releaseId": rid, "imageTag": tag,
        "releaseSha": sha or None, "origin": origin, "startedAt": started, "finishedAt": finished,
-       "images": images, "migrations": [m for m in os.environ["MIGRATIONS"].splitlines() if m],
-       "preDeployBackup": os.environ["BACKUP_PROOF"] or None}
+       "images": images, "migrations": [m for m in os.environ["MIGRATIONS"].splitlines() if m]}
 tmp = path + ".tmp"
 with open(tmp, "w", encoding="utf-8") as fh:
     json.dump(doc, fh, indent=2, sort_keys=True); fh.write("\n")
@@ -242,28 +233,17 @@ finish_receipt_on_exit() {
 }
 
 # --- deploy ------------------------------------------------------------------
-pre_deploy_backup() {
+# Recovery point: Postgres PITR is the estate pgBackRest (repo on the NAS,
+# configured by estate-infra); this script runs no dump or backup container.
+# It only refuses a production deploy that would silently start a brand-new
+# empty database over a missing volume.
+check_existing_database() {
   if "$DOCKER" volume inspect "${PROJECT}_postgres_data" >/dev/null 2>&1; then
-    if [[ "$OFFSITE_REQUIRED" != true && "${PILOT_SKIP_BACKUP:-}" == I_ACCEPT_NO_BACKUP ]]; then
-      echo "WARNING: pre-deploy backup skipped by explicit operator override"
-      return
-    fi
-    step "pre-deploy database backup (scripts/backup.sh via the backup service)"
-    local out; out="$(mktemp)"
-    compose --profile ops run --rm --pull never backup 2>&1 | tee "$out" \
-      || { rm -f "$out"; fail "pre-deploy backup failed; nothing was changed"; }
-    BACKUP_PROOF_LINE="$(grep '^backup_ok ' "$out" | tail -n 1 || true)"
-    rm -f "$out"
-    if [[ "$OFFSITE_REQUIRED" == true ]]; then
-      [[ -n "$BACKUP_PROOF_LINE" ]] || fail "backup produced no backup_ok proof; nothing was changed"
-      [[ "$BACKUP_PROOF_LINE" == *" offsite_uri=s3://"* && "$BACKUP_PROOF_LINE" != *" offsite_version=none "* \
-         && "$BACKUP_PROOF_LINE" != *" checksum_version=none "* ]] \
-        || fail "backup proof lacks an immutable offsite object version; production deploy refused"
-    fi
-  elif [[ "$OFFSITE_REQUIRED" == true && "${DEPLOY_FIRST_INSTALL:-}" != yes ]]; then
+    return
+  elif [[ "$TARGET" == production && "${DEPLOY_FIRST_INSTALL:-}" != yes ]]; then
     fail "no postgres volume on production; set DEPLOY_FIRST_INSTALL=yes only for the very first empty install"
   else
-    echo "no existing postgres volume; skipping backup"
+    echo "no existing postgres volume; first install"
   fi
 }
 
@@ -310,19 +290,6 @@ for i in json.load(open(sys.argv[1]))["images"]:
   echo "deploy_release_rollback_ok target=$TARGET from=$rid (schema is forward-only; see docs/runbooks/production-cutover.md)"
 }
 
-# Named volumes created empty (e.g. by an earlier failed start) stay root-owned and
-# never receive the image's directory ownership. Give the non-root services theirs.
-ensure_volume_ownership() {
-  local entry service volume owner path
-  step "volume ownership"
-  for entry in grafana:grafana_data:472:0 promtail:promtail_positions:10001:10001; do
-    IFS=: read -r service volume owner <<<"${entry%:*}"; owner="$owner:${entry##*:}"
-    compose create --no-build --pull never "$service" >/dev/null 2>&1 || true
-    path="$("$DOCKER" volume inspect --format '{{.Mountpoint}}' "${PROJECT}_$volume" 2>/dev/null)" || continue
-    if [[ -d "$path" && "$(stat -c %u "$path")" == 0 ]]; then chown "$owner" "$path"; fi
-  done
-}
-
 main() {
   local target="" rollback="" dir="" c
   while [[ $# -gt 0 ]]; do
@@ -348,11 +315,10 @@ main() {
   load_images "$dir"
   write_receipt started
   compose config --quiet || fail "compose config invalid"
-  pre_deploy_backup
+  check_existing_database
   write_receipt started
   step "start postgres"; compose up -d --no-build --pull never postgres
   run_migrations
-  ensure_volume_ownership
   step "start stack"; compose up -d --no-build --pull never
   wait_for_health
   write_receipt ok

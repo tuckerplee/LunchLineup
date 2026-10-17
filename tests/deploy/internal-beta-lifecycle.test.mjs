@@ -25,7 +25,6 @@ function findBash() {
 }
 
 const lifecycle = read('scripts/internal-beta-lifecycle.sh');
-const backupRestore = read('scripts/internal-beta-backup-restore-proof.sh');
 const bootstrap = read('scripts/bootstrap-vm107-dev.sh');
 
 test('VM107 beta shell owners are syntactically valid', { skip: !findBash() }, () => {
@@ -33,7 +32,6 @@ test('VM107 beta shell owners are syntactically valid', { skip: !findBash() }, (
   for (const script of [
     'scripts/bootstrap-vm107-dev.sh',
     'scripts/internal-beta-lifecycle.sh',
-    'scripts/internal-beta-backup-restore-proof.sh',
   ]) {
     const result = spawnSync(bash, ['-n', join(root, script)], { encoding: 'utf8' });
     assert.equal(result.status, 0, result.stderr || result.stdout);
@@ -84,12 +82,14 @@ test('internal beta launch is bound to VM107, a clean pushed SHA, and candidate 
 
 test('launch waits for migrations, beta services, candidate images, and direct/public release identity', () => {
   for (const service of [
-    'proxy', 'web', 'api', 'webhook-replay', 'engine', 'pdf-parser', 'worker', 'pitr-wal-provider',
-    'api-v2', 'postgres', 'redis', 'rabbitmq', 'control', 'prometheus',
-    'alertmanager', 'node-exporter', 'loki', 'promtail', 'otel-collector',
-    'tempo', 'grafana', 'autoheal',
+    'proxy', 'web', 'api', 'webhook-replay', 'engine', 'pdf-parser', 'worker',
+    'api-v2', 'postgres', 'redis', 'rabbitmq', 'control', 'autoheal',
   ]) {
-    assert.match(lifecycle, new RegExp('\\b' + service + '\\b'));
+    assert.match(lifecycle, new RegExp('\b' + service + '\b'));
+  }
+  const requiredBlock = lifecycle.slice(lifecycle.indexOf('required_services=('), lifecycle.indexOf(')', lifecycle.indexOf('required_services=(')));
+  for (const removed of ['pitr-wal-provider', 'prometheus', 'alertmanager', 'node-exporter', 'loki', 'promtail', 'otel-collector', 'tempo', 'grafana']) {
+    assert.doesNotMatch(requiredBlock, new RegExp('\b' + removed + '\b'));
   }
   assert.match(lifecycle, /compose --profile ops up -d --no-build --pull never --remove-orphans/);
   assert.match(lifecycle, /compose ps -a -q migrate/);
@@ -103,13 +103,14 @@ test('launch waits for migrations, beta services, candidate images, and direct/p
   assert.match(lifecycle, /\/_next\/static\//);
 });
 
-test('readiness fails closed on placeholder delivery, alert routing, outbox debt, and critical alerts', () => {
+test('readiness fails closed on placeholder delivery, outbox debt, and critical alerts from the estate Prometheus', () => {
   assert.match(lifecycle, /re_dev_/);
   assert.match(lifecycle, /resendProviderAccepted/);
   assert.match(lifecycle, /STAFF_INVITATION_OUTBOX_ENABLED/);
   assert.match(lifecycle, /PASSWORD_RESET_EMAIL_OUTBOX_ENABLED/);
   assert.match(lifecycle, /SCHEDULE_PUBLISHED_EMAIL_ENABLED/);
-  assert.match(lifecycle, /Alertmanager route is still a local or placeholder sink/);
+  assert.match(lifecycle, /ESTATE_PROMETHEUS_URL="\$\{BETA_ESTATE_PROMETHEUS_URL:-http:\/\/prometheus\.int\.tuckerl\.ee:9090\}"/);
+  assert.doesNotMatch(lifecycle, /Alertmanager route|127\.0\.0\.1:909[03]|ALERTMANAGER_WEBHOOK|BACKUP_ENCRYPTION/);
   assert.match(lifecycle, /lunchlineup_password_reset_email_sweep_ready/);
   assert.match(lifecycle, /lunchlineup_staff_invitation_sweep_ready/);
   assert.match(lifecycle, /lunchlineup_notification_outbox_dead_lettered/);
@@ -118,22 +119,9 @@ test('readiness fails closed on placeholder delivery, alert routing, outbox debt
   assert.match(lifecycle, /internal_beta_readiness_failed/);
 });
 
-test('beta backup proof restores only into a temporary database and proves cleanup', () => {
-  assert.match(backupRestore, /pg_dump[\s\S]*--format=custom/);
-  assert.match(backupRestore, /gpg[\s\S]*--cipher-algo AES256 --symmetric/);
-  assert.match(backupRestore, /gpg[\s\S]*--decrypt --passphrase-file/);
-  assert.match(backupRestore, /createdb --username "\$postgres_user" --template template0 "\$restore_database"/);
-  assert.match(backupRestore, /pg_restore[\s\S]*--exit-on-error[\s\S]*--dbname "\$restore_database"/);
-  assert.match(backupRestore, /cmp --silent "\$source_inventory" "\$restore_inventory"/);
-  assert.match(backupRestore, /critical_rows=/);
-  assert.match(backupRestore, /dropdb --if-exists --force -U "\$postgres_user" "\$restore_database"/);
-  assert.match(backupRestore, /temporaryDatabaseRemoved/);
-  assert.match(backupRestore, /encryptedSnapshot/);
-  assert.match(backupRestore, /schemaAndMigrationInventoryMatched/);
-  assert.match(backupRestore, /criticalDataInventoryMatched/);
-  assert.match(backupRestore, /timeout --foreground/);
-  assert.doesNotMatch(backupRestore, /dropdb[^\r\n]*"\$postgres_database"/);
-  assert.doesNotMatch(backupRestore, /docker compose down|down -v|volume rm/);
+test('readiness runs no in-stack backup or dump; recovery is the estate pgBackRest', () => {
+  assert.doesNotMatch(lifecycle, /backup_restore_proof|BACKUP_PROOF|backupRestoreProofSha256|pg_dump|gpg/);
+  assert.equal(existsSync(join(root, 'scripts/internal-beta-backup-restore-proof.sh')), false);
 });
 
 test('pause stops only the VM107 Compose project while preserving data and host boot policy', () => {
@@ -153,7 +141,7 @@ test('internal beta operation files are indexed beside their operator contract',
   const rootReadme = read('README.md');
   const runbook = read('docs/runbooks/internal-beta-operations.md');
 
-  assert.match(scriptsReadme, /internal-beta-backup-restore-proof\.sh/);
+  assert.doesNotMatch(scriptsReadme, /internal-beta-backup-restore-proof\.sh/);
   assert.match(scriptsReadme, /internal-beta-lifecycle\.sh/);
   assert.match(deployTestsReadme, /internal-beta-lifecycle\.test\.mjs/);
   assert.match(runbooksReadme, /internal-beta-operations\.md/);

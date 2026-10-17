@@ -121,11 +121,9 @@ test('VM217 Compose is the sole production data plane and aligns DSNs, backup, a
   }
   assert.match(compose, /DATABASE_URL=\$\{DATABASE_URL:\?Set validated percent-encoded DATABASE_URL in \.env\}/);
   assert.match(compose, /MIGRATION_DATABASE_URL=\$\{MIGRATION_DATABASE_URL:\?Set validated percent-encoded MIGRATION_DATABASE_URL in \.env\}/);
-  assert.match(compose, /backup:[\s\S]*POSTGRES_HOST=postgres[\s\S]*depends_on:[\s\S]*postgres:[\s\S]*condition: service_healthy/);
-  assert.match(compose, /pitr-base-backup:[\s\S]*POSTGRES_HOST=postgres[\s\S]*depends_on:[\s\S]*postgres:[\s\S]*condition: service_healthy/);
   assert.match(productionDataPolicy, /runtimeUrl\.hostname !== 'postgres'/);
   assert.match(productionDataPolicy, /migrationUrl\.hostname !== 'postgres'/);
-  assert.match(productionDataPolicy, /Compose service postgres:5432\/POSTGRES_DB so logical backup and PITR protect the authoritative database/);
+  assert.match(productionDataPolicy, /Compose service postgres:5432\/POSTGRES_DB so the estate pgBackRest stanza protects the authoritative database/);
 });
 
 test('production Terraform blocks plan until real readiness inputs exist', () => {

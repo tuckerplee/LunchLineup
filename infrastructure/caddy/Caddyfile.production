@@ -17,6 +17,48 @@ http://127.0.0.1:2015 {
 	respond /health 200
 }
 
+# Estate metrics gateway. The estate Prometheus scrapes this listener on the VM
+# private IP (docs/estate/lunchlineup-targets.yml). It is not part of the public
+# route chain (CT940 nginx only forwards VM port 80). Every request needs the
+# same bearer token as the app /metrics endpoints (secret metrics_token); the
+# unauthenticated worker, engine and webhook-replay exporters are only reachable
+# through this authenticated gateway.
+http://:9180 {
+	@authorized header Authorization "Bearer {file./run/secrets/metrics_token}"
+	handle @authorized {
+		handle /metrics/api {
+			rewrite * /metrics
+			reverse_proxy api:3000
+		}
+		handle /metrics/api-v2 {
+			rewrite * /metrics
+			reverse_proxy api-v2:3002
+		}
+		handle /metrics/worker {
+			rewrite * /metrics
+			reverse_proxy worker:3003
+		}
+		handle /metrics/engine {
+			rewrite * /metrics
+			reverse_proxy engine:8000
+		}
+		handle /metrics/webhook-replay {
+			rewrite * /metrics
+			reverse_proxy webhook-replay:3004
+		}
+		handle /metrics/control {
+			rewrite * /api/metrics
+			reverse_proxy control:3001
+		}
+		handle {
+			respond "not found" 404
+		}
+	}
+	handle {
+		respond "unauthorized" 401
+	}
+}
+
 {$CADDY_SITE_ADDRESSES:http://localhost:80, http://127.0.0.1:80, http://proxy:80} {
 	encode zstd gzip
 	request_body {

@@ -79,7 +79,8 @@ test('local release health pre-creates isolated Podman egress networks without c
     qualification.indexOf('\nfullstack-playwright)'),
   );
 
-  assert.match(helper, /alertmanager-egress pitr-egress outbound-egress/);
+  assert.match(helper, /for network in outbound-egress; do/);
+  assert.doesNotMatch(helper, /alertmanager-egress|pitr-egress/);
   assert.match(helper, /docker network create[^\n]+--driver bridge --opt isolate=true/);
   assert.match(helper, /Refusing pre-existing qualification network/);
   assert.doesNotMatch(helper, /com\.docker\.network\.bridge\.enable_icc/);
@@ -213,11 +214,6 @@ test('deployment contract is an exact secret-free compatibility and rollback sou
     'apps/worker/requirements.txt',
     'packages/db/prisma/schema.prisma',
     'scripts/old-release-compatibility-harness.mjs',
-    'scripts/verify-backup-readiness.sh',
-    'infrastructure/systemd/lunchlineup-backup.service',
-    'infrastructure/systemd/lunchlineup-backup.timer',
-    'infrastructure/systemd/lunchlineup-pitr-base-backup.service',
-    'infrastructure/systemd/lunchlineup-pitr-base-backup.timer',
   ]) assert.ok(pathSet.has(required), `retained archive omits ${required}`);
 
   for (const forbidden of paths) {

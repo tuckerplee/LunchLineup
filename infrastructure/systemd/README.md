@@ -3,12 +3,6 @@
 ## Files
 
 - `README.md`: this systemd scheduler installation guide.
-- `lunchlineup-backup.env.example`: static non-secret backup scheduler settings; deploy writes the exact runtime pointer separately.
-- `lunchlineup-backup.service`: one-shot encrypted offsite database backup through the release Compose image.
-- `lunchlineup-backup.timer`: daily backup timer with persistent catch-up and randomized delay.
-- `lunchlineup-pitr-base-backup.env.example`: static non-secret physical base-backup scheduler settings.
-- `lunchlineup-pitr-base-backup.service`: hardened one-shot verified remote `pg_basebackup` invocation.
-- `lunchlineup-pitr-base-backup.timer`: daily physical base-backup schedule with persistent catch-up.
 - `lunchlineup-public-web-probe.env.example`: canonical public URL, release pointer, request bounds, and textfile metric path.
 - `lunchlineup-public-web-probe.service`: hardened one-shot public DNS/TLS/Caddy/Next.js probe.
 - `lunchlineup-public-web-probe.timer`: one-minute public availability schedule.
@@ -18,61 +12,9 @@
 - `lunchlineup-retention-purge.service`: confirmed 30-day application-data purge unit.
 - `lunchlineup-retention-purge.timer`: daily application-data retention timer.
 
-## Backup Scheduler
+## Host prerequisites
 
-Production deploy atomically persists validated runtime bytes at `/var/lib/lunchlineup/runtime-env/by-release/<source-sha>/<sha256>/runtime.env` as `root:root` mode `0600`. Compose uses that exact file. The deploy stops existing timers and writes the same path and digest with the candidate image identity to `/var/lib/lunchlineup/backup-release.env`, so backup and PITR proof consume identical bytes. Every production deploy, rollback, backup, and PITR command uses the fixed Compose project `lunchlineup`; the release SHA selects the exact retained project directory, Compose file, runtime bytes, and images but never changes named-volume identity. Each service derives `/opt/lunchlineup/releases/<IMAGE_TAG>` instead of `/opt/lunchlineup/current`, passes its full canonical `lunchlineup-*.service` identifier to the wrapper stored in that candidate, captures the new systemd `INVOCATION_ID`, renders the mapped Compose service image, resolves its local `sha256:` digest, and exports the InvocationID/path/source/image binding into the one-shot container. The transport passes that exact retained directory as `APP_DIR`; readiness never appends another `releases/<sha>`. It then runs `scripts/verify-backup-readiness.sh` before committed release truth advances. The verifier allows the service-side 2-hour logical-backup and 6-hour PITR limits with client deadlines of 7,260 and 21,660 seconds, and validates each service's atomically replaced metric immediately at that service's completion against its own start time. On client timeout it must reconcile the exact InvocationID, terminal service state, and immutable candidate container ID, remove that ID, and prove absence before restoring the byte-for-byte unit and enabled/active snapshots. A restoration, cleanup, or readback failure is terminal.
-
-Install only after the production release images have been pulled from a GitHub-pushed commit. Successful promotion atomically advances `/var/lib/lunchlineup/runtime-env/current`; retained rollback reactivates the prior SHA/digest path. Missing files, digest drift, non-root ownership, or mode drift fail closed. Runtime bytes remain outside repository and immutable release artifacts. The timers require the generated backup release file and run Compose with `--pull never`.
-
-Required production state:
-
-- The validated candidate runtime contains an exact non-root `BACKUP_OFFSITE_URI=s3://bucket/prefix`, `BACKUP_OFFSITE_RETENTION_DAYS=35`, `BACKUP_OFFSITE_RETENTION_DRY_RUN=false`, and `BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS` covering retention. Mutable rclone and local repositories are forbidden.
-- `/etc/lunchlineup/backup-offsite` is owned by `root:lunchlineup`, mode `0750`, and contains mode-`0640` `aws-credentials` plus optional `aws-config`, or the job uses a dedicated instance role. Never put provider keys in the runtime/Compose environment.
-- `/run/secrets/backup_key` contains a generated high-entropy GPG symmetric passphrase and is readable by the `lunchlineup` group. The passphrase must not be stored in an env file or the repository.
-- The `lunchlineup` service account can access Docker. Treat Docker group membership as root-equivalent access and do not reuse this account for interactive users.
-- S3 credentials are supplied through the dedicated read-only credential mount or an instance role.
-- `/var/lib/node_exporter/textfile_collector/` exists. The backup container writes `lunchlineup_backup.prom` there and Compose mounts the same host directory read-only into node-exporter.
-
-Example installation after the first successful artifact deploy:
-
-```bash
-install -d -m 0750 /etc/lunchlineup
-install -d -m 0750 /run/secrets
-install -d -o lunchlineup -g lunchlineup -m 0750 /var/lib/lunchlineup
-# Writers differ per file: root (backup, PITR base backup), uid 70 (Postgres WAL-archive metric) and
-# lunchlineup (probe/retention). Use a sticky shared directory so each can write its own file;
-# the files themselves are made 0644 so unprivileged node-exporter can read them.
-install -d -m 1777 /var/lib/node_exporter/textfile_collector
-install -o root -g lunchlineup -m 0640 infrastructure/systemd/lunchlineup-backup.env.example /etc/lunchlineup/backup.env
-install -o root -g lunchlineup -m 0640 /secure/source/backup_key /run/secrets/backup_key
-install -m 0644 infrastructure/systemd/lunchlineup-backup.service /etc/systemd/system/lunchlineup-backup.service
-install -m 0644 infrastructure/systemd/lunchlineup-backup.timer /etc/systemd/system/lunchlineup-backup.timer
-test -s /var/lib/lunchlineup/backup-release.env
-systemd-analyze verify /etc/systemd/system/lunchlineup-backup.service /etc/systemd/system/lunchlineup-backup.timer
-systemctl daemon-reload
-systemctl start lunchlineup-backup.service
-journalctl -u lunchlineup-backup.service -n 50 --no-pager
-test -s /var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom
-systemctl enable --now lunchlineup-backup.timer
-systemctl list-timers lunchlineup-backup.timer
-```
-
-The candidate wrapper calls the one-shot `backup` Compose service under the `ops` profile with `--detach --no-deps --pull never`, owns the exact returned container ID through bounded wait/log/remove/absence readback, and emits `candidate_release_job_ok` binding the fresh InvocationID, candidate path, source SHA, rendered image reference, and resolved image digest. Local encrypted archives retain bounded cleanup. Remote expiry belongs only to the verified bucket lifecycle: the job never lists for pruning or deletes remote objects. It conditionally creates the encrypted dump and checksum, requests COMPLIANCE retention, and requires exact version/checksum/bytes/retention readback plus authenticated caller identity. Verify fresh matching `offsite_retention_ok mode=lifecycle_owned`, `offsite_immutable_ok`, and `backup_ok expiry_owner=lifecycle` lines. `verify-backup-readiness.sh` rejects stale, unversioned, unauthenticated, or mismatched proof before enabling timers. Platform on-call owns `BackupMissingTelemetry` and `BackupStale`; either alert is a failed backup-path incident until provider proof and textfile freshness are restored.
-
-## PITR Base Backup Scheduler
-
-PITR supplements rather than replaces the encrypted logical dump. Its service also requires `/var/lib/lunchlineup/backup-release.env` so pre-promotion proof executes `/opt/lunchlineup/releases/<candidate-sha>`, not the old `/current` target. Install the timer only after `scripts/pitr-verify-storage.sh` proves both append-only writer identities, versioning, default/per-object COMPLIANCE retention, denied deletion, and provider-simulated denied mutations for both read-only identities. Provision distinct absolute managed directories for `PITR_WAL_OBJECT_STORE_SECRETS_DIR`, `PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR`, read-only `PITR_RESTORE_OBJECT_STORE_SECRETS_DIR`, and lifecycle-audit credentials. Start the service once and verify `candidate_release_job_ok`, `pitr_candidate_binding_ok`, `pitr_base_backup_ok`, the remote `COMPLETE` object, and `/var/lib/node_exporter/textfile_collector/lunchlineup_pitr.prom` before enabling the timer.
-
-```bash
-install -o root -g lunchlineup -m 0640 infrastructure/systemd/lunchlineup-pitr-base-backup.env.example /etc/lunchlineup/pitr-base-backup.env
-install -m 0644 infrastructure/systemd/lunchlineup-pitr-base-backup.service /etc/systemd/system/lunchlineup-pitr-base-backup.service
-install -m 0644 infrastructure/systemd/lunchlineup-pitr-base-backup.timer /etc/systemd/system/lunchlineup-pitr-base-backup.timer
-systemd-analyze verify /etc/systemd/system/lunchlineup-pitr-base-backup.service /etc/systemd/system/lunchlineup-pitr-base-backup.timer
-systemctl daemon-reload
-systemctl start lunchlineup-pitr-base-backup.service
-journalctl -u lunchlineup-pitr-base-backup.service -n 100 --no-pager
-systemctl enable --now lunchlineup-pitr-base-backup.timer
-```
+The units here write Prometheus textfile metrics to `/var/lib/node_exporter/textfile_collector/`, which the VM's own node_exporter (an estate service, not part of the application stack) serves to the estate Prometheus. Backups are not scheduled from this folder: Postgres PITR is the estate pgBackRest and file backups are host restic, both owned by estate-infra (`docs/estate/README.md`).
 
 ## Public Web Availability Probe
 

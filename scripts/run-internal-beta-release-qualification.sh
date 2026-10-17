@@ -56,7 +56,7 @@ prepare_podman_egress_networks(){
   local docker_version network full_name
   docker_version=$(docker --version 2>&1)
   [[ "$docker_version" == *podman* ]] || return 0
-  for network in alertmanager-egress pitr-egress outbound-egress; do
+  for network in outbound-egress; do
     full_name="${project}_${network}"
     if docker network exists "$full_name"; then echo "Refusing pre-existing qualification network: $full_name" >&2; return 1; fi
     docker network create --label "io.podman.compose.project=$project" --label "com.docker.compose.project=$project" --driver bridge --opt isolate=true "$full_name" >/dev/null
@@ -98,10 +98,10 @@ production-image-inventory)
   require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); node "$build_root/scripts/verify-internal-ci-production-inventory.mjs" --source-context "$context" --inventory "$artifact_root/compose-image-inventory.json" --release-manifest "$artifact_root/release-manifest.json" --output "$artifact_root/production-image-inventory.json" --details "$artifact_root/details/production-image-inventory.json"; record_gate production-image-inventory "$started" "$artifact_root/details/production-image-inventory.json" "$artifact_root/production-image-inventory.json"
 ;;
 release-stack-health)
-  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); prepare_podman_egress_networks; "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider postgres
+  require_state; started=$(date -u +%Y-%m-%dT%H:%M:%SZ); prepare_podman_egress_networks; "${compose[@]}" --profile ops up -d --no-build --no-deps postgres
   for attempt in {1..60}; do postgres_id=$(docker ps -a --filter "label=com.docker.compose.project=$project" --filter label=com.docker.compose.service=postgres --format '{{.ID}}' | head -n1); [[ -n "$postgres_id" ]] && run_podman_healthcheck "$postgres_id"; [[ -n "$postgres_id" && "$(docker inspect --format '{{.State.Health.Status}}' "$postgres_id")" == healthy ]] && break; [[ "$attempt" != 60 ]] || exit 1; sleep 2; done
   "${compose[@]}" --profile ops run --rm --no-deps migrate >"$artifact_root/migrate-release-stack.log" 2>&1
-  mapfile -t services < <(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const [n,v] of Object.entries(x.services))if(v.requiredOnVm107&&v.state!=="one-shot"&&!new Set(["autoheal","node-exporter","promtail"]).has(n))console.log(n)' "$build_root/infrastructure/ci/internal-beta-runtime-services.json"); "${compose[@]}" --profile ops up -d --no-build --no-deps --remove-orphans "${services[@]}"
+  mapfile -t services < <(node -e 'const x=JSON.parse(require("fs").readFileSync(process.argv[1]));for(const [n,v] of Object.entries(x.services))if(v.requiredOnVm107&&v.state!=="one-shot"&&!new Set(["autoheal"]).has(n))console.log(n)' "$build_root/infrastructure/ci/internal-beta-runtime-services.json"); "${compose[@]}" --profile ops up -d --no-build --no-deps --remove-orphans "${services[@]}"
   for attempt in {1..120}; do run_project_podman_healthchecks; if node "$build_root/scripts/verify-internal-ci-release-stack.mjs" --source-context "$context" --release-manifest "$artifact_root/release-manifest.json" --project "$project" --exclude-host-integrations --output "$artifact_root/release-stack-health.json" --details "$artifact_root/details/release-stack-health.json" --probe; then break; fi; rm -f "$artifact_root/release-stack-health.json" "$artifact_root/details/release-stack-health.json"; [[ "$attempt" != 120 ]] || exit 1; sleep 5; done
   record_gate release-stack-health "$started" "$artifact_root/details/release-stack-health.json" "$artifact_root/release-stack-health.json" "$artifact_root/migrate-release-stack.log"
 ;;

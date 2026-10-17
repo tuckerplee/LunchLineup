@@ -460,9 +460,6 @@ lunchlineup/
 ├── scripts/
 │   ├── vendor-assets.sh             # Download + verify CDN assets
 │   ├── update-base-images.sh        # Re-pin Docker base images
-│   ├── backup.sh                    # Encrypted pg_dump + offsite sync
-│   ├── restore.sh                   # Restore from encrypted backup
-│   ├── dr-drill.sh                  # Automated disaster recovery drill
 │   ├── generate-secrets.sh          # Generate all required secrets for a new env
 │   └── seed.ts                      # Seed development database with realistic data
 ├── docs/
@@ -537,9 +534,7 @@ All backup parameters are configurable via the Control Plane (Part I-A, `config.
 | **Retention** | `backup.retentionDays` | `90` | Auto-pruned by backup agent |
 | **DR Drill** | `backup.drDrillSchedule` (cron) | `0 4 1 * *` (1st of month) | Restored to isolated container |
 
-- `scripts/backup.sh`: Runs `pg_dump --format=custom`, compresses with `zstd`, encrypts with `gpg --symmetric --cipher-algo AES256`, syncs to the configured offsite target.
-- `scripts/restore.sh`: Decrypts, decompresses, restores to a target database. Can target an isolated container for verification.
-- `scripts/dr-drill.sh`: Automatically restores the latest backup to an ephemeral Postgres container, runs configurable validation queries, logs success/failure, and sends a notification to the configured alerting channel.
+- Backups and disaster recovery are estate systems (pgBackRest and restic, configured by estate-infra); see `docs/estate/README.md`.
 - **RTO/RPO targets** are configurable (`backup.rtoTargetMinutes`, `backup.rpoTargetMinutes`) and monitored by the observability layer. Default: RTO < 60 min, RPO < 5 min.
 
 ---
@@ -900,9 +895,9 @@ All endpoints require the control plane session token. All actions are logged.
 
 | Pillar | Tool | Key Details |
 |---|---|---|
-| **Logs** | Loki + Grafana (self-hosted) | Structured JSON, correlation IDs, 30-day retention |
-| **Metrics** | Prometheus + Grafana | Request latency, error rates, queue depth, cache hit/miss, DB connections |
-| **Traces** | OpenTelemetry → Tempo | Full distributed traces across all services |
+| **Logs** | Estate Alloy -> Loki + Grafana (estate-owned) | Structured JSON, correlation IDs, 30-day retention |
+| **Metrics** | Estate Prometheus + Grafana (scraping the app's token-protected /metrics) | Request latency, error rates, queue depth, cache hit/miss, DB connections |
+| **Traces** | None (dropped; OTLP exporters stay dormant) | n/a |
 
 ## 11.2 — Dashboards (Pre-Built Before Beta)
 
@@ -967,6 +962,6 @@ All endpoints require the control plane session token. All actions are logged.
 | **7** | **UX Implementation** | Schedule table, drag-and-drop, Framer Motion animations, optimistic UI, responsive tablet/mobile. |
 | **8** | **Billing & Onboarding** | Stripe integration, plan management, onboarding wizard, seed data, notification system. |
 | **9** | **Testing** | Full test suite (unit, integration, E2E, load, chaos, fuzz), visual regression, accessibility audit. |
-| **10** | **Observability** | Prometheus/Grafana/Loki/Tempo stack, all dashboards, alerting, runbooks, public status page. |
+| **10** | **Observability** | Estate Prometheus/Grafana/Loki integration (`docs/estate`), dashboards, alerting, runbooks, public status page. |
 | **11** | **Hardening** | External pentest, DAST scans, dependency audit, performance tuning, DR drill validation, compliance docs. |
 | **12** | **Launch** | Closed beta (invite list), stabilize, iterate on feedback, open public beta. |

@@ -32,15 +32,10 @@ const retainedContractProfile = 'lunchlineup-release-rollback-compatibility-v2';
 const fixedPreflightPaths = [
   'apps/engine/requirements.txt',
   'apps/worker/requirements.txt',
-  'infrastructure/systemd/lunchlineup-backup.service',
-  'infrastructure/systemd/lunchlineup-backup.timer',
-  'infrastructure/systemd/lunchlineup-pitr-base-backup.service',
-  'infrastructure/systemd/lunchlineup-pitr-base-backup.timer',
   'package-lock.json',
   'package.json',
   'scripts/apply-db-migrations.mjs',
   'scripts/old-release-compatibility-harness.mjs',
-  'scripts/verify-backup-readiness.sh',
   'scripts/verify-release-artifacts.mjs',
 ];
 const cloneEnvKeys = new Set([

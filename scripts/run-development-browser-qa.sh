@@ -184,7 +184,7 @@ node "$build_root/scripts/write-internal-beta-qualification-env.mjs" --source-co
 python3 "$build_root/scripts/check-internal-ci-target.py" fullstack
 node - "$artifact_root/compose-config.json" "$artifact_root/development-images.tsv" "$qualification_root/development-compose.json" "$artifact_root/development-network-policy.json" "$project" <<'NODE'
 const fs=require('node:fs');const [configPath,out,runtimePath,policyPath,project]=process.argv.slice(2),config=JSON.parse(fs.readFileSync(configPath));
-const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{})){if(dep==='pitr-wal-provider'&&String(config.services.postgres.environment.PITR_ENABLED)==='false')continue;include(dep);}}
+const selected=new Set();function include(name){if(selected.has(name))return;const service=config.services[name];if(!service)throw new Error(`Missing development service ${name}`);selected.add(name);for(const dep of Object.keys(service.depends_on??{})){include(dep);}}
 for(const name of ['api-v2','web','worker','engine','proxy'])include(name);
 const seen=new Set(),lines=[];for(const name of [...selected].sort()){const s=config.services[name];if(seen.has(s.image))continue;seen.add(s.image);lines.push([s.build?'build':'pull',name,s.image].join('\t'));}
 fs.writeFileSync(out,lines.join('\n')+'\n',{flag:'wx'});
@@ -353,9 +353,6 @@ if [[ "$phase" != runtime ]]; then
 fi
 # All networks are internal and independently inspected before any runtime starts.
 prepare_runtime_networks
-if awk -F '\t' '$2 == "pitr-wal-provider" { found=1 } END { exit !found }' "$artifact_root/development-images.tsv"; then
-  "${compose[@]}" --profile ops up -d --no-build --no-deps pitr-wal-provider >"$artifact_root/development-start.log" 2>&1
-fi
 "${compose[@]}" --profile ops up -d --no-build --no-deps postgres redis rabbitmq >"$artifact_root/development-start.log" 2>&1
 for attempt in {1..60}; do
   if "${compose[@]}" exec -T postgres pg_isready -U lunchlineup_ci_admin -d lunchlineup_ci >/dev/null 2>&1; then break; fi

@@ -34,9 +34,9 @@ export function validateC08Selection(selection) {
     assert.match(entry.sourcePin.sha256, /^[a-f0-9]{64}$/);
     assert.ok(Number.isSafeInteger(entry.sourcePin.bytes) && entry.sourcePin.bytes > 0);
   }
-  assert.deepEqual(Object.keys(selection.images).sort(), ['alertmanager', 'caddy', 'otel', 'postgres', 'prometheus']);
+  assert.deepEqual(Object.keys(selection.images).sort(), ['caddy', 'postgres', 'prometheus']);
   for (const image of Object.values(selection.images)) assert.match(image, /^[^\s]+@sha256:[a-f0-9]{64}$/);
-  assert.equal(new Set(Object.values(selection.images)).size, 5);
+  assert.equal(new Set(Object.values(selection.images)).size, 3);
   return selection;
 }
 

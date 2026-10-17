@@ -7,7 +7,8 @@
 # scripts/export-internal-ci-release-images.sh on the VM218 builder.
 # This script never builds, never prunes, never deletes volumes, and only
 # targets dev.lunchlineup.com. Integrity = sha256 of each archive plus the
-# loaded image ID, both taken from the exporter metadata.
+# loaded image ID, both taken from the exporter metadata. Backups are an estate
+# system (pgBackRest + restic); this script takes none.
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
@@ -129,19 +130,8 @@ sys.stdout.write("\t".join(str(m[k]) for k in ("artifactName", "imageRef", "loca
 }
 
 # --- 3. deploy ---------------------------------------------------------------
-pre_deploy_backup() {
-  if "$DOCKER" volume inspect "${PROJECT}_postgres_data" >/dev/null 2>&1; then
-    if [[ "${PILOT_SKIP_BACKUP:-}" == I_ACCEPT_NO_BACKUP ]]; then
-      echo "WARNING: pre-deploy backup skipped by explicit operator override"
-      return
-    fi
-    step "pre-deploy database backup (scripts/backup.sh via the backup service)"
-    compose --profile ops run --rm --pull never backup || fail "pre-deploy backup failed; nothing was changed"
-  else
-    echo "no existing postgres volume; skipping backup"
-  fi
-}
-
+# Recovery point: Postgres PITR is the estate pgBackRest (repo on the NAS,
+# configured by estate-infra). This script runs no dump or backup container.
 run_migrations() {
   step "migrations (scripts/apply-db-migrations.mjs via the migrate service)"
   compose run --rm --pull never migrate || fail "migrations failed; app containers not (re)started"
@@ -158,19 +148,6 @@ wait_for_health() {
   echo "health ok: $body"
 }
 
-# Named volumes created empty (e.g. by an earlier failed start) stay root-owned and
-# never receive the image's directory ownership. Give the non-root services theirs.
-ensure_volume_ownership() {
-  local entry service volume owner path
-  step "volume ownership"
-  for entry in grafana:grafana_data:472:0 promtail:promtail_positions:10001:10001; do
-    IFS=: read -r service volume owner <<<"${entry%:*}"; owner="$owner:${entry##*:}"
-    compose create --no-build --pull never "$service" >/dev/null 2>&1 || true
-    path="$("$DOCKER" volume inspect --format '{{.Mountpoint}}' "${PROJECT}_$volume" 2>/dev/null)" || continue
-    if [[ -d "$path" && "$(stat -c %u "$path")" == 0 ]]; then chown "$owner" "$path"; fi
-  done
-}
-
 main() {
   [[ $# == 1 ]] || { echo "Usage: $0 <image-dir>" >&2; exit 64; }
   for c in "$DOCKER" python3 curl flock sha256sum gzip awk grep; do command -v "$c" >/dev/null 2>&1 || fail "missing command: $c"; done
@@ -179,10 +156,8 @@ main() {
   check_target
   load_images "$1"
   compose config --quiet || fail "compose config invalid"
-  pre_deploy_backup
   step "start postgres"; compose up -d --no-build --pull never postgres
   run_migrations
-  ensure_volume_ownership
   step "start stack"; compose up -d --no-build --pull never
   wait_for_health
   echo "deploy_private_pilot_ok tag=$IMAGE_TAG_VALUE origin=$PILOT_ORIGIN"

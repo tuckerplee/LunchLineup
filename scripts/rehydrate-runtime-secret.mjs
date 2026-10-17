@@ -6,7 +6,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
-const providerOwnerPath = resolve(scriptDir, 'backup.sh');
+const providerOwnerPath = resolve(scriptDir, 'provider-command-owner.sh');
 
 function fail(message) { throw new Error(message); }
 function option(name, required = true) {

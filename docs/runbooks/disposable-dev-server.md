@@ -12,7 +12,7 @@ VM107 (10.231.10.108) serves the private pilot at `https://dev.lunchlineup.com`.
 - `scripts/export-internal-ci-release-images.sh`: runs on the VM218 builder; writes `<name>.tar.gz` + `<name>.image.json` per image.
 - `infrastructure/development-admission/compose.private-proxy.yml`: overlay publishing Caddy only on `10.231.10.108:80`.
 - `infrastructure/caddy/Caddyfile.private-pilot`: trusts only `10.231.10.30/32` as a proxy so `X-Forwarded-Proto https` survives.
-- `scripts/backup.sh`, `scripts/restore.sh`, `scripts/apply-db-migrations.mjs`: used through the compose `backup` and `migrate` services.
+- `scripts/apply-db-migrations.mjs`: used through the compose `migrate` service.
 
 ## Required runtime env (`/opt/lunchlineup-secrets/runtime.env`, root-only, 0600)
 
@@ -32,7 +32,7 @@ The script, holding `/run/lock/lunchlineup-deploy.lock` for the whole run:
 
 1. checks hostname `lunchlineup-dev`, the env above, and that neither hold file exists;
 2. verifies each archive's size and sha256 against its metadata, `docker load`s it, checks the loaded image ID equals `localImageId`, and tags first-party images `${IMAGE_PREFIX:-lunchlineup}/<name>:$IMAGE_TAG`; refuses on any mismatch. The previously tagged image is kept as `lunchlineup-rollback/<name>:previous` and listed in `/var/lib/lunchlineup/deploy/previous-images.tsv`;
-3. if the `lunchlineup_postgres_data` volume exists, runs the compose `backup` service (`scripts/backup.sh`); a failed backup aborts before anything changes (`PILOT_SKIP_BACKUP=I_ACCEPT_NO_BACKUP` overrides, for empty/throwaway data only);
+3. takes no backup (recovery is the estate pgBackRest; take a restic/pgBackRest snapshot first if the data matters);
 4. starts postgres, runs the `migrate` service, then `compose up -d --no-build --pull never` with the private-proxy overlay;
 5. polls `http://10.231.10.108/health` with `Host: dev.lunchlineup.com` until `"status":"ok"` (default 300 s).
 
@@ -49,9 +49,7 @@ while IFS=$'\t' read -r name target id; do sudo docker tag "$id" "$target"; done
 # 2. restart on those images (set IMAGE_TAG in runtime.env back if it changed)
 sudo docker compose --project-name lunchlineup --env-file /opt/lunchlineup-secrets/runtime.env \
   -f docker-compose.yml -f infrastructure/development-admission/compose.private-proxy.yml up -d --no-build --pull never
-# 3. only if the schema/data must go back: restore the pre-deploy dump (list dumps in the backup_data volume)
-#    RESTORE_TARGET_ENV=disposable RESTORE_CONFIRM=restore-<POSTGRES_DB> RESTORE_ALLOW_NONEMPTY=YES_OVERWRITE \
-#    RESTORE_REQUIRE_CHECKSUM=true scripts/restore.sh <backup.sql.zst.gpg>   # see the script header for required env
+# 3. only if the schema/data must go back: ask estate-infra for a pgBackRest restore (docs/runbooks/postgres-pitr-recovery.md)
 ```
 
 `previous-images.tsv` is overwritten on each deploy, so only one step back is kept.

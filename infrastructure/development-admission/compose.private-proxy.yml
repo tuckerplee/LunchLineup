@@ -8,6 +8,12 @@ services:
         published: "80"
         host_ip: "10.231.10.108"
         protocol: tcp
+      # Estate Prometheus scrape port (token-protected metrics gateway; see
+      # docs/estate/README.md). Same private bind address as the app port.
+      - target: 9180
+        published: "9180"
+        host_ip: "10.231.10.108"
+        protocol: tcp
     environment:
       PRIVATE_APP_HOST: dev.lunchlineup.com
       CADDY_SITE_ADDRESSES: http://dev.lunchlineup.com
@@ -24,9 +30,3 @@ services:
       - type: volume
         source: caddy_config
         target: /config
-  backup:
-    environment:
-      # The backup container root is read-only; gpg needs a writable home on the /tmp tmpfs.
-      GNUPGHOME: /tmp
-      # Private pilot keeps encrypted backups locally on VM107 until an offsite target exists.
-      BACKUP_OFFSITE_ENABLED: "false"

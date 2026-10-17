@@ -9,9 +9,8 @@ import { deriveProductionImageInventory } from '../../scripts/production-image-i
 const root = resolve(import.meta.dirname, '../..');
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 const releaseServices = [
-  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
-  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
-  'alertmanager', 'otel-collector',
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control',
+  'proxy', 'pgbouncer', 'postgres',
 ];
 
 function releaseManifest() {
@@ -39,7 +38,7 @@ test('production image inventory covers every Compose image without a second har
 
     const byService = new Map(inventory.images.flatMap((image) => image.composeServices.map((service) => [service, image])));
     for (const service of [
-      'redis', 'rabbitmq', 'prometheus', 'autoheal',
+      'redis', 'rabbitmq', 'autoheal',
     ]) assert.equal(byService.get(service)?.source, 'compose', `${service} must be a scanned third-party image`);
     for (const service of releaseServices) assert.equal(byService.get(service)?.source, 'release-manifest');
 
