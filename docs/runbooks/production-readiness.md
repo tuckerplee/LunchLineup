@@ -69,7 +69,7 @@ Calendar shift saves now distinguish the submitted editor's lifetime from the ca
 
 ## Retained production safety requirements and historical procedure reference
 
-Production database recovery requires both the existing encrypted logical dump and the independent PostgreSQL PITR path in `postgres-pitr-recovery.md`. The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that those recovery jobs protect; an external authoritative database requires a separate, explicitly validated recovery architecture. Do not launch with PITR disabled or without a manually verified remote base backup and WAL segment.
+Production database recovery is the estate pgBackRest PITR path described in `postgres-pitr-recovery.md` (repository on the NAS over SFTP, configured by estate-infra). The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that the estate stanza protects. Do not launch until estate-infra confirms WAL archiving is attached (`POSTGRES_ARCHIVE_MODE`/`POSTGRES_ARCHIVE_COMMAND`) and a restore drill has passed.
 
 ## Purpose
 
@@ -81,11 +81,11 @@ Use the current bridge matrix to assess public SaaS production readiness. The re
 - The commit pushed to the upstream GitHub branch before server deploy.
 - The CI `release-manifest` artifact for that commit.
 - The retained `.release/launch-proof.json` artifact for that commit, with non-skipped evidence for runtime env validation, the production Stripe meter, DAST, load smoke, logical DR drill, PITR drill, and alert routing. External release identity is intentionally absent predeploy and is proven after mutation from the public release header. `evidence.pitrDrill` must prove a named `COMPLETE` physical base backup, archived WAL, recovery target, successful paused restore, and passing invariants.
-- Immutable image digests for `api`, `web`, `engine`, `worker`, `control`, `migrate`, `backup`, Dockerfile base images, and every non-application Compose service image.
+- Immutable image digests for `api`, `web`, `engine`, `worker`, `control`, `migrate`, Dockerfile base images, and every non-application Compose service image.
 - Production `.tfvars` values for `domain_name`, `vm_targets`, `network_cidr`, `secrets_backend`, `backup_repository`, `backup_metrics_collector`, `alert_targets`, and `operator_runbook_url`.
 - A dedicated S3 Terraform backend bucket with versioning enabled, public access blocked, TLS-only access, server-side encryption, and native `.tflock` locking. Backend access must use a short-lived workload identity or assumed role.
 - A managed secrets backend. Do not use plaintext files, local-only paths, placeholders, or copied example values for production.
-- GitHub production environment variables `PRODUCTION_RUNTIME_SECRET_REFERENCE` and `PRODUCTION_RUNTIME_SECRET_VERSION`, identifying one immutable AWS Secrets Manager version. The referenced secret contains the production runtime env used by `scripts/validate-production-launch.mjs` and must include loopback-only `API_HOST_BIND`, `DATA_TARGET_ENV=production`, `MIGRATION_PRODUCTION_CONFIRM=apply-lunchlineup-production-migrations`, `MFA_SECRET_ENCRYPTION_KEY_CURRENT`, `WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT`, `STRIPE_SECRET_KEY`, `STRIPE_METER_ID`, `STRIPE_METER_EVENT_NAME`, `BACKUP_ENCRYPTION_KEY_SECRET_FILE`, `BACKUP_OFFSITE_URI`, `BACKUP_METRICS_FILE`, `ALERTMANAGER_WEBHOOK_URL_FILE`, `LUNCHLINEUP_STATUS_HEALTH_URL`, `LAUNCH_PROOF_MANIFEST_URI`, and the `LAUNCH_PROOF_*` retained evidence references. The workflow exports only the decoded runner-temp path and SHA as `PRODUCTION_RUNTIME_ENV_PATH`, `COMPOSE_SERVICE_ENV_FILE`, and `PRODUCTION_RUNTIME_ENV_SHA256`; the checked-in VM217 transport consumes those values directly.
+- GitHub production environment variables `PRODUCTION_RUNTIME_SECRET_REFERENCE` and `PRODUCTION_RUNTIME_SECRET_VERSION`, identifying one immutable AWS Secrets Manager version. The referenced secret contains the production runtime env used by `scripts/validate-production-launch.mjs` and must include loopback-only `API_HOST_BIND`, `DATA_TARGET_ENV=production`, `MIGRATION_PRODUCTION_CONFIRM=apply-lunchlineup-production-migrations`, `MFA_SECRET_ENCRYPTION_KEY_CURRENT`, `WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT`, `STRIPE_SECRET_KEY`, `STRIPE_METER_ID`, `STRIPE_METER_EVENT_NAME`, `LUNCHLINEUP_STATUS_HEALTH_URL`, `LAUNCH_PROOF_MANIFEST_URI`, and the `LAUNCH_PROOF_*` retained evidence references. The workflow exports only the decoded runner-temp path and SHA as `PRODUCTION_RUNTIME_ENV_PATH`, `COMPOSE_SERVICE_ENV_FILE`, and `PRODUCTION_RUNTIME_ENV_SHA256`; the checked-in VM217 transport consumes those values directly.
 - GitHub production variable `PRODUCTION_RELEASE_REGISTRY_URI` naming a retained S3 prefix. Protected registry credentials must allow read, conditional create of immutable `releases/<sha>.json`, `releases/<sha>.sigstore.json`, `indexes/<sha>.json`, and `indexes/<sha>.sigstore.json`, plus update of the signed `index.json` and `index.sigstore.json` pointers. Protected bootstrap and production-smoke jobs require GitHub `id-token: write` solely for keyless signing through the SHA-pinned Cosign installer; no static private signing key is permitted.
 - The GitHub `production` environment must have at least two required reviewers, `Prevent self-review` enabled, a nonzero wait timer, and a deployment branch policy restricted to `main`. Keep VM217 host/user/private-key/pinned-known-host inputs, rollback access, release-registry credentials, and runtime-secret credentials environment-scoped. These controls are external GitHub settings and require retained launch evidence; workflow YAML cannot create or prove them. The emergency dispatch is not approved for use until these settings are verified.
 - GitHub production secret `OLD_RELEASE_COMPATIBILITY_CLONE_COMMAND`. CI writes it to a mode-`0700` runner-temp driver and invokes `provision`/`destroy` with a run-owned `llc-<run>-<attempt>-<12hex>` clone ID, mode-`0600` clone env path, and the actual production runtime path. The driver may provision/destroy only; it never receives or authors evidence/proof paths. The checked-in harness owns migration, old-release smoke, evidence, finalization, and signing.
@@ -94,8 +94,8 @@ Use the current bridge matrix to assess public SaaS production readiness. The re
 - GitHub repository or organization variables for every web build-time public value: `NEXT_PUBLIC_API_URL`, `NEXT_PUBLIC_OIDC_ENABLED`, `NEXT_PUBLIC_SIGNUP_MODE`, `NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL`, `NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL`, `NEXT_PUBLIC_DPA_CONTACT_EMAIL`, `NEXT_PUBLIC_APP_ORIGIN`, `NEXT_PUBLIC_APP_URL`, and `NEXT_PUBLIC_APP_ENV`.
 - GitHub staging variables `STAGING_API_HEALTH_URL` and `STAGING_WEB_URL`. Staging may remain Cloudflare Access-protected; in that case, define the paired staging environment secrets `CF_ACCESS_CLIENT_ID` and `CF_ACCESS_CLIENT_SECRET`, which `verify-external-health-release.mjs` sends together. Both responses must serve `X-LunchLineup-Release: GITHUB_SHA` after access authentication.
 - GitHub production variables `PRODUCTION_HEALTH_URL`, `PRODUCTION_API_HEALTH_URL`, `PRODUCTION_WEB_URL`, and `PRODUCTION_POST_DEPLOY_PROOF_COMMAND`. `PRODUCTION_WEB_URL` must be the canonical public HTTPS root and is forwarded to VM217 only by `scripts/deploy-vm217-transport.sh`. The proof command must compare the server `DEPLOYED_GIT_SHA` against `RELEASE_SOURCE_SHA`, run the public API health proof, and match the downloaded launch-proof artifact to `LAUNCH_PROOF_ARTIFACT_SHA256` within `LAUNCH_PROOF_MAX_AGE_SECONDS` before recording its nonzero size.
-- Separate managed source files for the four release-path Compose secrets: `CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE`, `METRICS_TOKEN_FILE`, `ALERTMANAGER_WEBHOOK_URL_FILE`, and `BACKUP_ENCRYPTION_KEY_SECRET_FILE`. Do not reuse a path or credential bytes across these roles; the metrics token is for Prometheus reads only, and the control-plane admin token gates `/api/status` and `/api/control/*`. Provision the data-retention scheduler identity through its dedicated runbook so release proof cannot create or mutate that schedule.
-- A versioned Object-Locked non-root S3 logical-backup prefix, `/run/secrets/backup_key`, dedicated mode-`0640` AWS credentials or instance role, lifecycle-owned bounded expiry, an installed `lunchlineup-backup.timer`, and a tested restore path.
+- Separate managed source files for the release-path Compose secrets (the retention token is documented in the retention runbook): `CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE` and `METRICS_TOKEN_FILE`. Do not reuse a path or credential bytes across these roles; the metrics token is for estate Prometheus reads only (referenced there by host file path, never by value), and the control-plane admin token gates `/api/status` and `/api/control/*`. Provision the data-retention scheduler identity through its dedicated runbook so release proof cannot create or mutate that schedule.
+- Estate backups: pgBackRest (NAS repository over SFTP) attached to Postgres and host restic for files, both owned by estate-infra; no app-side backup keys, S3 prefix or timers.
 
 ## Self-Service Legal Gate
 
@@ -113,7 +113,7 @@ npm run audit:prod
 node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$(git rev-parse HEAD)" --launch-proof-file .release/launch-proof.json
 node scripts/validate-production-launch.mjs /path/to/production-runtime.env
 node scripts/rotate-auth-secrets.mjs
-node --test tests/deploy/backup-scheduler.test.mjs tests/deploy/backup-restore-dr.test.mjs
+node --test tests/deploy/observability-configs.test.mjs tests/deploy/deploy-release.test.mjs
 node --test infrastructure/terraform/production/production-contract.test.mjs
 ```
 
@@ -190,8 +190,8 @@ Keep writers frozen until the restored state lineage/serial and infrastructure i
 If Prometheus tooling is installed:
 
 ```bash
-promtool check config infrastructure/prometheus/prometheus.yml
-promtool check rules infrastructure/prometheus/alerts/lunchlineup.yml
+promtool check rules docs/estate/lunchlineup-rules.yml
+promtool test rules docs/estate/tests/*.test.yml
 ```
 
 ## Deploy Source Verification
@@ -216,7 +216,7 @@ Download the CI `release-manifest` artifact for the pushed commit and verify it 
 node scripts/verify-release-artifacts.mjs .release/release-manifest.json --source-sha "$(git rev-parse HEAD)" --launch-proof-file .release/launch-proof.json
 ```
 
-Every app image in the manifest, including the one-shot `backup` image, must be pinned as `<service>:<git-sha>@sha256:<digest>`. Every Dockerfile base image, CI service container image, and non-application Compose image must include an immutable `@sha256:` digest. The web image must receive all `NEXT_PUBLIC_*` values as Docker build args; browser bundles do not get corrected by Compose runtime env after the image is built. The staging deploy command must consume `RELEASE_MANIFEST_PATH`, pass `RELEASE_SOURCE_SHA` into one deploy-source verifier before server mutation, and start Compose with all four scope flags, pulled release images, `--no-build`, and `--pull never`. Normal production mutation accepts no command variable: CI directly invokes `scripts/deploy-vm217-transport.sh` with the protected host/user/private-key/pinned-known-host inputs plus the exact manifest, validated runtime env, launch proof, and source SHA. A production deploy stops the backup timers and atomically stages `/var/lib/lunchlineup/backup-release.env` with the candidate image prefix and SHA. Transport passes the exact canonical `/opt/lunchlineup/releases/<sha>` directory as `APP_DIR`; readiness must not append another release segment. Backup readiness snapshots all four installed service/timer unit bytes and both timers' enabled/active states before replacing units; each one-shot renders once, resolves the service image to an immutable local digest, executes a digest-rewritten private Compose config, and must emit exactly one journal completion bound to the read-back systemd InvocationID, retained candidate path, source SHA, and digest. Client limits are 7,260 seconds for the 2-hour logical backup and 21,660 seconds for the 6-hour PITR job. A timeout must capture the InvocationID, prove the service terminal, remove the immutable candidate container ID, and prove no survivor before old unit bytes are restored. Every failure restores and verifies the exact snapshot, and cleanup failure is terminal. The deploy restores the previous pointer on readiness failure and commits the staged pointer only after one-shot backup/PITR proof succeeds. Do not deploy `latest`, `local`, tag-only images, or images built directly on the server. If `verify-release-artifacts.mjs` prints `launch_proof=not_checked`, the release artifact check is incomplete for public launch.
+Every app image in the manifest must be pinned as `<service>:<git-sha>@sha256:<digest>`. Every Dockerfile base image, CI service container image, and non-application Compose image must include an immutable `@sha256:` digest. The web image must receive all `NEXT_PUBLIC_*` values as Docker build args; browser bundles do not get corrected by Compose runtime env after the image is built. The staging deploy command must consume `RELEASE_MANIFEST_PATH`, pass `RELEASE_SOURCE_SHA` into one deploy-source verifier before server mutation, and start Compose with all four scope flags, pulled release images, `--no-build`, and `--pull never`. Normal production mutation accepts no command variable: CI directly invokes `scripts/deploy-vm217-transport.sh` with the protected host/user/private-key/pinned-known-host inputs plus the exact manifest, validated runtime env, launch proof, and source SHA. A production deploy stops the backup timers and atomically stages `/var/lib/lunchlineup/backup-release.env` with the candidate image prefix and SHA. Transport passes the exact canonical `/opt/lunchlineup/releases/<sha>` directory as `APP_DIR`; readiness must not append another release segment. Backup readiness snapshots all four installed service/timer unit bytes and both timers' enabled/active states before replacing units; each one-shot renders once, resolves the service image to an immutable local digest, executes a digest-rewritten private Compose config, and must emit exactly one journal completion bound to the read-back systemd InvocationID, retained candidate path, source SHA, and digest. Client limits are 7,260 seconds for the 2-hour logical backup and 21,660 seconds for the 6-hour PITR job. A timeout must capture the InvocationID, prove the service terminal, remove the immutable candidate container ID, and prove no survivor before old unit bytes are restored. Every failure restores and verifies the exact snapshot, and cleanup failure is terminal. The deploy restores the previous pointer on readiness failure and commits the staged pointer only after one-shot backup/PITR proof succeeds. Do not deploy `latest`, `local`, tag-only images, or images built directly on the server. If `verify-release-artifacts.mjs` prints `launch_proof=not_checked`, the release artifact check is incomplete for public launch.
 
 ## Signed SBOM And Vulnerability Reports
 
@@ -291,7 +291,7 @@ The public production Compose baseline must be private-fail-closed:
 - `control` has no `/var/run/docker.sock` mount.
 - `CONTROL_PLANE_DOCKER_STATUS=disabled` unless a separate private operations override has been reviewed.
 - `/api/status` and `/api/control/*` use `/run/secrets/control_plane_admin_token`.
-- `/api/metrics` uses `/run/secrets/metrics_token` for Prometheus scraping.
+- `/api/metrics` uses `/run/secrets/metrics_token` for estate Prometheus scraping through the metrics gateway (`docs/estate/README.md`).
 - Raw Docker socket helpers such as `autoheal` are kept out of the default public profile; only enable the `ops` profile on a private operations host with explicit review.
 
 If Docker-backed control-plane status is intentionally enabled for a private operations host, require a separate Compose override that sets `CONTROL_PLANE_DOCKER_STATUS=enabled`, sets `CONTROL_PLANE_DOCKER_SOCKET_PATH`, documents the operator-only network path, and proves the public stack still cannot reach the socket-backed endpoint. Do not enable Docker socket access in the public baseline.
@@ -312,62 +312,23 @@ Production deploy must start `pdf-parser` explicitly before the full stack and i
 
 ## Backup And Restore Proof
 
-Before public traffic:
+Backups are an estate system. Before launch, estate-infra confirms and records (the record is referenced from `LAUNCH_PROOF_DR_DRILL_URI`):
 
-- Provision `/run/secrets/backup_key` from the managed secrets backend with owner `root`, group `lunchlineup`, and mode `0640`. Set `BACKUP_ENCRYPTION_KEY_SECRET_FILE=/run/secrets/backup_key`; never place the passphrase in `BACKUP_ENCRYPTION_KEY` or an env file. The remote deploy validates that exact host source path as readable before pulling or starting candidate services.
-- Provision `/etc/lunchlineup/backup-offsite` with owner `root`, group `lunchlineup`, mode `0750`, and only mode-`0640` AWS credentials/config, or use a dedicated instance role. Mutable rclone is not production-capable.
-- Set an exact non-root `BACKUP_OFFSITE_URI=s3://bucket/prefix`, `BACKUP_OFFSITE_RETENTION_DAYS=35`, `BACKUP_OFFSITE_RETENTION_DRY_RUN=false`, and `BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS=90`. The bucket must prove versioning, default COMPLIANCE Object Lock, bounded current/noncurrent lifecycle expiry, and unconditional all-principal object/version-delete denial for the exact prefix.
-- Install `infrastructure/systemd/lunchlineup-backup.env.example`, `.service`, and `.timer` exactly as documented in `infrastructure/systemd/README.md`. Confirm the last successful deploy created `/var/lib/lunchlineup/backup-release.env`.
-- Run the same one-shot path used by the timer, then enable recurrence:
+- pgBackRest is attached to the production Postgres through `POSTGRES_ARCHIVE_MODE=on` and `POSTGRES_ARCHIVE_COMMAND` (see `infrastructure/postgres/README.md`), archives to the NAS repository over SFTP, and reports a current full backup.
+- Host restic covers the uploads volume, the runtime env and the secret files.
+- A pgBackRest restore (including point-in-time) into a disposable database has been exercised, followed by the `migrate` service, an API health check and a tenant-scoped schedule query, with the elapsed time recorded.
+- Estate monitoring alerts on stale backups and failing WAL archiving. Those rules live in the estate, not in `docs/estate/lunchlineup-rules.yml`.
 
-  ```bash
-  systemctl start lunchlineup-backup.service
-  journalctl -u lunchlineup-backup.service -n 50 --no-pager
-  test -s /var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom
-  systemctl enable --now lunchlineup-backup.timer
-  systemctl list-timers lunchlineup-backup.timer
-  ```
+Nothing in this repository takes, ships or restores backups.
 
-  The unit executes the checked-in systemd backup path. Its private Compose invocation fixes the project name to `lunchlineup`, carries the exact retained candidate project directory, runtime env file, and Compose file, and uses `--profile ops`, `run --detach --no-deps`, and `--pull never`. The wrapper owns the exact returned container ID through bounded wait, logs, removal, and absence readback. Release SHAs must never change the project name or persistent volume identity. The job must use the deployed backup image and must not build or pull on the production host.
-- Confirm fresh matching `offsite_retention_ok mode=lifecycle_owned`, `offsite_immutable_ok` exact object/checksum versions plus principal/time, and `backup_ok expiry_owner=lifecycle`. Verify both exact version IDs independently. The job performs no remote deletion; lifecycle owns expiry.
-- Query Prometheus for `lunchlineup_backup_last_success_timestamp_seconds`, then confirm `BackupMissingTelemetry` and `BackupStale` are inactive. The metric file alone is insufficient without the offsite object and checksum sidecar.
-- Select one immutable off-host backup object version and obtain its expected SHA-256 through the provider's authenticated inventory/readback path. Do not pre-download or reuse local backup bytes, and do not use a `latest` alias. Provision a trusted non-symlink, non-group/world-writable fetch adapter that implements the `DR_FETCH_*` contract documented in `scripts/README.md` and performs provider GET plus version readback.
-- Retrieve and restore that exact off-host backup into a new disposable path and environment, not production:
-
-  ```bash
-  BACKUP_FILE=/tmp/lunchlineup-YYYYMMDDHHMMSS.sql.zst.gpg \
-  DR_OFFHOST_SOURCE_URI=s3://lunchlineup-prod/db-backups/lunchlineup-YYYYMMDDHHMMSS.sql.zst.gpg \
-  DR_OFFHOST_SOURCE_VERSION=<immutable-provider-version-id> \
-  DR_OFFHOST_EXPECTED_SHA256=<64-hex-backup-sha256> \
-  DR_OFFHOST_FETCH_COMMAND=/usr/local/libexec/lunchlineup-fetch-dr-backup \
-  DR_OFFHOST_READBACK_COMMAND=/usr/local/libexec/lunchlineup-readback-dr-backup \
-  DR_SOURCE_SHA="$(git rev-parse HEAD)" \
-  BACKUP_ENCRYPTION_KEY_FILE=/run/secrets/backup_key \
-  ./scripts/dr-drill.sh
-  ```
-
-- Capture `dr_drill_ok` and retained JSON only after bounded removal by the full immutable Docker container ID and independent exact-ID plus reserved-name absence readback. The JSON must bind `container_id=cleanup_container_id`, both ID/name absence booleans, `cleanup_id_evidence=docker-ps-exact-id-v1`, and the cleanup timestamp; rename/replacement, cleanup failure, or uncertain absence must exit nonzero and invalidate the artifact. The database password is written only to the drill's private Docker env file, never Docker CLI arguments. Both adapters must be exact executables pinned by an externally retained short-lived signed recovery-adapter attestation. Supply its local bytes, immutable attestation/signature URIs, and fixed protected workflow certificate identity/OIDC issuer. The drill verifies Cosign before retrieval; launch verification independently fetches and verifies those retained bytes plus the signed execution/readback/target/outcome/cleanup binding. Arbitrary adapter bytes, missing cleanup evidence, or forged self-consistent caller JSON fail.
-- Confirm restored API health and at least one tenant-scoped schedule query if this backup is promoted into a disposable app stack after the database-only drill.
-- Confirm the Prometheus backup freshness alerts continue to see `lunchlineup_backup_last_success_timestamp_seconds` after node-exporter and Prometheus restart.
-
-## PITR Immutable Storage Proof
-
-Before public launch and before the production deploy mutation marker:
-
-- Provision distinct managed WAL append-only, base-backup append-only, restore read-only, and lifecycle-audit read-only credential directories, each containing readable `access_key` and `secret_key` files. Never reuse one file path or credential value across these or Compose secret roles. Set exact `PITR_ENABLED=true` and `PITR_ARCHIVE_MODE=on`; all non-PITR Compose renders must keep Postgres archiving off.
-- Enable bucket versioning and default COMPLIANCE Object Lock for `PITR_OBJECT_LOCK_RETENTION_DAYS` of at least 14 days.
-- Configure enabled untagged rules for exactly `$PITR_S3_PREFIX/` that expire current versions no earlier than Object Lock, expire every noncurrent version, clean expired delete markers, and keep current plus noncurrent expiry within `PITR_LIFECYCLE_MAX_RETENTION_DAYS` (greater than immutable retention and no more than 90).
-- Retain the canonical lifecycle envelope at `PITR_LIFECYCLE_POLICY_PROOF_URI` and on the deployment host at `PITR_LIFECYCLE_POLICY_PROOF_FILE`. Its digest must equal `PITR_LIFECYCLE_POLICY_SHA256`.
-- Pin a protected provider authorization simulator executable and digest with `PITR_AUTHORIZATION_SIMULATOR_FILE` and `PITR_AUTHORIZATION_SIMULATOR_SHA256`. Run `scripts/pitr-verify-storage.sh` with candidate release inputs. Require both writer lines, authorization-simulation lines for restore and lifecycle-audit, `pitr_lifecycle_policy_ready`, and `pitr_storage_readiness_ok`; any missing required read, allowed prohibited mutation, simulator drift, permission failure, successful writer delete, versioning/Object Lock mismatch, early or unbounded lifecycle rule, retained-proof mismatch, or policy digest drift blocks deployment.
-- Keep lifecycle administration in a separately managed external object-store identity. The one-shot audit container receives only read-only lifecycle inspection credentials; no lifecycle-administrator or delete credential may be mounted in application, migration, Postgres, backup, restore, or audit containers.
 ## Alert And Runbook Proof
 
-- Confirm `alert_targets` contains at least one production paging route and Alertmanager routes every `critical` alert to that target.
-- Confirm every alert in `infrastructure/prometheus/alerts/lunchlineup.yml` has a `runbook` annotation pointing at an existing `docs/runbooks/*.md` file.
-- Confirm Prometheus scrapes `webhook-replay:3004`, `WebhookReplayNotReady` is enabled, and `lunchlineup_webhook_replay_ready{job="webhook-replay"}` is `1` after startup.
+- Confirm the estate Alertmanager routes every `critical` alert from `docs/estate/lunchlineup-rules.yml` to a paging route (the app has no webhook configuration).
+- Confirm every alert in `docs/estate/lunchlineup-rules.yml` has a `runbook` annotation pointing at an existing `docs/runbooks/*.md` file.
+- Confirm the estate Prometheus scrapes the `lunchlineup` job from `docs/estate/lunchlineup-targets.yml`, `ExpectedScrapeTargetMissing` is inactive, and `lunchlineup_webhook_replay_ready{job="lunchlineup",service="webhook-replay"}` is `1` after startup.
 - Confirm the API scrape exposes `lunchlineup_dependency_up` value `1` for `database`, `redis`, and `rabbitmq`; `RequiredApiDependencyUnavailable` is inactive; and `/health` returns `503` when any required dependency is stopped or unreachable.
-- Query `NotificationOutbox` by `status` before launch and after each publish smoke test. `PENDING`, `FAILED`, or expired `PROCESSING` rows must clear through the API sweeper; any `DEAD_LETTERED` row and its redacted `lastError` requires operator triage. Error logs include `Notification outbox terminal failure` with intent and tenant IDs. Recovery tuning is bounded by `NOTIFICATION_OUTBOX_POLL_INTERVAL_MS`, `NOTIFICATION_OUTBOX_LEASE_MS`, `NOTIFICATION_OUTBOX_BATCH_SIZE`, and `NOTIFICATION_OUTBOX_MAX_ATTEMPTS`.
-- Confirm Grafana, Loki, Tempo, and Prometheus are private or authenticated.
+- Query `NotificationOutbox` by `status` before launch and after each publish smoke test. `PENDING`, `FAILED`, or expired `PROCESSING` rows must clear through the API sweeper; any `DEAD_LETTERED` row and its redacted `lastError` requires operator triage.
+- Confirm port 9180 (the metrics gateway) is reachable only from the estate Prometheus host and that the estate Grafana, Loki and Prometheus are private or authenticated.
 
 ## Launch Blocks
 
@@ -385,14 +346,12 @@ Stop the production deploy if any of these are true:
 - `PRODUCTION_API_HEALTH_URL`, canonical root `PRODUCTION_WEB_URL`, or `PRODUCTION_POST_DEPLOY_PROOF_COMMAND` is missing, or the proof command does not verify `DEPLOYED_GIT_SHA` against `RELEASE_SOURCE_SHA`, public API health, retained proof checksum, and nonzero proof-artifact size.
 - The API health response is degraded, any required `lunchlineup_dependency_up` series is absent or zero, or `RequiredApiDependencyUnavailable` is firing.
 - Any production image reference, Dockerfile base image, CI service image, or non-app Compose service image uses a mutable tag instead of a digest.
-- The release manifest omits `backup`, `/var/lib/lunchlineup/backup-release.env` does not select the deployed SHA, or the timer would build or pull an image on the server.
 - Any secret, password, token, private key, `.env`, backup payload, or generated credential is tracked in Git.
 - The public Compose baseline mounts `/var/run/docker.sock` into a default-profile service, mounts it into `control`, places `control` on `data` or `external`, or uses the metrics token for admin/control actions.
 - Any production Compose service lacks a finite CPU, memory, PID, open-file, or Docker log-retention ceiling, or the exact-host load smoke shows repeated throttling, OOM kills, PID exhaustion, file-descriptor exhaustion, or restart loops under the reviewed limits.
-- Backup restore has not been rehearsed from the same off-host repository through `scripts/dr-drill.sh` with `DR_OFFHOST_SOURCE_URI`, or the retained signed JSON does not prove successful cleanup and exact disposable-container absence after the drill.
-- `lunchlineup-backup.timer` or `lunchlineup-pitr-base-backup.timer` is not installed, enabled, and active; candidate-image one-shots do not prove offsite logical backup plus PITR base backup; fresh metrics are absent; or `BackupMissingTelemetry`/`BackupStale` is firing.
-- PITR writer credentials are shared or can delete; the digest-pinned provider simulator cannot prove both read-only identities or reports any allowed write/delete/retention/lifecycle/policy/bucket mutation; bucket versioning/default COMPLIANCE Object Lock is absent or mismatched; exact-prefix current, noncurrent, or delete-marker lifecycle rules are missing, early, or above the declared maximum; the live canonical policy differs from the retained proof/digest; required authorization, `pitr_lifecycle_policy_ready`, or `pitr_storage_readiness_ok` evidence is missing before mutation; or lifecycle-administrator/delete credentials are mounted in any application, data, or audit container.
-- `LUNCHLINEUP_STATUS_HEALTH_URL`, `ALERTMANAGER_WEBHOOK_URL_FILE`, `LAUNCH_PROOF_MANIFEST_URI`, or any required `LAUNCH_PROOF_*` reference is missing, points at local/test/example values, or uses a vague `latest`/`current` alias; `LAUNCH_PROOF_MANIFEST_URI` must additionally be a retained HTTPS JSON URL.
+- Estate-infra has not confirmed a passing pgBackRest restore drill.
+- The estate pgBackRest archive is not attached to the production Postgres, or the estate backup-freshness alerts are not active.
+- `LUNCHLINEUP_STATUS_HEALTH_URL`, `LAUNCH_PROOF_MANIFEST_URI`, or any required `LAUNCH_PROOF_*` reference is missing, points at local/test/example values, or uses a vague `latest`/`current` alias; `LAUNCH_PROOF_MANIFEST_URI` must additionally be a retained HTTPS JSON URL.
 - `NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL`, `NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL`, or `NEXT_PUBLIC_DPA_CONTACT_EMAIL` is missing, unmonitored, or still uses a `.example` placeholder.
 - `PUBLIC_SIGNUP_MODE` or `NEXT_PUBLIC_SIGNUP_MODE` is missing, mismatched, or not exactly `closed_beta`; invite codes and Turnstile keys do not override the unresolved counsel-approved, versioned Terms prerequisite.
 - `/privacy`, `/security`, and `/subprocessors` have not been reviewed against `docs/compliance/privacy-security.md`, `docs/compliance/subprocessors.md`, and `docs/compliance/dpa-readiness.md`.
@@ -418,9 +377,6 @@ docker compose \
   --env-file /var/lib/lunchlineup/runtime-env/current \
   -f /opt/lunchlineup/current/docker-compose.yml \
   logs --tail=100 api worker engine
-systemctl status lunchlineup-backup.timer --no-pager
-systemctl list-timers lunchlineup-backup.timer
-test -s /var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom
 curl -fsS https://lunchlineup.com/health
 ```
 

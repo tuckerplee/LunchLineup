@@ -26,7 +26,7 @@ test('Compose has no privileged services and tightly scopes host-level exception
   const hostPidServices = Object.entries(compose.services)
     .filter(([, service]) => service.pid === 'host')
     .map(([serviceName]) => serviceName);
-  assert.deepEqual(hostPidServices, ['node-exporter']);
+  assert.deepEqual(hostPidServices, []);
 });
 
 test('tmpfs exceptions are bounded and disable executable, setuid, and device files', () => {

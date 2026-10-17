@@ -75,41 +75,6 @@ test('VM217 production deploy gates success on public and required internal heal
   assert.match(ci, /id: same_gate_release_outcome[\s\S]*id: automatic_production_rollback[\s\S]*scripts\/rollback-vm217-transport\.sh/);
 });
 
-test('VM217 alert gate verifies fresh loopback Alertmanager state before proof and pointer promotion', () => {
-  const script = read('scripts/deploy-vm217-remote.sh');
-  const compose = read('docker-compose.yml');
-  const productionDeploy = script.slice(
-    script.indexOf('run_production_release_deploy()'),
-    script.indexOf('run_development_source_deploy()'),
-  );
-  const alertmanager = compose.slice(
-    compose.indexOf('  alertmanager:'),
-    compose.indexOf('\n  # Observability: Node Exporter'),
-  );
-
-  assert.match(script, /DEPLOY_ALERTMANAGER_URL="\$\{DEPLOY_ALERTMANAGER_URL:-http:\/\/127\.0\.0\.1:9093\/api\/v2\/alerts\}"/);
-  assert.match(script, /DEPLOY_ALERT_MAX_RESPONSE_AGE_MS="\$\{DEPLOY_ALERT_MAX_RESPONSE_AGE_MS:-30000\}"/);
-  assert.match(script, /DEPLOY_ALERT_STABILITY_SECONDS="\$\{DEPLOY_ALERT_STABILITY_SECONDS:-900\}"/);
-  assert.match(script, /--alertmanager-url "\$DEPLOY_ALERTMANAGER_URL"/);
-  assert.match(script, /--max-response-age-ms "\$DEPLOY_ALERT_MAX_RESPONSE_AGE_MS"/);
-  assert.match(script, /DEPLOY_ALERT_MAX_RESPONSE_AGE_MS < 1000 \|\| DEPLOY_ALERT_MAX_RESPONSE_AGE_MS > 300000/);
-  assert.match(script, /DEPLOY_ALERT_BOOT_GRACE_SECONDS > 300/);
-  assert.match(script, /DEPLOY_ALERT_STABILITY_SECONDS < 60 \|\| DEPLOY_ALERT_STABILITY_SECONDS > 900/);
-  assert.match(script, /stable_since=0[\s\S]*now - stable_since >= DEPLOY_ALERT_STABILITY_SECONDS/);
-  assert.match(script, /stable_since=0[\s\S]*Critical LunchLineup alerts did not remain continuously inactive/);
-
-  const alertGateIndex = productionDeploy.indexOf('if ! verify_deploy_alerts');
-  const proofIndex = productionDeploy.indexOf('write_post_deploy_proof');
-  const stagePointerIndex = productionDeploy.indexOf('stage_backup_release_pointer');
-  const commitPointerIndex = productionDeploy.indexOf('commit_release_pointers');
-  assert.ok(alertGateIndex !== -1 && alertGateIndex < proofIndex);
-  assert.ok(proofIndex < stagePointerIndex);
-  assert.ok(stagePointerIndex < commitPointerIndex);
-
-  assert.match(alertmanager, /ports:\s*\n\s+- "127\.0\.0\.1:9093:9093"/);
-  assert.doesNotMatch(alertmanager, /0\.0\.0\.0:9093|"9093:9093"/);
-});
-
 test('production releases for the same workflow and ref serialize without cancellation', () => {
   const ci = read('docs/legacy/github-actions-ci.yml');
   const concurrencyStart = ci.indexOf('concurrency:');

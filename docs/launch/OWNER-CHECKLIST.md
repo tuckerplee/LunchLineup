@@ -19,10 +19,10 @@ Everything below is an input only the owner can supply. Fill the value where ind
 | 10 | Signup mode decision | RUNTIME `PUBLIC_SIGNUP_MODE` and BUILD `NEXT_PUBLIC_SIGNUP_MODE` (identical) | `docs/launch/signup-modes.md`. Default `closed_beta`. |
 | 11 | Turnstile keys (only for `open`) | BUILD `NEXT_PUBLIC_TURNSTILE_SITE_KEY`; RUNTIME `TURNSTILE_SECRET_KEY` | Cloudflare account. |
 | 12 | Invite codes (only for `invite_only`) | RUNTIME `PUBLIC_SIGNUP_INVITE_CODES` | Treat as secrets. |
-| 13 | Backup and PITR object storage | RUNTIME: `BACKUP_OFFSITE_URI`, `PITR_S3_ENDPOINT`, `PITR_S3_BUCKET`, `PITR_LIFECYCLE_POLICY_PROOF_URI`; host files `/run/secrets/pitr-*-object-store/{access_key,secret_key}` | Four separate credentials (wal, base-backup, restore, lifecycle-audit). |
-| 14 | Alert webhook destination | Host file named by `ALERTMANAGER_WEBHOOK_URL_FILE` | Slack, PagerDuty or similar URL, mode 0600. |
+| 13 | Backups and point-in-time recovery | Estate systems; no RUNTIME keys | pgBackRest (repository on the NAS over SFTP) for Postgres and host restic for files, configured by estate-infra. Confirm estate-infra has attached pgBackRest (`POSTGRES_ARCHIVE_MODE`/`POSTGRES_ARCHIVE_COMMAND`, `infrastructure/postgres/README.md`) and has a passing restore drill. |
+| 14 | Alert delivery and dashboards | Estate systems; no RUNTIME keys | Estate Alertmanager (`alertmanager.int.tuckerl.ee`) owns routing and mail; estate Prometheus and Grafana use `docs/estate/`. Confirm estate-infra loaded `lunchlineup-rules.yml`, `lunchlineup-targets.yml` and the dashboards, and that the metrics token file exists at the path in the scrape job. No webhook URL is configured in the app. |
 | 15 | Generated secrets | RUNTIME every `GENERATE_ME` key; host secret files under `/run/secrets` | `openssl rand -hex 32` each; never reuse. Operator can do this, owner only stores them safely. |
-| 16 | Launch proof evidence | RUNTIME `LAUNCH_PROOF_*` | DAST, load test, DR drill, alert-route test, external health check references. |
+| 16 | Launch proof evidence | RUNTIME `LAUNCH_PROOF_*` | DAST, load test, DR drill (estate pgBackRest restore), alert-route test (estate Alertmanager), external health check references. |
 | 17 | Organizational evidence (policy, access review, incident roster, vendor agreements) | Protected storage outside Git | `docs/compliance/owner-input-register.md` (C13-*). |
 | 18 | Final go/no-go | Owner | Re-run the checker, then the deploy preflight (it runs the email probe and launch policy). |
 

@@ -42,12 +42,16 @@ test('accepts a complete real-looking production profile with approved legal con
 });
 
 test('flags every missing required key by name', () => {
-  for (const key of ['DOMAIN', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'BACKUP_OFFSITE_URI', 'PUBLIC_SIGNUP_MODE']) {
+  for (const key of ['DOMAIN', 'RESEND_API_KEY', 'STRIPE_SECRET_KEY', 'METRICS_TOKEN_FILE', 'PUBLIC_SIGNUP_MODE']) {
     const values = env();
     delete values[key];
     assert.ok(checkProductionEnv(values, { legalConfig: APPROVED_LEGAL }).some((e) => e.startsWith(`${key} is required`)), key);
   }
   assert.ok(REQUIRED_KEYS.every((key) => key in BASE), 'fixture covers every required key');
+  for (const dead of ['BACKUP_OFFSITE_URI', 'BACKUP_ENCRYPTION_KEY_SECRET_FILE', 'PITR_S3_ENDPOINT', 'PITR_S3_BUCKET', 'PITR_LIFECYCLE_POLICY_PROOF_URI', 'ALERTMANAGER_WEBHOOK_URL_FILE', 'GRAFANA_USER', 'GRAFANA_PASSWORD']) {
+    assert.ok(!REQUIRED_KEYS.includes(dead), `${dead} belongs to a removed component and must not be required`);
+    assert.ok(!(dead in BASE), `${dead} must not be in the production fixture`);
+  }
 });
 
 test('enforces NODE_ENV, app env and COOKIE_SECURE', () => {

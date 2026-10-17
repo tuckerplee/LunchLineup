@@ -50,15 +50,15 @@ class C08AdapterTests(unittest.TestCase):
         self.assertNotIn('--rm', argv)
 
     def test_validator_forces_no_network_and_readonly_source_mount(self):
-        path = ROOT / 'infrastructure/prometheus/prometheus.yml'
-        result = adapter.run_plan(['run', '--rm', '-v', str(path) + ':/etc/prometheus/prometheus.yml:ro',
-            '--entrypoint', '/bin/promtool', IMAGES['prometheus'], 'check', 'config', '/etc/prometheus/prometheus.yml'],
+        path = ROOT / 'docs/estate/lunchlineup-rules.yml'
+        result = adapter.run_plan(['run', '--rm', '-v', str(path) + ':/etc/estate/lunchlineup-rules.yml:ro',
+            '--entrypoint', '/bin/promtool', IMAGES['prometheus'], 'check', 'rules', '/etc/estate/lunchlineup-rules.yml'],
             IMAGES, PROJECT, ROOT)
         self.assertIn('--network=none', result['argv'])
         self.assertFalse(result['detached'])
         for hostile in [
             ['--network', 'host'], ['--privileged'], ['--label', 'foreign=yes'],
-            ['-v', '/etc/passwd:/etc/passwd:ro'], ['-v', str(path) + ':/etc/prometheus/prometheus.yml:rw'],
+            ['-v', '/etc/passwd:/etc/passwd:ro'], ['-v', str(path) + ':/etc/estate/lunchlineup-rules.yml:rw'],
             ['--publish', '0.0.0.0:5432:5432'], ['--env', 'SECRET=unapproved'],
         ]:
             with self.subTest(hostile=hostile), self.assertRaises(ValueError):

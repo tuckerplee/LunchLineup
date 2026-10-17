@@ -11,6 +11,7 @@
 - `launch/`: production launch owner checklist, legal review packet, signup modes and email setup.
 - `saas-ui-overhaul.md`: SaaS user-interface overhaul notes.
 - `compliance/`: compliance documentation.
+- `estate/`: contract with the estate systems (Prometheus, Alertmanager, Grafana, Loki/Alloy, pgBackRest, restic) plus the rule, scrape-target and dashboard files estate-infra copies.
 - `legacy/`: non-executable historical automation retained for review.
 - `runbooks/`: operational runbooks, including the VM107 disposable-server restore and `internal-beta-operations.md` launch/pause paths.
 - `operations/`: signed local-CI candidate qualification, bundle transfer, VM107 exact-image activation, readiness, and pause procedures.
@@ -22,9 +23,9 @@ Use `testing/README.md` for the migration testing baseline. It defines the parit
 
 Use `runbooks/disposable-dev-server.md` when VM107 needs to be treated as replaceable infrastructure. It defines the 15-minute restore contract, GitHub-backed bootstrap path, existing-data restore input, and private-route validation checklist.
 
-Use `runbooks/internal-beta-operations.md` for an exact pushed-SHA VM107 beta session. It keeps `onboot: 0`, requires release-header, service, delivery/outbox, alert, and encrypted restore proof, and defines the data-preserving pause/resume path.
+Use `runbooks/internal-beta-operations.md` for an exact pushed-SHA VM107 beta session. It keeps `onboot: 0`, requires release-header, service, delivery/outbox and estate-alert proof, and defines the data-preserving pause/resume path.
 
-Use `runbooks/production-readiness.md` before any public SaaS production deploy. It defines the GitHub source, immutable artifact, backup restore, alert routing, and post-deploy verification gates.
+Use `runbooks/production-readiness.md` before any public SaaS production deploy. It defines the GitHub source, immutable artifact, estate backup/alert-routing confirmation, and post-deploy verification gates.
 
 Use `compliance/privacy-security.md` before publishing public privacy or security copy. It records the beta data categories, security commitments, account lifecycle state, and launch gaps.
 

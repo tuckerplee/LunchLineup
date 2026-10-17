@@ -12,10 +12,6 @@ const DEFAULT_TOTAL_TIMEOUT_MS = 3_600_000;
 const MIN_TOTAL_TIMEOUT_MS = 60_000;
 const MAX_TOTAL_TIMEOUT_MS = 7_200_000;
 const FILE_TIMEOUT_OVERRIDES_MS = new Map([
-  // This deploy file runs multiple signed-evidence and cross-process recovery
-  // simulations serially. It is intentionally comprehensive and exceeds the
-  // ordinary contract-test budget on Windows without being nondeterministic.
-  ['tests/deploy/backup-restore-dr.test.mjs', 600_000],
   // The VM217 transport fixture invokes the actual bounded command owner for
   // each SSH/SCP operation. Its timeout probes independently require a
   // 45-second child to be stopped within 20 seconds on Windows, while the

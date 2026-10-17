@@ -39,7 +39,7 @@ test('migration test runner gives comprehensive recovery, VM217 transport, cutov
   });
 
   assert.equal(result.status, 0, result.stderr);
-  assert.match(result.stdout, /file_timeout_ms=120000 total_timeout_ms=3600000 overridden_files=5 mode=dry-run/);
+  assert.match(result.stdout, /file_timeout_ms=120000 total_timeout_ms=3600000 overridden_files=4 mode=dry-run/);
 });
 
 test('migration test runner serializes tests inside each owned file', () => {

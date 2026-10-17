@@ -67,16 +67,9 @@ function sampleReleaseManifest() {
     worker: 'Dockerfile.worker',
     migrate: 'Dockerfile.migrations',
     control: 'Dockerfile.control',
-    backup: 'Dockerfile.backup',
     proxy: 'Dockerfile.proxy',
     pgbouncer: 'Dockerfile.pgbouncer',
     postgres: 'Dockerfile.postgres',
-    'node-exporter': 'Dockerfile.node-exporter',
-    loki: 'Dockerfile.loki',
-    tempo: 'Dockerfile.tempo',
-    grafana: 'Dockerfile.grafana',
-    alertmanager: 'Dockerfile.alertmanager',
-    'otel-collector': 'Dockerfile.otel-collector',
   };
 
   return {
@@ -399,7 +392,7 @@ exit 79
     ], {
       LAUNCH_PROOF_HTTP_BEARER_TOKEN: bearer,
       BASH_ENV: bashPath(providerEnvironment),
-      BACKUP_PROVIDER_OWNERSHIP_MODE: 'container-job',
+      PROVIDER_OWNERSHIP_MODE: 'container-job',
     });
     assert.notEqual(result.status, 0);
     assert.match(`${result.stdout}\n${result.stderr}`, /Unable to retrieve launchProof\.evidence\.runtimeEnv\.uri/);

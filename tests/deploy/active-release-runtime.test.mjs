@@ -48,37 +48,6 @@ test('restart target survives rollback staging cleanup through the durable curre
   }
 });
 
-test('backup and PITR systemd jobs execute the exact release selected by IMAGE_TAG', () => {
-  for (const [unitName, service] of [
-    ['lunchlineup-backup.service', 'lunchlineup-backup.service'],
-    ['lunchlineup-pitr-base-backup.service', 'lunchlineup-pitr-base-backup.service'],
-  ]) {
-    const unit = readUnit(unitName);
-    assert.match(unit, /User=lunchlineup\r?\nGroup=lunchlineup/);
-    assert.match(unit, /^WorkingDirectory=\/$/m);
-    assert.match(unit, /^EnvironmentFile=\/var\/lib\/lunchlineup\/backup-release\.env$/m);
-    assert.match(unit, /^Environment=CANDIDATE_RELEASE_ROOT=\/opt\/lunchlineup\/releases$/m);
-    assert.match(
-      unit,
-      new RegExp(`^ExecStart=/bin/bash -ec 'exec /bin/bash "/opt/lunchlineup/releases/\\\$\\\{IMAGE_TAG\\\}/scripts/pitr-run-candidate-job\\.sh" ${service}'$`, 'm'),
-    );
-    assert.doesNotMatch(unit, /^WorkingDirectory=.*\/current\/?$/m);
-    assert.doesNotMatch(unit, /^ExecStart=.*\/current\//m);
-  }
-
-  const candidateJob = readFileSync(join(root, 'scripts', 'pitr-run-candidate-job.sh'), 'utf8');
-  assert.match(candidateJob, /\[\[ "\$IMAGE_TAG" =~ \^\[a-f0-9\]\{40\}\$ \]\]/);
-  assert.match(candidateJob, /candidate_path="\$CANDIDATE_RELEASE_ROOT\/\$IMAGE_TAG"/);
-  assert.match(candidateJob, /\[\[ "\$candidate_from_script" == "\$candidate_path" \]\]/);
-  assert.match(candidateJob, /--project-directory "\$candidate_path"/);
-  assert.match(candidateJob, /--project-name "\$candidate_compose_project"/);
-  assert.match(candidateJob, /candidate_compose_project="\$COMPOSE_PROJECT_NAME"/);
-  assert.match(candidateJob, /config\?\.services\?\.\[service\]\?\.image/);
-  assert.match(candidateJob, /docker image inspect --format '\{\{\.Id\}\}' "\$image_ref"/);
-  assert.match(candidateJob, /run --detach --no-deps --pull never "\$compose_service"/);
-  assert.doesNotMatch(candidateJob, /\/opt\/lunchlineup\/current/);
-});
-
 test('probe and retention jobs intentionally follow the active current pointer', () => {
 
   for (const unit of [

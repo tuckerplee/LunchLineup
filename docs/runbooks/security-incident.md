@@ -55,8 +55,8 @@ LIMIT 100;
 
 Then:
 
-- Check RBAC denial logs in Loki for permission escalation attempts.
-- Review Tempo traces for unusual API call patterns.
+- Check RBAC denial logs in the estate Loki for permission escalation attempts.
+- Review API request metrics and logs in the estate Grafana for unusual call patterns (tracing is not deployed).
 - Check proxy/API access logs for rejected Host, Origin, CORS, CSRF, and metrics-token failures.
 - Review webhook delivery failures for SSRF blocks; do not paste full webhook URLs if they include credentials or token query parameters.
 - Verify no `.env`, key, token, or backup payload has been committed to Git.
@@ -78,7 +78,7 @@ docker compose \
   --project-directory /opt/lunchlineup/current \
   --env-file /var/lib/lunchlineup/runtime-env/current \
   -f /opt/lunchlineup/current/docker-compose.yml \
-  up -d --force-recreate api worker control grafana
+  up -d --force-recreate api worker control
 docker compose \
   --project-name lunchlineup \
   --project-directory /opt/lunchlineup/current \

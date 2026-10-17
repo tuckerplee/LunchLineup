@@ -66,7 +66,7 @@ Terminal delivery and solve rows do not remain secondary payload stores. Deliver
 
 ## Backup Restore Proof Records
 
-`scripts/dr-drill.sh` writes a JSON proof file for launch and disaster-recovery tickets. That proof should contain only operational evidence such as backup hash, off-host source URI, restored table count, and timestamps; do not attach backup payloads, SQL dumps, tenant exports, or customer rows to the proof record. A DR proof file does not satisfy a tenant export request.
+The estate restore drill (pgBackRest, run by estate-infra) produces the JSON proof referenced by `LAUNCH_PROOF_DR_DRILL_URI`. That proof should contain only operational evidence such as backup hash, off-host source URI, restored table count, and timestamps; do not attach backup payloads, SQL dumps, tenant exports, or customer rows to the proof record. A DR proof file does not satisfy a tenant export request.
 
 ## User Deactivation
 

@@ -10,10 +10,10 @@ log_min_duration_statement = {{observability.slowQueryThresholdMs}}
 listen_addresses = '*'
 max_connections = {{postgres.maxConnections}}
 
-# Write-Ahead Log (WAL) Configuration for PITR
+# Write-Ahead Log (WAL) configuration. Archiving is off by default; the estate
+# pgBackRest attaches through POSTGRES_ARCHIVE_MODE / POSTGRES_ARCHIVE_COMMAND.
 wal_level = replica
-# Runtime deployment must override this only when PITR is enabled and validated.
 archive_mode = off
-archive_command = 'sh /opt/lunchlineup/pitr/archive-wal.sh "%p" "%f"'
+archive_command = '/bin/false'
 archive_timeout = 60s
 max_wal_senders = 10

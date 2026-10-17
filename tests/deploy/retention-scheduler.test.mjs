@@ -171,16 +171,11 @@ test('retention scheduler docs name independent execution and review monitoring 
   }
 });
 
-test('node-exporter textfile collector is wired for retained-record metrics', () => {
+test('retained-record metrics use the host node_exporter textfile collector, not an in-stack exporter', () => {
   const compose = read('docker-compose.yml');
-  const prometheusReadme = read('infrastructure/prometheus/README.md');
-  const nodeExporter = serviceBlock(compose, 'node-exporter');
+  const estate = read('docs/estate/README.md');
 
-  assert.match(nodeExporter, /--collector\.textfile\.directory=\/textfile_collector/);
-  assert.match(
-    nodeExporter,
-    /\$\{NODE_EXPORTER_TEXTFILE_DIR:-\/var\/lib\/node_exporter\/textfile_collector\}:\/textfile_collector:ro/,
-  );
-  assert.match(prometheusReadme, /NODE_EXPORTER_TEXTFILE_DIR/);
-  assert.match(prometheusReadme, /--collector\.textfile\.directory=\/textfile_collector/);
+  assert.doesNotMatch(compose, /node-exporter|NODE_EXPORTER_TEXTFILE_DIR|textfile_collector/);
+  assert.match(estate, /node_exporter textfile collector/);
+  assert.match(estate, /\/var\/lib\/node_exporter\/textfile_collector/);
 });

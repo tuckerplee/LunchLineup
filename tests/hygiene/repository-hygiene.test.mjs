@@ -191,13 +191,14 @@ test('CI gates release images on the worker Python unit suite', () => {
   assert.match(ci, /build-images:[\s\S]*needs: unit-tests/);
 });
 
-test('Prometheus uses the protected metrics token secret', () => {
+test('the metrics token secret is file-backed and only a host path is referenced for the estate scraper', () => {
   const compose = read('docker-compose.yml');
-  const prometheus = read('infrastructure/prometheus/prometheus.yml');
+  const targets = read('docs/estate/lunchlineup-targets.yml');
 
   assert.match(compose, /metrics_token:/);
   assert.match(compose, /METRICS_TOKEN_FILE=\/run\/secrets\/metrics_token/);
-  assert.match(prometheus, /credentials_file:\s*\/run\/secrets\/metrics_token/);
+  assert.match(targets, /credentials_file:\s*\/etc\/prometheus\/secrets\/lunchlineup_metrics_token/);
+  assert.doesNotMatch(targets, /^\s*credentials:|bearer_token:/m, 'the token must be referenced by file path, never inline');
 });
 
 test('Caddy applies public SaaS browser and API cache hardening headers', () => {

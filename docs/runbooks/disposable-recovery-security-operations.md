@@ -1,5 +1,7 @@
 # Disposable recovery, security and operations qualification
 
+> **Estate systems notice.** The in-stack Prometheus, Alertmanager, Grafana, Loki, Tempo, OTel Collector, node-exporter and the `backup`/`pitr-*` services named below were removed; monitoring, alerting, logs and backups are estate systems (`docs/estate/README.md`). The sections on image qualification, logical backup and physical PITR drills describe the retired in-stack design and are kept as history until the owner retires this runbook; the 27-service inventory is now the 15 services in `infrastructure/ci/internal-beta-runtime-services.json`.
+
 This is the operator packet for C08, C09, C11 and C12. King Push Test owns testing, commits, merging and pushing. Execute through the existing single QA owner and admitted bounded runtime only. This packet does not select a release candidate, install a controller, enable generic CI or authorize production operations. Keep VM107 stopped/onboot 0 with its hold intact. Do not access VM4014 or VM106. Historical VM217/production commands in linked runbooks are not disposable-target commands.
 
 ## Admission and evidence custody

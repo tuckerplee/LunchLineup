@@ -12,9 +12,8 @@ import { emitCandidateEvidence } from '../../scripts/launch-proof-evidence.mjs';
 import { deriveProductionImageInventory } from '../../scripts/production-image-inventory.mjs';
 
 const services = [
-  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
-  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
-  'alertmanager', 'otel-collector',
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control',
+  'proxy', 'pgbouncer', 'postgres',
 ];
 const sourceSha = '0123456789abcdef0123456789abcdef01234567';
 

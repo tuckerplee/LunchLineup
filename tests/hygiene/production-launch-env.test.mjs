@@ -12,8 +12,6 @@ const composeSecretSources = {
   control_plane_admin_token: 'CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE',
   metrics_token: 'METRICS_TOKEN_FILE',
   retention_purge_token: 'RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE',
-  alertmanager_webhook_url: 'ALERTMANAGER_WEBHOOK_URL_FILE',
-  backup_encryption_key: 'BACKUP_ENCRYPTION_KEY_SECRET_FILE',
 };
 
 function portablePath(path) {
@@ -48,32 +46,6 @@ function createProductionSecretFixture() {
     files[envKey] = path;
     overrides[envKey] = portablePath(path);
   }
-
-  for (const [role, envKey] of [
-    ['wal', 'PITR_WAL_OBJECT_STORE_SECRETS_DIR'],
-    ['base-backup', 'PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR'],
-    ['restore', 'PITR_RESTORE_OBJECT_STORE_SECRETS_DIR'],
-    ['lifecycle-audit', 'PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR'],
-  ]) {
-    const directory = join(scratch, 'secrets', 'pitr', role);
-    const accessKey = join(directory, 'access_key');
-    const secretKey = join(directory, 'secret_key');
-    writeFixtureFile(accessKey, `${role}-access-key-fixture\n`);
-    writeFixtureFile(secretKey, `${role}-secret-key-fixture\n`);
-    overrides[envKey] = portablePath(directory);
-    files[`${envKey}_ACCESS_KEY`] = accessKey;
-    files[`${envKey}_SECRET_KEY`] = secretKey;
-  }
-
-  const lifecycleProof = join(scratch, 'proofs', 'pitr-lifecycle-policy.json');
-  writeFixtureFile(lifecycleProof, '{"schemaVersion":1}\n');
-  overrides.PITR_LIFECYCLE_POLICY_PROOF_FILE = portablePath(lifecycleProof);
-  files.PITR_LIFECYCLE_POLICY_PROOF_FILE = lifecycleProof;
-  const authorizationSimulator = join(scratch, 'bin', 'pitr-provider-authorization-simulator');
-  writeFixtureFile(authorizationSimulator, '#!/bin/sh\nexit 0\n');
-  chmodSync(authorizationSimulator, 0o700);
-  overrides.PITR_AUTHORIZATION_SIMULATOR_FILE = portablePath(authorizationSimulator);
-  files.PITR_AUTHORIZATION_SIMULATOR_FILE = authorizationSimulator;
 
   return {
     root: scratch,
@@ -191,32 +163,6 @@ function validEnv(overrides = {}) {
     RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: '/run/secrets/retention_purge_token',
     CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: '/run/secrets/control_plane_admin_token.host',
     CONTROL_PLANE_ADMIN_TOKEN_FILE: '/run/secrets/control_plane_admin_token',
-    BACKUP_ENCRYPTION_KEY_SECRET_FILE: '/run/secrets/backup_key',
-    BACKUP_OFFSITE_URI: 's3://lunchlineup-prod/db-backups/',
-    BACKUP_OFFSITE_RETENTION_DAYS: '35',
-    BACKUP_OFFSITE_RETENTION_DRY_RUN: 'false',
-    BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS: '90',
-    BACKUP_METRICS_FILE: '/var/lib/node_exporter/textfile_collector/lunchlineup_backup.prom',
-    PITR_ENABLED: 'true',
-    PITR_ARCHIVE_MODE: 'on',
-    PITR_S3_ENDPOINT: 'https://s3.us-west-2.amazonaws.com',
-    PITR_S3_BUCKET: 'lunchlineup-prod-pitr',
-    PITR_S3_PREFIX: 'lunchlineup/production/cluster-01',
-    PITR_WAL_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-wal-object-store',
-    PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-base-backup-object-store',
-    PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-restore-object-store',
-    PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR: '/run/secrets/pitr-lifecycle-audit-object-store',
-    PITR_OBJECT_LOCK_RETENTION_DAYS: '14',
-    PITR_LIFECYCLE_MAX_RETENTION_DAYS: '35',
-    PITR_LIFECYCLE_POLICY_PROOF_FILE: '/etc/lunchlineup/pitr-lifecycle-policy.json',
-    PITR_LIFECYCLE_POLICY_PROOF_URI: 's3://lunchlineup-prod/pitr-policy/lifecycle-policy-20260714.json',
-    PITR_LIFECYCLE_POLICY_SHA256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    PITR_AUTHORIZATION_SIMULATOR_FILE: '/usr/local/libexec/lunchlineup-pitr-authorization-simulator',
-    PITR_AUTHORIZATION_SIMULATOR_SHA256: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS: '60',
-    ALERTMANAGER_WEBHOOK_URL_FILE: '/run/secrets/alertmanager_webhook_url',
-    GRAFANA_USER: 'lunchlineup_admin',
-    GRAFANA_PASSWORD: 'grafana_abcdefghijklmnopqrstuvwxyz123456',
     CONTROL_PLANE_PASSWORD: 'control_abcdefghijklmnopqrstuvwxyz123456',
     NEXT_PUBLIC_API_URL: '/api/v2',
     APP_ORIGIN: 'https://lunchlineup.com',
@@ -289,15 +235,9 @@ test('production launch validator accepts a real public launch profile', () => {
   assert.ok(payload.checked.includes('NEXT_PUBLIC_API_URL'));
   assert.ok(payload.checked.includes('NEXT_PUBLIC_OIDC_ENABLED'));
   assert.ok(payload.checked.includes('DATABASE_ROLE_ISOLATION'));
-  assert.ok(payload.checked.includes('PITR_LIFECYCLE_MAX_RETENTION_DAYS'));
-  assert.ok(payload.checked.includes('PITR_LIFECYCLE_POLICY_PROOF_URI'));
-  assert.ok(payload.checked.includes('PITR_LIFECYCLE_POLICY_SHA256'));
-  assert.ok(payload.checked.includes('PITR_ARCHIVE_MODE'));
-  assert.ok(payload.checked.includes('PITR_AUTHORIZATION_SIMULATOR_FILE'));
-  assert.ok(payload.checked.includes('PITR_AUTHORIZATION_SIMULATOR_SHA256'));
 });
 
-test('production launch validator verifies every rendered Compose and PITR secret file', () => {
+test('production launch validator verifies every rendered Compose secret file', () => {
   const fixture = createProductionSecretFixture();
 
   try {
@@ -324,13 +264,6 @@ test('production launch validator verifies every rendered Compose and PITR secre
     );
     writeFixtureFile(fixture.files.METRICS_TOKEN_FILE, 'restored-metrics-token-fixture\n');
 
-    rmSync(fixture.files.PITR_RESTORE_OBJECT_STORE_SECRETS_DIR_SECRET_KEY);
-    const missingPitrCredential = run(validEnv(fixture.overrides), ['--verify-local-secret-files']);
-    assert.notEqual(missingPitrCredential.status, 0);
-    assert.match(
-      missingPitrCredential.stderr,
-      /PITR_RESTORE_OBJECT_STORE_SECRETS_DIR_SECRET_KEY must exist and be a readable file on the deployment host/,
-    );
   } finally {
     fixture.cleanup();
   }
@@ -415,53 +348,21 @@ test('production launch validator fails closed without approved paid-GA legal te
   assert.match(result.stderr, /PAID_GA_APPROVAL_RECORD_URI must reference a specific retained proof artifact/);
 });
 
-test('production launch validator rejects weak immutable or unbounded PITR lifecycle policy', () => {
-  const result = run(validEnv({
+test('production launch validator neither requires nor inspects backup, PITR, alerting or dashboard keys (estate systems)', () => {
+  const absent = run(validEnv());
+  assert.equal(absent.status, 0, absent.stderr);
+  const stale = run(validEnv({
     PITR_ENABLED: 'false',
     PITR_ARCHIVE_MODE: 'off',
     PITR_S3_ENDPOINT: 'http://localhost:9000',
-    PITR_S3_PREFIX: 'lunchlineup/production/replace-with-cluster-id',
-    PITR_WAL_OBJECT_STORE_SECRETS_DIR: './secrets/pitr-object-store',
-    PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
-    PITR_RESTORE_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
-    PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR: '/run/secrets/shared-pitr',
-    PITR_OBJECT_LOCK_RETENTION_DAYS: '8',
-    PITR_LIFECYCLE_MAX_RETENTION_DAYS: '120',
-    PITR_LIFECYCLE_POLICY_PROOF_FILE: './proofs/lifecycle.json',
-    PITR_LIFECYCLE_POLICY_PROOF_URI: 's3://lunchlineup-prod/pitr-policy/latest.json',
-    PITR_LIFECYCLE_POLICY_SHA256: 'not-a-sha',
-    PITR_AUTHORIZATION_SIMULATOR_FILE: './scripts/fake-simulator',
-    PITR_AUTHORIZATION_SIMULATOR_SHA256: 'not-a-sha',
-    PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS: '0',
+    BACKUP_OFFSITE_URI: 'file:///backups',
+    BACKUP_OFFSITE_RETENTION_DRY_RUN: 'true',
+    ALERTMANAGER_WEBHOOK_URL_FILE: './secrets/alertmanager_webhook_url',
+    GRAFANA_PASSWORD: 'weak',
   }));
-
-  assert.notEqual(result.status, 0);
-  assert.match(result.stderr, /PITR_ENABLED must be exactly true/);
-  assert.match(result.stderr, /PITR_ARCHIVE_MODE must be exactly on/);
-  assert.match(result.stderr, /PITR_S3_ENDPOINT must use https/);
-  assert.match(result.stderr, /PITR_S3_PREFIX must be a dedicated cluster-specific prefix/);
-  assert.match(result.stderr, /PITR_WAL_OBJECT_STORE_SECRETS_DIR must be an absolute managed-secret directory/);
-  assert.match(result.stderr, /PITR WAL, base-backup, restore, and lifecycle-audit identities must use distinct/);
-  assert.match(result.stderr, /PITR_OBJECT_LOCK_RETENTION_DAYS must be an integer of at least 14/);
-  assert.match(result.stderr, /PITR_LIFECYCLE_MAX_RETENTION_DAYS must be an integer/);
-  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_PROOF_FILE must be an absolute managed-secret path/);
-  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_PROOF_URI must reference a specific retained proof artifact/);
-  assert.match(result.stderr, /PITR_LIFECYCLE_POLICY_SHA256 must be 64 lowercase hex characters/);
-  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_FILE must be an absolute managed-secret path/);
-  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_SHA256 must be 64 lowercase hex characters/);
-  assert.match(result.stderr, /PITR_AUTHORIZATION_SIMULATOR_TIMEOUT_SECONDS must be an integer/);
-});
-
-test('production launch validator rejects mutable logical-backup providers and operator-owned expiry', () => {
-  for (const [overrides, expected] of [
-    [{ BACKUP_OFFSITE_URI: 'rclone:production/db-backups' }, /mutable rclone is forbidden in production/],
-    [{ BACKUP_OFFSITE_RETENTION_DRY_RUN: 'true' }, /BACKUP_OFFSITE_RETENTION_DRY_RUN must be exactly false/],
-    [{ BACKUP_OFFSITE_LIFECYCLE_MAX_DAYS: '14' }, /must cover immutable logical-backup retention/],
-  ]) {
-    const result = run(validEnv(overrides));
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, expected);
-  }
+  assert.equal(stale.status, 0, stale.stderr);
+  const payload = JSON.parse(stale.stdout);
+  assert.ok(!payload.checked.some((name) => /^(?:PITR_|BACKUP_|ALERTMANAGER_|GRAFANA_)/.test(name)), 'removed keys must not be validated');
 });
 
 test('production launch validator rejects shared database owner and runtime credentials', () => {
@@ -496,7 +397,7 @@ test('production launch validator rejects Prisma-only runtime database URL optio
   assert.match(result.stderr, /DATABASE_URL must not include query parameters or fragments/);
 });
 
-test('production launch validator rejects an external database not protected by Compose recovery', () => {
+test('production launch validator rejects an external database not protected by estate pgBackRest recovery', () => {
   const result = run(validEnv({
     DATABASE_URL: 'postgresql://lunchlineup_app:app_pg_abcdefghijklmnopqrstuvwxyz123456@db.prod.example:5432/lunchlineup',
     MIGRATION_DATABASE_URL: 'postgresql://lunchlineup_admin:pg_abcdefghijklmnopqrstuvwxyz123456@db.prod.example:5432/lunchlineup',
@@ -743,10 +644,6 @@ test('production launch validator blocks smoke-only payment and local secret val
     RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: './secrets/retention_purge_token',
     CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: './secrets/control_plane_admin_token',
     API_HOST_BIND: '0.0.0.0',
-    BACKUP_ENCRYPTION_KEY_SECRET_FILE: './secrets/backup_key',
-    BACKUP_OFFSITE_URI: 'file:///backups',
-    BACKUP_METRICS_FILE: './backup.prom',
-    ALERTMANAGER_WEBHOOK_URL_FILE: './secrets/alertmanager_webhook_url',
     LUNCHLINEUP_STATUS_HEALTH_URL: 'http://localhost/health',
     LAUNCH_PROOF_MANIFEST_URI: 's3://lunchlineup-prod/launch-proof/latest.json',
     LAUNCH_PROOF_DAST_URL: '',
@@ -771,10 +668,6 @@ test('production launch validator blocks smoke-only payment and local secret val
   assert.match(result.stderr, /RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE must be an absolute managed-secret path/);
   assert.match(result.stderr, /CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE must be an absolute managed-secret path/);
   assert.match(result.stderr, /API_HOST_BIND must bind only to loopback/);
-  assert.match(result.stderr, /BACKUP_ENCRYPTION_KEY_SECRET_FILE must be an absolute managed-secret path/);
-  assert.match(result.stderr, /BACKUP_OFFSITE_URI must point at off-host storage/);
-  assert.match(result.stderr, /BACKUP_METRICS_FILE must be an absolute Prometheus textfile collector/);
-  assert.match(result.stderr, /ALERTMANAGER_WEBHOOK_URL_FILE must be an absolute managed-secret path/);
   assert.match(result.stderr, /LUNCHLINEUP_STATUS_HEALTH_URL must use https/);
   assert.match(result.stderr, /LAUNCH_PROOF_MANIFEST_URI must reference a specific retained proof artifact/);
   assert.match(result.stderr, /LAUNCH_PROOF_DAST_URL is required/);
@@ -787,12 +680,10 @@ test('production launch validator blocks smoke-only payment and local secret val
 test('production launch validator rejects absolute paths inside the repo-local secrets tree', () => {
   const result = run(validEnv({
     METRICS_TOKEN_FILE: portablePath(join(root, 'secrets', 'metrics_token')),
-    PITR_WAL_OBJECT_STORE_SECRETS_DIR: portablePath(join(root, 'secrets', 'pitr-wal')),
   }));
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /METRICS_TOKEN_FILE cannot point at the repo-local secrets directory/);
-  assert.match(result.stderr, /PITR_WAL_OBJECT_STORE_SECRETS_DIR cannot point at the repo-local secrets directory/);
 });
 
 test('production launch validator rejects reused managed-secret paths across roles', () => {
@@ -812,28 +703,14 @@ test('production launch validator rejects reused credential material without pri
 
   try {
     const reusedComposeCredential = readFileSync(fixture.files.METRICS_TOKEN_FILE, 'utf8');
-    const reusedPitrCredential = readFileSync(
-      fixture.files.PITR_WAL_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY,
-      'utf8',
-    );
     writeFixtureFile(fixture.files.RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE, reusedComposeCredential);
-    writeFixtureFile(
-      fixture.files.PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY,
-      reusedPitrCredential,
-    );
-
     const result = run(validEnv(fixture.overrides), ['--verify-local-secret-files']);
     assert.notEqual(result.status, 0);
     assert.match(
       result.stderr,
       /RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE must not reuse credential material from METRICS_TOKEN_FILE/,
     );
-    assert.match(
-      result.stderr,
-      /PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY must not reuse credential material from PITR_WAL_OBJECT_STORE_SECRETS_DIR_ACCESS_KEY/,
-    );
     assert.doesNotMatch(result.stderr, new RegExp(reusedComposeCredential.trim()));
-    assert.doesNotMatch(result.stderr, new RegExp(reusedPitrCredential.trim()));
   } finally {
     fixture.cleanup();
   }

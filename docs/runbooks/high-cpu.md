@@ -2,7 +2,7 @@
 
 ## Trigger
 
-Prometheus alert `HighCpuUsage`, `SolverQueueBacklog`, or correlated API latency indicates CPU saturation or solver backlog.
+Estate Prometheus alert `HighCpuUsage`, `SolverQueueBacklog`, or correlated API latency indicates CPU saturation or solver backlog.
 
 ## Severity
 
@@ -12,7 +12,7 @@ P2 degraded performance. Escalate to P1 if coupled with a critical error-rate al
 
 - API p99 latency exceeds 2 seconds.
 - Solver jobs are queued for more than 5 minutes.
-- Container CPU saturation is visible in the Grafana Platform Overview dashboard.
+- Container CPU saturation is visible in the estate Grafana Platform Overview dashboard.
 
 ## Investigation
 
@@ -28,22 +28,7 @@ docker compose \
 docker stats --no-stream --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}"
 ```
 
-Check solver and worker pressure:
-
-```bash
-docker compose \
-  --project-name lunchlineup \
-  --project-directory /opt/lunchlineup/current \
-  --env-file /var/lib/lunchlineup/runtime-env/current \
-  -f /opt/lunchlineup/current/docker-compose.yml \
-  exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=lunchlineup_solver_queue_depth'
-docker compose \
-  --project-name lunchlineup \
-  --project-directory /opt/lunchlineup/current \
-  --env-file /var/lib/lunchlineup/runtime-env/current \
-  -f /opt/lunchlineup/current/docker-compose.yml \
-  exec prometheus wget -qO- 'http://localhost:9090/api/v1/query?query=sum(rate(lunchlineup_worker_jobs_total{status=~"failed|non_retryable"}[5m]))'
-```
+Check solver and worker pressure in the estate Prometheus or Grafana (Platform Overview, `docs/estate/dashboards/platform-overview.json`): `lunchlineup_solver_queue_messages{job="lunchlineup",service="worker"}` and `sum(rate(lunchlineup_worker_jobs_total{job="lunchlineup",service="worker",status=~"failed|non_retryable"}[5m]))`.
 
 Check long-running database queries:
 
@@ -122,7 +107,7 @@ Record the temporary concurrency setting and revert after the incident.
 
 ## Recovery Verification
 
-- Grafana CPU panels return below 60%.
+- Estate Grafana CPU panels return below 60%.
 - `lunchlineup_solver_queue_depth` drains.
 - API p99 latency returns below 500 ms.
 - No `HighApiErrorRate` or `WorkerJobFailures` alert is firing.

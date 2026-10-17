@@ -208,7 +208,7 @@ test('VM107 bootstrap requires exact confirmation immediately before delete and 
   assert.match(bootstrap, /upsert_env LUNCHLINEUP_STATUS_HEALTH_URL "http:\/\/api-v2:3002\/v2\/ready"/);
   assert.match(bootstrap, /COMPOSE_PARALLEL_LIMIT="\$\{COMPOSE_PARALLEL_LIMIT:-1\}"/);
   assert.match(bootstrap, /export COMPOSE_PARALLEL_LIMIT/);
-  assert.match(bootstrap, /build_services=\(\s+web api api-v2 migrate engine worker pitr-wal-provider control\s+\)/);
+  assert.match(bootstrap, /build_services=\(\s+web api api-v2 migrate engine worker control\s+\)/);
   assert.match(
     bootstrap,
     /for service in "\$\{build_services\[@\]\}"; do\s+if \[\[ "\$service" == api && "\$candidate_api_built" == true \]\]; then\s+continue\s+fi\s+docker compose --env-file "\$SECRET_ENV_PATH" build "\$service"\s+done/,

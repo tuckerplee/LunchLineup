@@ -123,7 +123,7 @@ function assertDatabaseRoleIsolation(context) {
     || runtimeDatabaseName !== databaseName
     || migrationDatabaseName !== databaseName
   ) {
-    collector.fail('DATABASE_URL and MIGRATION_DATABASE_URL must target Compose service postgres:5432/POSTGRES_DB so logical backup and PITR protect the authoritative database.');
+    collector.fail('DATABASE_URL and MIGRATION_DATABASE_URL must target Compose service postgres:5432/POSTGRES_DB so the estate pgBackRest stanza protects the authoritative database.');
   }
 
   if (!collector.errors.some((message) => /APP_DB_|DATABASE_URL|MIGRATION_DATABASE_URL/.test(message))) {

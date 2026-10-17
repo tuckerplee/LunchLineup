@@ -58,9 +58,14 @@ services:
       - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
+    secrets:
+      # Read only by the estate metrics gateway site in Caddyfile.private-pilot and
+      # Caddyfile.production (see docs/estate/README.md); unused by the base Caddyfile.
+      - metrics_token
     networks:
       - external
       - app
+      - management
     healthcheck:
       test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://127.0.0.1:2015/health" ]
       interval: 15s
@@ -138,7 +143,6 @@ services:
       - external
       - app
       - data
-      - telemetry
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - DATA_TARGET_ENV=${DATA_TARGET_ENV:-development}
@@ -225,9 +229,6 @@ services:
       - WEBHOOK_MAX_PAYLOAD_BYTES=${WEBHOOK_MAX_PAYLOAD_BYTES:-65536}
       - WEBHOOK_INITIAL_DELIVERY_LEASE_MS=${WEBHOOK_INITIAL_DELIVERY_LEASE_MS:-60000}
       - LOG_LEVEL=${LOG_LEVEL:-info}
-      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
-      - OTEL_SERVICE_NAME=lunchlineup-api
-      - OTEL_DEPLOYMENT_ENVIRONMENT=production
       - METRICS_TOKEN_FILE=/run/secrets/metrics_token
       - API_INTERNAL_HOSTS=${API_INTERNAL_HOSTS:-api,api:3000}
       - RETENTION_PURGE_SERVICE_TOKEN_FILE=/run/secrets/retention_purge_token
@@ -372,11 +373,8 @@ services:
     networks:
       - app
       - data
-      - telemetry
     environment:
       - ENGINE_GRPC_REQUIRED=true
-      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
-      - OTEL_DEPLOYMENT_ENVIRONMENT=production
     healthcheck:
       test: [ "CMD", "python", "-c", "import urllib.request; response = urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3); assert response.status == 200; response.close()" ]
       interval: 15s
@@ -434,7 +432,6 @@ services:
     networks:
       app:
       data:
-      telemetry:
       outbound-egress:
         gw_priority: 1
     environment:
@@ -508,8 +505,6 @@ services:
       - PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS=${PASSWORD_RESET_EMAIL_SWEEP_MAX_STALENESS_SECONDS:-60}
       - RESEND_API_KEY=${RESEND_API_KEY:?Set RESEND_API_KEY in .env}
       - EMAIL_FROM=${EMAIL_FROM:?Set EMAIL_FROM in .env}
-      - OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://otel-collector:4318/v1/traces
-      - OTEL_DEPLOYMENT_ENVIRONMENT=production
     volumes:
       - availability_uploads:/app/uploads
       - parser_ipc:/run/lunchlineup-parser
@@ -551,43 +546,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Request-scoped WAL provider. It exits after each upload so Docker owns and
-  # terminates the complete provider process tree before the next request.
-  pitr-wal-provider:
-    <<: *locked-runtime
-    init: true
-    cpus: "1.00"
-    mem_limit: 512m
-    pids_limit: 128
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=128m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.backup
-    user: "70:70"
-    entrypoint: [ "node", "/app/pitr-wal-provider.mjs" ]
-    environment:
-      - PITR_ENABLED=${PITR_ENABLED:-false}
-      - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
-      - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
-      - PITR_S3_PREFIX=${PITR_S3_PREFIX:-}
-      - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
-      - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-wal-object-store/access_key
-      - PITR_SECRET_KEY_FILE=/run/secrets/pitr-wal-object-store/secret_key
-      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
-      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
-      - PITR_WAL_PROVIDER_HOST=0.0.0.0
-      - PITR_WAL_PROVIDER_PORT=8080
-      - PITR_WAL_PROVIDER_MAX_BYTES=33554432
-      - PITR_WAL_PROVIDER_REQUEST_TIMEOUT_MS=900000
-    volumes:
-      - ${PITR_WAL_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-wal-object-store}:/run/secrets/pitr-wal-object-store:ro
-    networks:
-      - pitr-wal-control
-      - pitr-egress
-    restart: unless-stopped
-
   # Contract-first tenant API. The retained v1 service is an internal-only
   # implementation dependency; public v1 ingress is terminal at Caddy.
   api-v2:
@@ -607,7 +565,6 @@ services:
     networks:
       - app
       - data
-      - telemetry
     environment:
       - NODE_ENV=${NODE_ENV:-production}
       - HOST=0.0.0.0
@@ -650,39 +607,6 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Read-only provider identity used only to export and verify lifecycle policy.
-  pitr-lifecycle-audit:
-    <<: *locked-runtime
-    init: true
-    cpus: "0.50"
-    mem_limit: 256m
-    pids_limit: 64
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    profiles:
-      - ops
-    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.backup
-    user: "70:70"
-    entrypoint: [ "/bin/true" ]
-    environment:
-      - PITR_ENABLED=true
-      - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
-      - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
-      - PITR_S3_PREFIX=${PITR_S3_PREFIX:-}
-      - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
-      - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-lifecycle-audit-object-store/access_key
-      - PITR_SECRET_KEY_FILE=/run/secrets/pitr-lifecycle-audit-object-store/secret_key
-      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
-      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
-    volumes:
-      - ${PITR_LIFECYCLE_AUDIT_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-lifecycle-audit-object-store}:/run/secrets/pitr-lifecycle-audit-object-store:ro
-    networks:
-      - pitr-egress
-    restart: "no"
-
   # ─── Primary Database ───
   postgres:
     <<: *read-only-runtime
@@ -699,28 +623,22 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./infrastructure/postgres/postgresql.conf:/etc/postgresql/postgresql.conf:ro
-      - ./infrastructure/postgres:/opt/lunchlineup/pitr:ro
-      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
+      - ./infrastructure/postgres:/opt/lunchlineup/postgres:ro
     networks:
       - data
-      - pitr-wal-control
     environment:
       - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB in .env}
-      - PITR_ENABLED=${PITR_ENABLED:-false}
-      - PITR_WAL_PROVIDER_URL=http://pitr-wal-provider:8080
-      - PITR_WAL_PROVIDER_CLIENT_TIMEOUT_SECONDS=930
-      - PITR_WAL_METRICS_FILE=/metrics/lunchlineup_pitr_wal.prom
-    command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "archive_mode=${PITR_ARCHIVE_MODE:-off}" ]
+    # WAL archiving is OFF by default. Estate pgBackRest (configured outside this
+    # repo by estate-infra) attaches through POSTGRES_ARCHIVE_MODE and
+    # POSTGRES_ARCHIVE_COMMAND; see infrastructure/postgres/README.md.
+    command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "archive_mode=${POSTGRES_ARCHIVE_MODE:-off}", "-c", "archive_command=${POSTGRES_ARCHIVE_COMMAND:-/bin/false}" ]
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?Set POSTGRES_USER in .env} -d ${POSTGRES_DB:?Set POSTGRES_DB in .env}" ]
       interval: 10s
       timeout: 5s
       retries: 5
-    depends_on:
-      pitr-wal-provider:
-        condition: service_started
     restart: unless-stopped
 
   # ─── Cache & Session Store ───
@@ -812,380 +730,6 @@ services:
       - management
     restart: unless-stopped
 
-  # ─── Observability: Prometheus ───
-  prometheus:
-    <<: *locked-runtime
-    cpus: "1.50"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: prom/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a
-    volumes:
-      - ./infrastructure/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - ./infrastructure/prometheus/alerts:/etc/prometheus/alerts:ro
-      - prometheus_data:/prometheus
-    secrets:
-      - metrics_token
-    networks:
-      - management
-      - app
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--storage.tsdb.retention.time=30d'
-      - '--web.enable-lifecycle'
-    healthcheck:
-      test: [ "CMD", "/bin/promtool", "check", "healthy", "--url=http://127.0.0.1:9090" ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  # One-shot encrypted database backup. Invoke with: docker compose --profile ops run --rm --no-deps backup
-  backup:
-    <<: *locked-runtime
-    init: true
-    cpus: "2.00"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    profiles:
-      - ops
-    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.backup
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
-      - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB in .env}
-      - PGPASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      - BACKUP_DIR=/backups
-      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-35}
-      - BACKUP_ENCRYPTION_KEY_FILE=/run/secrets/backup_key
-      - BACKUP_OFFSITE_ENABLED=true
-      - BACKUP_OFFSITE_URI=${BACKUP_OFFSITE_URI:-}
-      - BACKUP_OFFSITE_RETENTION_DAYS=${BACKUP_OFFSITE_RETENTION_DAYS:-35}
-      - BACKUP_OFFSITE_RETENTION_DRY_RUN=${BACKUP_OFFSITE_RETENTION_DRY_RUN:-false}
-      - BACKUP_PROVIDER_OWNERSHIP_MODE=container-job
-      - CANDIDATE_SYSTEMD_INVOCATION_ID=${CANDIDATE_SYSTEMD_INVOCATION_ID:-}
-      - CANDIDATE_RELEASE_PATH=${CANDIDATE_RELEASE_PATH:-}
-      - CANDIDATE_SOURCE_SHA=${CANDIDATE_SOURCE_SHA:-}
-      - CANDIDATE_IMAGE_DIGEST=${CANDIDATE_IMAGE_DIGEST:-}
-      # The container is read-only and runs as root with no writable HOME, so
-      # gpg cannot create ~/.gnupg; use the /tmp tmpfs for its home and agent socket.
-      - GNUPGHOME=/tmp
-      - AWS_SHARED_CREDENTIALS_FILE=/run/secrets/backup-offsite/aws-credentials
-      - AWS_CONFIG_FILE=/run/secrets/backup-offsite/aws-config
-      - RCLONE_CONFIG=/run/secrets/backup-offsite/rclone.conf
-      - BACKUP_METRICS_FILE=/metrics/lunchlineup_backup.prom
-    secrets:
-      - source: backup_encryption_key
-        target: backup_key
-    volumes:
-      - backup_data:/backups
-      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
-      - ${BACKUP_OFFSITE_CREDENTIALS_DIR:-./secrets/backup-offsite}:/run/secrets/backup-offsite:ro
-    networks:
-      - external
-      - data
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  # Daily verified physical base backup for the continuous remote WAL archive.
-  pitr-base-backup:
-    <<: *read-only-runtime
-    init: true
-    cpus: "2.00"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    profiles:
-      - ops
-    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.backup
-    entrypoint: [ "/bin/sh", "/opt/lunchlineup/scripts/pitr-base-backup.sh" ]
-    environment:
-      - POSTGRES_HOST=postgres
-      - POSTGRES_PORT=5432
-      - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
-      - PGPASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
-      - PITR_ENABLED=${PITR_ENABLED:-false}
-      - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
-      - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
-      - PITR_S3_PREFIX=${PITR_S3_PREFIX:-}
-      - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
-      - PITR_STAGING_DIR=/var/lib/lunchlineup-pitr
-      - PITR_METRICS_FILE=/metrics/lunchlineup_pitr.prom
-      - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-base-backup-object-store/access_key
-      - PITR_SECRET_KEY_FILE=/run/secrets/pitr-base-backup-object-store/secret_key
-      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
-      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
-      - PITR_REQUIRE_CANDIDATE_BINDING=${PITR_REQUIRE_CANDIDATE_BINDING:-false}
-      - CANDIDATE_SYSTEMD_INVOCATION_ID=${CANDIDATE_SYSTEMD_INVOCATION_ID:-}
-      - CANDIDATE_RELEASE_PATH=${CANDIDATE_RELEASE_PATH:-}
-      - CANDIDATE_SOURCE_SHA=${CANDIDATE_SOURCE_SHA:-}
-      - CANDIDATE_IMAGE_DIGEST=${CANDIDATE_IMAGE_DIGEST:-}
-    volumes:
-      - ./scripts:/opt/lunchlineup/scripts:ro
-      - ./infrastructure/postgres:/opt/lunchlineup/infrastructure/postgres:ro
-      - pitr_staging:/var/lib/lunchlineup-pitr
-      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/metrics
-      - ${PITR_BASE_BACKUP_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-base-backup-object-store}:/run/secrets/pitr-base-backup-object-store:ro
-    networks:
-      - data
-      - pitr-egress
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: "no"
-
-  # One-shot recovery materialization into a separate volume; never the live PGDATA volume.
-  pitr-restore:
-    <<: *read-only-runtime
-    init: true
-    cpus: "2.00"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    profiles:
-      - recovery
-    image: "${IMAGE_PREFIX:-lunchlineup}/backup:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.backup
-    entrypoint: [ "/bin/sh", "/opt/lunchlineup/scripts/pitr-restore.sh" ]
-    environment:
-      - PITR_ENABLED=true
-      - PITR_S3_ENDPOINT=${PITR_S3_ENDPOINT:-}
-      - PITR_S3_BUCKET=${PITR_S3_BUCKET:-}
-      - PITR_S3_PREFIX=${PITR_S3_PREFIX:-}
-      - PITR_OBJECT_LOCK_RETENTION_DAYS=${PITR_OBJECT_LOCK_RETENTION_DAYS:-}
-      - PITR_BASE_BACKUP_ID=${PITR_BASE_BACKUP_ID:-}
-      - PITR_RECOVERY_TARGET_TIME=${PITR_RECOVERY_TARGET_TIME:-}
-      - PITR_RECOVERY_TARGET_TIMELINE=${PITR_RECOVERY_TARGET_TIMELINE:-}
-      - PITR_EXPECTED_SYSTEM_IDENTIFIER=${PITR_EXPECTED_SYSTEM_IDENTIFIER:-}
-      - PITR_ARCHIVED_WAL_SEGMENT=${PITR_ARCHIVED_WAL_SEGMENT:-}
-      - PITR_BASE_BACKUP_COMPLETE_VERSION_ID=${PITR_BASE_BACKUP_COMPLETE_VERSION_ID:-}
-      - PITR_BASE_BACKUP_ARCHIVE_VERSION_ID=${PITR_BASE_BACKUP_ARCHIVE_VERSION_ID:-}
-      - PITR_BASE_BACKUP_MANIFEST_VERSION_ID=${PITR_BASE_BACKUP_MANIFEST_VERSION_ID:-}
-      - PITR_ARCHIVED_WAL_VERSION_ID=${PITR_ARCHIVED_WAL_VERSION_ID:-}
-      - PITR_RESTORE_CONFIRM=${PITR_RESTORE_CONFIRM:-}
-      - PITR_RESTORE_DATA_DIR=/restore
-      - PITR_STAGING_DIR=/var/lib/lunchlineup-pitr
-      - PITR_ACCESS_KEY_FILE=/run/secrets/pitr-restore-object-store/access_key
-      - PITR_SECRET_KEY_FILE=/run/secrets/pitr-restore-object-store/secret_key
-      - PITR_MC_BIN=/opt/lunchlineup/tools/mc
-      - PITR_PROVIDER_OWNERSHIP_MODE=container-job
-    volumes:
-      - ./scripts:/opt/lunchlineup/scripts:ro
-      - ./infrastructure/postgres:/opt/lunchlineup/infrastructure/postgres:ro
-      - pitr_staging:/var/lib/lunchlineup-pitr
-      - postgres_pitr_restore_data:/restore
-      - ${PITR_RESTORE_OBJECT_STORE_SECRETS_DIR:-./secrets/pitr-restore-object-store}:/run/secrets/pitr-restore-object-store:ro
-    networks:
-      - pitr-egress
-    restart: "no"
-
-  # Observability: Alertmanager
-  alertmanager:
-    <<: *locked-runtime
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/alertmanager:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.alertmanager
-    ports:
-      - "127.0.0.1:9093:9093"
-    volumes:
-      - ./infrastructure/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
-      - alertmanager_data:/alertmanager
-    secrets:
-      - alertmanager_webhook_url
-    networks:
-      management:
-      alertmanager-egress:
-        gw_priority: 1
-    command:
-      - '--config.file=/etc/alertmanager/alertmanager.yml'
-      - '--storage.path=/alertmanager'
-    healthcheck:
-      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9093/-/healthy" ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  # Observability: Node Exporter
-  node-exporter:
-    <<: *locked-runtime
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/node-exporter:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.node-exporter
-    command:
-      - '--path.rootfs=/host'
-      - '--collector.filesystem.mount-points-exclude=^/(dev|proc|sys|run/credentials/.+|var/lib/docker/.+)($$|/)'
-      - '--collector.textfile.directory=/textfile_collector'
-    pid: host
-    volumes:
-      - /:/host:ro,rslave
-      - ${NODE_EXPORTER_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}:/textfile_collector:ro
-    networks:
-      - management
-    restart: unless-stopped
-
-  # Observability: Loki
-  loki:
-    <<: *locked-runtime
-    cpus: "1.50"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/loki:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.loki
-    volumes:
-      - ./infrastructure/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
-      - loki_data:/loki
-    networks:
-      - management
-    command: -config.file=/etc/loki/local-config.yaml
-    healthcheck:
-      test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3100/ready" ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  # Observability: read-only Docker JSON log shipping through the gated
-  # OpenTelemetry Collector distribution.
-  promtail:
-    <<: *locked-runtime
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/otel-collector:${IMAGE_TAG:-local}"
-    command: [ "--config=/etc/otelcol-contrib/promtail-config.yml" ]
-    environment:
-      - PROMTAIL_HOST=${PROMTAIL_HOST:-lunchlineup-host}
-    volumes:
-      - ./infrastructure/promtail/promtail-config.yml:/etc/otelcol-contrib/promtail-config.yml:ro
-      - /var/lib/docker/containers:/var/lib/docker/containers:ro
-      - promtail_positions:/var/lib/otelcol/file_storage
-    networks:
-      - management
-    depends_on:
-      loki:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # Observability: internal OTLP receiver and buffered Tempo export
-  otel-collector:
-    <<: *locked-runtime
-    cpus: "1.00"
-    mem_limit: 1g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/otel-collector:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.otel-collector
-    command: [ "--config=/etc/otelcol-contrib/config.yml" ]
-    volumes:
-      - ./infrastructure/otel-collector/otel-collector-config.yml:/etc/otelcol-contrib/config.yml:ro
-    networks:
-      - telemetry
-      - management
-    depends_on:
-      tempo:
-        condition: service_healthy
-    restart: unless-stopped
-
-  # ─── Observability: Tempo (Distributed Tracing) ───
-  tempo:
-    <<: *locked-runtime
-    cpus: "1.50"
-    mem_limit: 2g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=32m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/tempo:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.tempo
-    volumes:
-      - ./infrastructure/tempo/tempo-config.yml:/etc/tempo/config.yml:ro
-      - tempo_data:/var/tempo
-    networks:
-      - management
-    command: -config.file=/etc/tempo/config.yml
-    healthcheck:
-      test: [ "CMD", "/usr/local/bin/http-healthcheck", "http://127.0.0.1:3200/ready" ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
-  # ─── Observability: Grafana ───
-  grafana:
-    <<: *locked-runtime
-    cpus: "1.00"
-    mem_limit: 1g
-    pids_limit: 512
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,nodev,size=64m,mode=1777
-    image: "${IMAGE_PREFIX:-lunchlineup}/grafana:${IMAGE_TAG:-local}"
-    build:
-      context: .
-      dockerfile: infrastructure/docker/Dockerfile.grafana
-    ports:
-      - "127.0.0.1:3002:3000"
-    volumes:
-      - grafana_data:/var/lib/grafana
-      - ./infrastructure/grafana/datasources:/etc/grafana/provisioning/datasources:ro
-      - ./infrastructure/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
-    networks:
-      - management
-      - telemetry
-    environment:
-      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:?Set GRAFANA_USER in .env}
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:?Set GRAFANA_PASSWORD in .env}
-      - GF_USERS_ALLOW_SIGN_UP=false
-      - GF_ANALYTICS_REPORTING_ENABLED=false
-      - GF_FEATURE_TOGGLES_ENABLE=traceToMetrics,tempoSearch,tempoServiceGraph
-    depends_on:
-      prometheus:
-        condition: service_healthy
-      loki:
-        condition: service_healthy
-      tempo:
-        condition: service_healthy
-      promtail:
-        condition: service_started
-      otel-collector:
-        condition: service_started
-    healthcheck:
-      test: [ "CMD", "/usr/local/bin/grafana-healthcheck" ]
-      interval: 15s
-      timeout: 5s
-      retries: 3
-    restart: unless-stopped
-
 networks:
   external:
     driver: bridge
@@ -1198,22 +742,6 @@ networks:
   management:
     driver: bridge
     internal: true
-  telemetry:
-    driver: bridge
-    internal: true
-  alertmanager-egress:
-    driver: bridge
-    internal: false
-    driver_opts:
-      com.docker.network.bridge.enable_icc: "false"
-  pitr-egress:
-    driver: bridge
-    internal: false
-    driver_opts:
-      com.docker.network.bridge.enable_icc: "false"
-  pitr-wal-control:
-    driver: bridge
-    internal: true
   outbound-egress:
     driver: bridge
     internal: false
@@ -1224,17 +752,8 @@ volumes:
   caddy_data:
   caddy_config:
   postgres_data:
-  postgres_pitr_restore_data:
-  backup_data:
   redis_data:
   rabbitmq_data:
-  pitr_staging:
-  prometheus_data:
-  alertmanager_data:
-  loki_data:
-  promtail_positions:
-  tempo_data:
-  grafana_data:
   tenant_export_artifacts:
   availability_uploads:
     driver: local
@@ -1257,7 +776,3 @@ secrets:
     file: ${METRICS_TOKEN_FILE:-./secrets/metrics_token}
   retention_purge_token:
     file: ${RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE:-./secrets/retention_purge_token}
-  alertmanager_webhook_url:
-    file: ${ALERTMANAGER_WEBHOOK_URL_FILE:-./secrets/alertmanager_webhook_url}
-  backup_encryption_key:
-    file: ${BACKUP_ENCRYPTION_KEY_SECRET_FILE:-/run/secrets/backup_key}

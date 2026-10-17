@@ -630,8 +630,8 @@ test('shared reconciliation uses the real Compose proxy/pdf-parser contract and 
   const contract = realComposeReconciliationContract();
   assert.equal(contract.services.proxy.image, `lunchlineup-release/proxy:${sourceSha}`);
   assert.equal(contract.services['pdf-parser'].image, `lunchlineup-release/worker:${sourceSha}`);
-  assert.ok(Object.keys(contract.services).length >= 20, 'real production Compose must contribute the complete default service inventory');
-  for (const service of ['postgres', 'redis', 'rabbitmq', 'prometheus', 'alertmanager', 'loki', 'promtail', 'otel-collector', 'tempo', 'grafana']) {
+  assert.ok(Object.keys(contract.services).length >= 13, 'real production Compose must contribute the complete default service inventory');
+  for (const service of ['postgres', 'redis', 'rabbitmq', 'api', 'api-v2', 'worker', 'control']) {
     assert.ok(contract.services[service], `real production Compose must include ${service}`);
   }
 

@@ -35,7 +35,7 @@ The metric token is startup-cached, explicitly configured and read from the moun
 
 ## Dashboard and historical qualification
 
-Use LunchLineup Platform Overview, UID lunchlineup-platform, sourced from infrastructure/grafana/dashboards/platform-overview.json. Native rate/error/latency panels have native selectors and seconds-based latency. Retained diagnostic panels preserve their own namespace and units. Native telemetry and abort panels explain complementary gaps.
+Use LunchLineup Platform Overview, UID lunchlineup-platform, sourced from docs/estate/dashboards/platform-overview.json (imported into the estate Grafana). Native rate/error/latency panels have native selectors and seconds-based latency. Retained diagnostic panels preserve their own namespace and units. Native telemetry and abort panels explain complementary gaps.
 
 Native API Availability (30d, provisional) is a response-window estimate. Zero or missing eligible traffic yields no data; an instant stat with last-value reduction and Unknown fallback avoids displaying an earlier successful stat as current evidence. Grafana rendering and gap behavior still require native qualification.
 

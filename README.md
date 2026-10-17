@@ -66,7 +66,7 @@ lunchlineup/
 │   ├── shared-types/      # Shared Zod schemas (frontend/backend boundary)
 │   └── ui/                # Shared React component library
 ├── infrastructure/        # Dockerfiles, Caddyfiles, PG configs (templates)
-├── scripts/               # Backup, restore, and disaster recovery scripts
+├── scripts/               # Deploy, migration, verification and release helper scripts
 └── docs/                  # Architecture Decision Records (ADRs) and Runbooks
 ```
 
@@ -83,7 +83,7 @@ lunchlineup/
 - `README.md`: this project overview and repository map.
 - `node_modules`: existing local dependency link for this checkout; generated dependency contents are not source or release evidence.
 - `apps/`: application workspaces for web, API, engine, worker, and control-plane services.
-- `docker-compose.yml`: local and deployment service topology, including project-scoped persistent Postgres, Redis, and RabbitMQ volumes, loopback-only Alertmanager access, and the one-shot `ops` backup job.
+- `docker-compose.yml`: local and deployment service topology, including project-scoped persistent Postgres, Redis, and RabbitMQ volumes. Alerting, metrics storage, dashboards, logs and backups are estate systems (`docs/estate/README.md`).
 - `docs/`: architecture, testing, and runbook documentation.
 - `eslint.config.mjs`: repository ESLint configuration.
 - `infrastructure/`: deployment infrastructure templates and service configuration.
@@ -134,7 +134,7 @@ openssl rand -hex 32 > secrets/metrics_token
 
 *Note: Never commit `.env` or `.env.local` to version control.*
 
-At minimum, set `APP_ORIGIN` to the browser-visible origin (`https://...` in production), `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `APP_DB_USER`, `APP_DB_PASSWORD`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `GRAFANA_USER`, `GRAFANA_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `SESSION_SECRET`, `MFA_SECRET_ENCRYPTION_KEY_CURRENT`, `CSRF_SECRET`, `METRICS_TOKEN_FILE`, and `CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE`. `POSTGRES_*` and `MIGRATION_DATABASE_URL` are owner credentials for migration, backup, and recovery only; runtime services use the distinct restricted `APP_DB_*`/`DATABASE_URL` credential so tenant RLS is not bypassed. Compose uses separate files for the metrics bearer token and the control-plane admin bearer token; production control-plane startup fails if no admin token is configured. Use `CADDY_SITE_ADDRESSES=https://your-domain.example.com` for public TLS deployments; keep the default localhost/private HTTP addresses only for CI or private development. `COOKIE_SECURE` defaults to `true`; set `COOKIE_SECURE=false` only for explicit HTTP-only dev deployments so browsers accept login cookies on private `http://` routes. Public SaaS deployments must also set `NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL`, `NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL`, and `NEXT_PUBLIC_DPA_CONTACT_EMAIL` to monitored production addresses; align `PUBLIC_SIGNUP_MODE` and `NEXT_PUBLIC_SIGNUP_MODE` to `closed_beta`, `invite_only`, or `open`; use generated `PUBLIC_SIGNUP_INVITE_CODES` for `invite_only`; and require `NEXT_PUBLIC_TURNSTILE_SITE_KEY` plus `TURNSTILE_SECRET_KEY` with API and frontend enforcement for `open`.
+At minimum, set `APP_ORIGIN` to the browser-visible origin (`https://...` in production), `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`, `APP_DB_USER`, `APP_DB_PASSWORD`, `DATABASE_URL`, `MIGRATION_DATABASE_URL`, `RABBITMQ_USER`, `RABBITMQ_PASSWORD`, `JWT_SECRET`, `JWT_REFRESH_SECRET`, `SESSION_SECRET`, `MFA_SECRET_ENCRYPTION_KEY_CURRENT`, `CSRF_SECRET`, `METRICS_TOKEN_FILE`, and `CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE`. `POSTGRES_*` and `MIGRATION_DATABASE_URL` are owner credentials for migration and database administration only; runtime services use the distinct restricted `APP_DB_*`/`DATABASE_URL` credential so tenant RLS is not bypassed. Compose uses separate files for the metrics bearer token and the control-plane admin bearer token; production control-plane startup fails if no admin token is configured. Use `CADDY_SITE_ADDRESSES=https://your-domain.example.com` for public TLS deployments; keep the default localhost/private HTTP addresses only for CI or private development. `COOKIE_SECURE` defaults to `true`; set `COOKIE_SECURE=false` only for explicit HTTP-only dev deployments so browsers accept login cookies on private `http://` routes. Public SaaS deployments must also set `NEXT_PUBLIC_PRIVACY_CONTACT_EMAIL`, `NEXT_PUBLIC_SUPPORT_CONTACT_EMAIL`, and `NEXT_PUBLIC_DPA_CONTACT_EMAIL` to monitored production addresses; align `PUBLIC_SIGNUP_MODE` and `NEXT_PUBLIC_SIGNUP_MODE` to `closed_beta`, `invite_only`, or `open`; use generated `PUBLIC_SIGNUP_INVITE_CODES` for `invite_only`; and require `NEXT_PUBLIC_TURNSTILE_SITE_KEY` plus `TURNSTILE_SECRET_KEY` with API and frontend enforcement for `open`.
 
 ### 3. Start the Stack
 
@@ -148,7 +148,7 @@ This single command will:
 1. Spin up Postgres, Redis, RabbitMQ, and PgBouncer.
 2. Build and launch the API, Web, Engine, Worker, and Control Plane containers.
 3. Automatically run database migrations.
-4. Start Prometheus, node-exporter, Loki, Tempo, and Grafana on private management networking.
+4. Point the estate Prometheus at the metrics gateway (`docs/estate/lunchlineup-targets.yml`); monitoring runs in the estate, not in this stack.
 
 ### 4. Access the Application
 
@@ -191,7 +191,7 @@ Deployments are entirely automated—no human manually runs migrations or builds
 2.  **Artifact Generation**: Successful builds create immutable Docker images tagged with the exact Git SHA, pushed to our private registry, and verified against digest-pinned Docker bases plus Compose third-party service images.
 3.  **Guarded In-Place Deployment**:
     *   The `lunchlineup-migrations` container applies DB schema changes with `MIGRATION_DATABASE_URL`, then creates or repairs the restricted application role and its grants.
-    *   Compose replaces application containers from immutable release images after pre-mutation compatibility, backup, and release-proof gates pass.
+    *   Compose replaces application containers from immutable release images after pre-mutation compatibility and release-proof gates pass.
     *   Each signed release retains a bounded secret-free version-2 source archive with exact package/lock/workspace manifests, schema/migrations, integration owners, rollback scripts, Compose/infrastructure inputs, and systemd units; materialization rejects missing, extra, or one-byte-drifted content.
 4.  **Automated Rollbacks**: If post-deployment smoke tests fail, the system restores the retained previous release inputs. INT/TERM after rollback mutation begins triggers one bounded authenticated reconciliation before staging cleanup; activation is not blindly retried. Recovery time is measured during drills and is not assumed to be sub-minute.
 

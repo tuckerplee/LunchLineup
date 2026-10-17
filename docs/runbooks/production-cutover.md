@@ -39,29 +39,29 @@ Browser -> Cloudflare (TLS ends) -> Cloudflare Tunnel -> nginx CT940 10.231.10.3
   `https://lunchlineup.com`; no dev/beta/staging/localhost reference in the runtime
   env; `COOKIE_SECURE=true`; explicit-CIDR `TRUST_PROXY`; `DATA_TARGET_ENV=production`
   with `NODE_ENV=production` and the migration confirmation string; a 40-hex
-  `DEPLOY_RELEASE_SHA`; `BACKUP_OFFSITE_URI=s3://bucket/prefix` with a non-empty
-  credentials directory. It holds `/run/lock/lunchlineup-deploy.lock`, verifies each
-  archive sha256 and loaded image ID, takes the encrypted pre-deploy backup and
-  **refuses unless the backup proof shows immutable offsite object versions**
-  (there is no local-only or skip override in production), runs migrations, starts
+  `DEPLOY_RELEASE_SHA`. It holds `/run/lock/lunchlineup-deploy.lock`, verifies each
+  archive sha256 and loaded image ID, refuses a production deploy that has no
+  postgres volume (unless `DEPLOY_FIRST_INSTALL=yes`), runs migrations, starts
   the stack with `--no-build --pull never`, and checks `/health` plus that the served
-  `X-LunchLineup-Release` equals `DEPLOY_RELEASE_SHA`.
+  `X-LunchLineup-Release` equals `DEPLOY_RELEASE_SHA`. It takes no backup: the
+  recovery point is the estate pgBackRest PITR (configured by estate-infra), so
+  confirm a current pgBackRest backup exists before a risky deploy.
 - Previous images stay on the VM as `lunchlineup-rollback/<name>:previous` and
   `lunchlineup-rollback/<name>:before-<release-id>`; nothing is pruned.
 - Receipt: `/var/lib/lunchlineup/deploy/receipts/<UTC>-<tag>/receipt.json` (status
   started/ok/failed, release SHA, image IDs and archive sha256, previous image IDs,
-  migration list shipped in the checkout, backup proof line, start/finish times).
+  migration list shipped in the checkout, start/finish times).
   Copy it off the VM after every deploy.
 - The very first install on an empty VM needs `DEPLOY_FIRST_INSTALL=yes` (no
-  postgres volume exists to back up). Never set it on a VM that holds data.
+  postgres volume exists yet). Never set it on a VM that holds data.
 
 ## 2. Pre-requisites checklist
 
 | # | Item | Who |
 | --- | --- | --- |
 | 1 | Production app VM provisioned (size, disk, hostname, private IP); hostname set into `PROD_EXPECTED_HOSTNAME` | OWNER |
-| 2 | Offsite backup: S3 bucket with versioning, Object Lock and lifecycle per `scripts/backup.sh`; write-only credentials in `secrets/backup-offsite/`; `BACKUP_OFFSITE_URI` set | OWNER |
-| 3 | Backup encryption key and its offline escrow copy | OWNER |
+| 2 | Estate backups: pgBackRest (NAS repository over SFTP) attached to the production Postgres by estate-infra and host restic covering uploads and secrets; no app keys needed | estate-infra |
+| 3 | Estate alerting: estate Prometheus scraping `docs/estate/lunchlineup-targets.yml`, rules loaded, route proven through the estate Alertmanager | estate-infra |
 | 4 | Runtime env (`/opt/lunchlineup-secrets/runtime.env`, root, 0600) with production values; no dev/test secrets reused | OWNER |
 | 5 | Stripe live keys, webhook secrets and live price/meter configuration; Resend production sender domain verified (SPF/DKIM/DMARC) | OWNER |
 | 6 | Cloudflare access to edit the Tunnel public hostnames and DNS for `lunchlineup.com` and `www`; CT940 nginx access | OWNER |
@@ -70,7 +70,7 @@ Browser -> Cloudflare (TLS ends) -> Cloudflare Tunnel -> nginx CT940 10.231.10.3
 | 9 | Decision: legacy retention (how long the PHP VM and its DB stay intact after cutover; recommended at least 30 days) | OWNER |
 | 10 | Release images built on the VM218 builder and exported with `scripts/export-internal-ci-release-images.sh`; archives copied to the VM | operator |
 | 11 | Legacy import tooling reviewed and rehearsed: [legacy-import-exact-replay](legacy-import-exact-replay.md) (another workstream is extending it; follow that document for the importer contract, descriptors and receipts) | operator |
-| 12 | Rehearsal on `dev.lunchlineup.com` completed with a copy of a recent real dump (section 3), including a timed restore of the pre-deploy backup | operator + OWNER sign-off |
+| 12 | Rehearsal on `dev.lunchlineup.com` completed with a copy of a recent real dump (section 3), including a timed pgBackRest restore drill run by estate-infra | operator + OWNER sign-off |
 | 13 | nginx CT940 vhost for the new VM prepared but not enabled; `proxy_set_header X-Forwarded-Proto https`, `Host`, `X-Forwarded-For`; `www` to apex 301 | operator |
 | 14 | Cloudflare Tunnel public-hostname edit rehearsed on a throwaway hostname; TTL/propagation known | operator |
 | 15 | Legacy side: current PHP VM health confirmed by its owner; its full backup taken and restore-tested; the PHP VM left untouched | OWNER |
@@ -86,7 +86,7 @@ Cloudflare change for `lunchlineup.com`, tunnel switch exercised against a
 test hostname, and the dump handled only on approved private storage. Record
 wall-clock time per step; the sum plus 50 percent is the maintenance window.
 Also rehearse: a failed migration, a failed health check, an image rollback
-(`--rollback`) and a restore from the offsite backup into a scratch database.
+(`--rollback`) and a pgBackRest restore into a scratch database.
 Delete the dump copy afterwards per [data-retention-delete-export](data-retention-delete-export.md).
 
 ## 4. Cutover steps
@@ -124,8 +124,7 @@ Times are relative to T0 (maintenance start). Two people: operator and OWNER.
    production confirmation `LEGACY_IMPORT_PRODUCTION_CONFIRM` and
    `LEGACY_SOURCE_EXPORT_SHA256`, `DATA_TARGET_ENV=production-cutover`.
 2. Deploy the release if not already current (`deploy-release.sh --target production`).
-3. Take a labelled encrypted backup immediately **before** the import and confirm its
-   offsite object version. This is the point-in-time "empty but migrated" restore
+3. Have estate-infra take a labelled pgBackRest backup immediately **before** the import and confirm it is listed. This is the point-in-time "empty but migrated" restore
    point used by the pre-write rollback.
 4. Run the import; keep the report and receipts privately.
 
@@ -141,7 +140,7 @@ reviewed import report.
   spot-check 10 users including bcrypt `$2y$` legacy-password users.
 - No duplicate tenant slugs; each company maps to exactly one tenant.
 - Migration ledger lists every shipped migration (compare with `receipt.json`).
-- Latest offsite backup version exists and is readable.
+- Latest pgBackRest backup exists and is listed by the estate.
 - `/health` ok, `X-LunchLineup-Release` equals the release SHA.
 
 ### 4.6 Smoke checklist (staff-visible, via a private route)
@@ -179,7 +178,7 @@ bind IP with a Host header and a browser extension) for the OWNER before switchi
 - Attended 2 hours: error rate, login failures, `/health`, queue depth, outbound
   email delivery, Stripe webhook success, DB connections, disk, memory, CPU.
 - Hourly for 24 hours, then every 4 hours to 72 hours. Check the nightly encrypted
-  offsite backup completed and is verifiable.
+  pgBackRest backup completed and is verifiable.
 - Support inbox watched; log every user-reported data discrepancy against the
   legacy export.
 - At 72 hours without Sev-1/2 issues, OWNER signs the end of the window. The PHP
@@ -189,18 +188,18 @@ bind IP with a Host header and a browser extension) for the OWNER before switchi
 
 Go requires **all** of:
 
-- Checklist complete; rehearsal passed and timed; restore from offsite proven.
+- Checklist complete; rehearsal passed and timed; restore from pgBackRest proven.
 - Legacy dump sha256 recorded; import report reviewed with no unexplained row-count
   differences; all section 4.5 checks pass.
 - All section 4.6 smoke items pass, including a legacy-password login, PIN reset,
   schedule print, publish and billing view.
-- Offsite pre-import backup version present.
+- Pre-import pgBackRest backup present.
 - Rollback owner and rollback decision point named (below), and the PHP VM healthy.
 - OWNER says "go" in writing.
 
 No-go (stay on PHP, section 6.1) on any of: failed import checks, any data
 discrepancy not explained, login failures for legacy users, backup not proven
-offsite, TLS/redirect/cookie problems (`Secure` flag, redirect loops), or the window
+estate-side, TLS/redirect/cookie problems (`Secure` flag, redirect loops), or the window
 overrunning by more than 50 percent of the rehearsed time.
 
 ## 6. Rollback plan
@@ -230,7 +229,7 @@ yourself first.
   risk of data loss. Recommended default once users have written data.
 - **B. Roll back and accept loss.** Flip the tunnel back to PHP and un-freeze it.
   All data written in the new app after T-switch is not in the PHP database and is
-  lost to users unless replayed. Before flipping, take and verify an offsite backup
+  lost to users unless replayed. Before flipping, take and verify a pgBackRest backup
   of the new database and export the post-cutover changes so they can be re-keyed
   manually or replayed later. Announce the loss window to users.
 - **C. Roll back with manual reconciliation.** As B, but the OWNER assigns the
@@ -268,8 +267,8 @@ release is compatible with the newer schema (the project's rollback compatibilit
 checks, `scripts/verify-rollback-schema-compatibility.py`, are the reference).
 Never roll back across a migration that dropped or rewrote data. If a bad
 migration reached production the options are: roll forward with a corrective
-migration (default), or restore the pre-deploy offsite backup into a new database
+migration (default), or restore a pgBackRest backup (estate-infra) into a new database
 (loses everything written since that backup) following
-[postgres-pitr-recovery](postgres-pitr-recovery.md) / `scripts/restore.sh`. The
-receipt's migration list shows exactly what the deploy shipped; the pre-deploy
-backup proof in the receipt identifies the restore point.
+[postgres-pitr-recovery](postgres-pitr-recovery.md). The
+receipt's migration list shows exactly what the deploy shipped; the
+estate pgBackRest backup list identifies the restore point.

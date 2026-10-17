@@ -13510,13 +13510,7 @@
       "kind": "operational-gate",
       "tag": "Qualification",
       "implementation": "operational",
-      "sourceAnchors": [
-        {
-          "path": "scripts/dr-drill.sh",
-          "line": 1,
-          "sourceLine": "#!/bin/bash"
-        }
-      ],
+      "sourceAnchors": [],
       "actorBoundary": "Approved disposable synthetic restore owner; off-host encrypted backup identities separated from app writer.",
       "successContract": "Restore exact named encrypted logical snapshot into isolated target; independent schema/migration/critical data/hash invariants and exact cleanup/absence readback.",
       "failureContract": "Wrong target/key/hash/stale backup, partial restore or unknown cleanup fails; source simulator/legacy recovery does not qualify PostgreSQL rewrite.",
@@ -14018,13 +14012,7 @@
       "kind": "operational-gate",
       "tag": "Operator",
       "implementation": "operational",
-      "sourceAnchors": [
-        {
-          "path": "scripts/backup.sh",
-          "line": 1,
-          "sourceLine": "#!/bin/bash"
-        }
-      ],
+      "sourceAnchors": [],
       "actorBoundary": "Dedicated backup operator with bounded provider transport, exact approved target/key/prefix.",
       "successContract": "Encrypted off-host snapshot has independent checksum/size/version and fresh success telemetry.",
       "failureContract": "Target/identity/provider unknown state fails closed; no recovery deletion or unbounded command.",
@@ -14053,13 +14041,7 @@
       "kind": "operational-gate",
       "tag": "Operator",
       "implementation": "operational",
-      "sourceAnchors": [
-        {
-          "path": "scripts/restore.sh",
-          "line": 1,
-          "sourceLine": "#!/bin/bash"
-        }
-      ],
+      "sourceAnchors": [],
       "actorBoundary": "Explicit approved disposable restore scope and exact backup/system identifier.",
       "successContract": "Decrypted restore validates schema/data and exact target state with independent readback.",
       "failureContract": "Wrong production-like target/key/partial result blocks; no implicit production restore permission.",
@@ -14088,13 +14070,7 @@
       "kind": "operational-gate",
       "tag": "Operator",
       "implementation": "operational",
-      "sourceAnchors": [
-        {
-          "path": "scripts/pitr-base-backup.sh",
-          "line": 1,
-          "sourceLine": "#!/bin/sh"
-        }
-      ],
+      "sourceAnchors": [],
       "actorBoundary": "Dedicated physical backup owner exact cluster/archive prefix and active bounded timer.",
       "successContract": "Complete named base backup plus WAL archive/provider metadata independently verified.",
       "failureContract": "Incomplete upload/archive or unknown provider result refuses successful receipt.",
@@ -14123,13 +14099,7 @@
       "kind": "operational-gate",
       "tag": "Operator",
       "implementation": "operational",
-      "sourceAnchors": [
-        {
-          "path": "scripts/pitr-restore.sh",
-          "line": 1,
-          "sourceLine": "#!/bin/sh"
-        }
-      ],
+      "sourceAnchors": [],
       "actorBoundary": "Isolated approved PITR target and signed independent provider adapter.",
       "successContract": "Requested recovery target invariants and cleanup independently read back.",
       "failureContract": "Wrong timeline/target/archive/adapter or missing cleanup blocks.",

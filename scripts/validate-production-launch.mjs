@@ -1,9 +1,6 @@
 #!/usr/bin/env node
 import { resolve } from 'node:path';
-import {
-  validateBackupPitrPolicy,
-  validateRecoveryEvidencePolicy,
-} from './production-launch-policy-backup-recovery.mjs';
+import { validateRecoveryEvidencePolicy } from './production-launch-policy-backup-recovery.mjs';
 import { createManagedSecretPolicy } from './production-launch-policy-managed-secrets.mjs';
 import {
   validateProductionTargetPolicy,
@@ -46,11 +43,7 @@ managedSecrets.validateSecretValues();
 validateProviderConnectionPolicy(context);
 const composeSecretFiles = managedSecrets.collectComposeSecretFiles();
 validateApiBindPolicy(context);
-const pitrCredentialFiles = validateBackupPitrPolicy(context, managedSecrets);
-managedSecrets.validateIsolation([
-  ...composeSecretFiles,
-  ...pitrCredentialFiles,
-]);
+managedSecrets.validateIsolation([...composeSecretFiles]);
 validateRecoveryEvidencePolicy(context, domain);
 validateProviderBillingPolicy(context);
 validatePublicRuntimePolicy(context, domain);

@@ -10,9 +10,8 @@ const repository = 'tuckerplee/LunchLineup';
 const runId = '123456';
 const workflowRun = `https://github.com/${repository}/actions/runs/${runId}`;
 const services = [
-  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control', 'backup',
-  'proxy', 'pgbouncer', 'postgres', 'node-exporter', 'loki', 'tempo', 'grafana',
-  'alertmanager', 'otel-collector',
+  'api', 'api-v2', 'web', 'engine', 'worker', 'migrate', 'control',
+  'proxy', 'pgbouncer', 'postgres',
 ];
 
 function manifest(overrides = {}) {

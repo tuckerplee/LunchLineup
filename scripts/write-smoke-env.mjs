@@ -28,8 +28,6 @@ const composeSecretPaths = {
   metricsToken: metricsTokenConfigPath,
   controlPlaneAdminToken: join(dirname(metricsTokenConfigPath), 'control_plane_admin_token'),
   retentionPurgeToken: join(dirname(metricsTokenConfigPath), 'retention_purge_token'),
-  alertmanagerWebhookUrl: join(dirname(metricsTokenConfigPath), 'alertmanager_webhook_url'),
-  backupEncryptionKey: join(dirname(metricsTokenConfigPath), 'backup_key'),
 };
 const secretPaths = Object.fromEntries(
   Object.entries(composeSecretPaths).map(([key, path]) => [key, resolve(root, path)]),
@@ -51,7 +49,6 @@ const rabbitmqPassword = `${secret('mq_')}${reservedCredentialSuffix}`;
 const metricsToken = secret('metrics_');
 const controlPlaneAdminToken = secret('control_');
 const retentionPurgeToken = secret('retention_');
-const backupEncryptionKey = secret('backup_');
 
 const env = {
   NODE_ENV: 'test',
@@ -94,8 +91,6 @@ const env = {
   RABBITMQ_USER: 'lunchlineup_ci',
   RABBITMQ_PASSWORD: rabbitmqPassword,
   RABBITMQ_URL: connectionUrl('amqp', 'lunchlineup_ci', rabbitmqPassword, 'rabbitmq:5672'),
-  GRAFANA_USER: 'lunchlineup_ci',
-  GRAFANA_PASSWORD: secret('grafana_'),
   JWT_SECRET: secret('jwt_'),
   JWT_REFRESH_SECRET: secret('refresh_'),
   SESSION_SECRET: secret('session_'),
@@ -123,8 +118,6 @@ const env = {
   METRICS_TOKEN_FILE: composeSecretPaths.metricsToken,
   RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE: composeSecretPaths.retentionPurgeToken,
   CONTROL_PLANE_ADMIN_TOKEN_SECRET_FILE: composeSecretPaths.controlPlaneAdminToken,
-  BACKUP_ENCRYPTION_KEY_SECRET_FILE: composeSecretPaths.backupEncryptionKey,
-  ALERTMANAGER_WEBHOOK_URL_FILE: composeSecretPaths.alertmanagerWebhookUrl,
   COOKIE_SECURE: 'true',
   NEXT_PUBLIC_API_URL: '/api/v2',
   INTERNAL_API_V2_URL: 'http://api-v2:3002/v2',
@@ -148,7 +141,6 @@ mkdirSync(dirname(envPath), { recursive: true });
 for (const path of Object.values(secretPaths)) {
   mkdirSync(dirname(path), { recursive: true });
 }
-mkdirSync(resolve(root, 'secrets/pitr-object-store'), { recursive: true });
 writeFileSync(envPath, `${Object.entries(env).map(([key, value]) => `${key}=${value}`).join('\n')}\n`, {
   mode: 0o600,
 });
@@ -157,8 +149,6 @@ const secretFileContents = {
   [secretPaths.metricsToken]: `${metricsToken}\n`,
   [secretPaths.controlPlaneAdminToken]: `${controlPlaneAdminToken}\n`,
   [secretPaths.retentionPurgeToken]: `${retentionPurgeToken}\n`,
-  [secretPaths.alertmanagerWebhookUrl]: 'https://alerts.invalid/lunchlineup-smoke\n',
-  [secretPaths.backupEncryptionKey]: `${backupEncryptionKey}\n`,
 };
 for (const [path, contents] of Object.entries(secretFileContents)) {
   writeFileSync(path, contents, { mode: 0o600 });

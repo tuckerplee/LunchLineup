@@ -35,7 +35,7 @@ def run_plan(args, images, project, build):
             alias = value
         elif flag in ('--env', '-e'):
             require(value in ('POSTGRES_PASSWORD=disposable-test-only', 'POSTGRES_DB=legacy_credit_cleanup_test',
-                              'POSTGRES_DB=staff_invitation_migration_test', 'PROMTAIL_HOST=lunchlineup-host'), 'unexpected C08 env')
+                              'POSTGRES_DB=staff_invitation_migration_test'), 'unexpected C08 env')
             options += ['--env', value]
         elif flag == '-v':
             parts = value.split(':')
@@ -48,7 +48,7 @@ def run_plan(args, images, project, build):
             require(value == '127.0.0.1::5432' and not publish, 'unexpected PG publication')
             publish = True
         else:
-            require(value in ('/usr/bin/caddy', '/bin/promtool', '/bin/amtool', '/otelcol-contrib', '/etc/prometheus/alerts/tests'), 'unexpected validator entry/workdir')
+            require(value in ('/usr/bin/caddy', '/bin/promtool', '/etc/estate/tests'), 'unexpected validator entry/workdir')
             options += [flag, value]
     require(rest, 'missing pinned C08 image')
     image = rest.pop(0); key = next(key for key, value in images.items() if value == image)
@@ -77,7 +77,7 @@ class Adapter:
         self.project = 'lunchlineup-beta-' + re.sub('[^a-z0-9]', '', phase['runId'].lower())
         self.selection = json.loads(Path(phase['selectionPath']).read_text())
         self.images = self.selection['images']
-        require(set(self.images) == {'caddy', 'prometheus', 'alertmanager', 'otel', 'postgres'}, 'C08 image roster changed')
+        require(set(self.images) == {'caddy', 'prometheus', 'postgres'}, 'C08 image roster changed')
         self.store = self.runtime / 'c08-containers.json'
         self.state = json.loads(self.store.read_text()) if self.store.exists() else {}
         self.adapter = str(Path(__file__).with_name('podman'))

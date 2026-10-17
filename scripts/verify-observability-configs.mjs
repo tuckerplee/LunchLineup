@@ -5,20 +5,27 @@ import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// Observability in this repository is intentionally small. Alertmanager,
+// Prometheus, Grafana, Loki, Alloy and backups are ESTATE systems; the app only
+// exposes token-protected /metrics endpoints, writes container logs to the
+// Docker json-file driver, and ships rule/target/dashboard files under
+// docs/estate/ for estate-infra to copy. This verifier proves that shape.
 export const OBSERVABILITY_FILES = Object.freeze({
   compose: 'docker-compose.yml',
   caddy: 'infrastructure/caddy/Caddyfile',
   caddyTemplate: 'infrastructure/caddy/Caddyfile.template',
+  caddyPilot: 'infrastructure/caddy/Caddyfile.private-pilot',
+  caddyProduction: 'infrastructure/caddy/Caddyfile.production',
   webContentSecurityPolicy: 'apps/web/lib/content-security-policy.ts',
   webProxy: 'apps/web/proxy.ts',
   webLayout: 'apps/web/app/layout.tsx',
-  prometheus: 'infrastructure/prometheus/prometheus.yml',
-  prometheusAlerts: 'infrastructure/prometheus/alerts/lunchlineup.yml',
-  nativeRuleFixture: 'infrastructure/prometheus/alerts/tests/native-api.test.yml',
-  platformDashboard: 'infrastructure/grafana/dashboards/platform-overview.json',
-  alertmanager: 'infrastructure/alertmanager/alertmanager.yml',
-  otelCollector: 'infrastructure/otel-collector/otel-collector-config.yml',
-  logCollector: 'infrastructure/promtail/promtail-config.yml',
+  estateRules: 'docs/estate/lunchlineup-rules.yml',
+  estateTargets: 'docs/estate/lunchlineup-targets.yml',
+  estateRuleTestMain: 'docs/estate/tests/lunchlineup.test.yml',
+  estateRuleTestNative: 'docs/estate/tests/native-api.test.yml',
+  estateRuleTestDeletion: 'docs/estate/tests/tenant-deletion-billing.test.yml',
+  platformDashboard: 'docs/estate/dashboards/platform-overview.json',
+  deletionDashboard: 'docs/estate/dashboards/tenant-deletion-billing.json',
   publicWebProbe: 'infrastructure/control/public-web-probe.sh',
   publicWebProbeEnv: 'infrastructure/systemd/lunchlineup-public-web-probe.env.example',
   publicWebProbeService: 'infrastructure/systemd/lunchlineup-public-web-probe.service',
@@ -28,79 +35,52 @@ export const OBSERVABILITY_FILES = Object.freeze({
 export const OBSERVABILITY_TOOL_IMAGES = Object.freeze({
   caddy: 'caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648',
   prometheus: 'prom/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a',
-  alertmanager: 'prom/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d',
-  otelCollector: 'otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc',
 });
 
 export const OBSERVABILITY_TOOL_MODES = Object.freeze(['off', 'auto', 'host', 'container']);
-export const PROMETHEUS_VALIDATION_CREDENTIALS_FILE =
-  'infrastructure/prometheus/promtool-validation-credentials.txt';
 export const PROMETHEUS_RULE_TEST_FILES = Object.freeze([
-  'infrastructure/prometheus/alerts/tests/lunchlineup.test.yml',
-  'infrastructure/prometheus/alerts/tests/tenant-deletion-billing.test.yml',
-  'infrastructure/prometheus/alerts/tests/native-api.test.yml',
+  'docs/estate/tests/lunchlineup.test.yml',
+  'docs/estate/tests/tenant-deletion-billing.test.yml',
+  'docs/estate/tests/native-api.test.yml',
 ]);
+
+// Compose services, volumes, networks and secrets that belong to estate systems
+// and must never come back into the application stack.
+export const REMOVED_SERVICES = Object.freeze([
+  'prometheus', 'alertmanager', 'grafana', 'loki', 'promtail', 'tempo', 'otel-collector',
+  'node-exporter', 'backup', 'pitr-base-backup', 'pitr-restore', 'pitr-wal-provider',
+  'pitr-lifecycle-audit',
+]);
+export const REMOVED_VOLUMES = Object.freeze([
+  'prometheus_data', 'alertmanager_data', 'loki_data', 'promtail_positions', 'tempo_data',
+  'grafana_data', 'backup_data', 'pitr_staging', 'postgres_pitr_restore_data',
+]);
+export const REMOVED_NETWORKS = Object.freeze([
+  'telemetry', 'alertmanager-egress', 'pitr-egress', 'pitr-wal-control',
+]);
+export const REMOVED_SECRETS = Object.freeze(['alertmanager_webhook_url', 'backup_encryption_key']);
+export const METRICS_GATEWAY_PORT = 9180;
+export const METRICS_GATEWAY_SERVICES = Object.freeze({
+  api: { upstream: 'api:3000', path: '/metrics' },
+  'api-v2': { upstream: 'api-v2:3002', path: '/metrics' },
+  worker: { upstream: 'worker:3003', path: '/metrics' },
+  engine: { upstream: 'engine:8000', path: '/metrics' },
+  'webhook-replay': { upstream: 'webhook-replay:3004', path: '/metrics' },
+  control: { upstream: 'control:3001', path: '/api/metrics' },
+});
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const defaultRoot = resolve(scriptDir, '..');
-const digestPinnedImageRefPattern = /^[^\s]+:[^:@\s]+@sha256:[a-f0-9]{64}$/i;
-const releaseBuiltImageRefPattern = /^\$\{IMAGE_PREFIX:-lunchlineup\}\/[a-z0-9-]+:\$\{IMAGE_TAG:-local\}$/;
 const durationPattern = /^(?:0|[1-9][0-9]*)(?:ms|s|m|h|d|w|y)$/;
 const containerPaths = Object.freeze({
   caddyConfig: '/etc/caddy/Caddyfile',
-  prometheusConfig: '/etc/prometheus/prometheus.yml',
-  prometheusAlertsDir: '/etc/prometheus/alerts',
-  prometheusAlertRules: '/etc/prometheus/alerts/lunchlineup.yml',
-  prometheusCredentials: '/run/secrets/metrics_token',
-  prometheusRuleTestsDir: '/etc/prometheus/alerts/tests',
-  alertmanagerConfig: '/etc/alertmanager/alertmanager.yml',
-  otelCollectorConfig: '/etc/otelcol-contrib/config.yml',
+  estateDir: '/etc/estate',
+  estateRules: '/etc/estate/lunchlineup-rules.yml',
+  estateRuleTestsDir: '/etc/estate/tests',
 });
 const toolVersionArgs = Object.freeze({
   caddy: ['version'],
   promtool: ['--version'],
-  amtool: ['--version'],
-  'otelcol-contrib': ['--version'],
-});
-const expectedScrapeJobs = Object.freeze({
-  prometheus: {
-    targets: ['localhost:9090'],
-  },
-  api: {
-    targets: ['api:3000'],
-    metricsPath: '/metrics',
-    interval: '10s',
-    bearerTokenFile: '/run/secrets/metrics_token',
-  },
-  'api-v2': {
-    targets: ['api-v2:3002'], metricsPath: '/metrics', interval: '10s',
-    bearerTokenFile: '/run/secrets/metrics_token',
-  },
-  engine: {
-    targets: ['engine:8000'],
-    metricsPath: '/metrics',
-    interval: '10s',
-  },
-  worker: {
-    targets: ['worker:3003'],
-    metricsPath: '/metrics',
-    interval: '15s',
-  },
-  'webhook-replay': {
-    targets: ['webhook-replay:3004'],
-    metricsPath: '/metrics',
-    interval: '15s',
-  },
-  control: {
-    targets: ['control:3001'],
-    metricsPath: '/api/metrics',
-    interval: '30s',
-    bearerTokenFile: '/run/secrets/metrics_token',
-  },
-  node: {
-    targets: ['node-exporter:9100'],
-    interval: '30s',
-  },
 });
 const expectedAlerts = Object.freeze([
   'ServiceDown',
@@ -125,19 +105,17 @@ const expectedAlerts = Object.freeze([
   'SolverErrors',
   'DiskSpaceLow',
   'HostFilesystemTelemetryMissing',
-  'BackupMissingTelemetry',
-  'BackupStale',
-  'PitrBaseBackupTelemetryMissing',
-  'PitrBaseBackupStale',
-  'PitrWalArchiveFailure',
-  'PitrWalArchiveStale',
   'RetentionPurgeTelemetryMissing',
   'RetentionPurgeStale',
   'ApplicationDataRetentionExecutionTelemetryMissing',
   'ApplicationDataRetentionExecutionStale',
   'RetentionPurgeFailed',
   'RetentionPurgeCandidatesReady',
+  'TenantDeletionBillingBacklogSustained',
+  'TenantDeletionBillingSweepStale',
 ]);
+// Rules about removed in-stack components must not be reintroduced.
+const forbiddenAlertPattern = /^(?:Backup|Pitr)/;
 
 function addError(errors, message) {
   errors.push(message);
@@ -257,63 +235,6 @@ function toolAvailable(tool, root, runner) {
   const result = runToolCommand(command, root, runner);
   return !missingExecutable(result) && result.status === 0;
 }
-
-function repoPrometheusRulePath(root, runtimeRuleFile) {
-  if (runtimeRuleFile === '/etc/prometheus/alerts/*.yml') {
-    return join(root, 'infrastructure/prometheus/alerts', '*.yml').replaceAll('\\', '/');
-  }
-  if (runtimeRuleFile.startsWith('/etc/prometheus/alerts/')) {
-    return join(root, 'infrastructure/prometheus/alerts', runtimeRuleFile.slice('/etc/prometheus/alerts/'.length)).replaceAll('\\', '/');
-  }
-  return runtimeRuleFile;
-}
-
-function prepareHostPrometheusConfigCommand(root) {
-  const errors = [];
-  const checked = new Set();
-  const prometheus = readYaml(root, OBSERVABILITY_FILES.prometheus, errors, checked);
-  if (!prometheus || errors.length > 0) {
-    throw new Error(`cannot prepare promtool host config: ${errors.join('; ')}`);
-  }
-
-  const tempDir = mkdtempSync(join(tmpdir(), 'lunchlineup-promtool-'));
-  const tempConfigPath = join(tempDir, 'prometheus.yml');
-  const adjustedConfig = {
-    ...prometheus,
-    rule_files: asArray(prometheus.rule_files).map((ruleFile) => repoPrometheusRulePath(root, String(ruleFile))),
-    scrape_configs: asArray(prometheus.scrape_configs).map((scrapeConfig) => {
-      const authorization = asMap(scrapeConfig?.authorization);
-      if (authorization.credentials_file !== containerPaths.prometheusCredentials) {
-        return scrapeConfig;
-      }
-      return {
-        ...scrapeConfig,
-        authorization: {
-          ...authorization,
-          credentials_file: join(root, PROMETHEUS_VALIDATION_CREDENTIALS_FILE),
-        },
-      };
-    }),
-  };
-  writeFileSync(tempConfigPath, yaml.dump(adjustedConfig, { lineWidth: -1 }), 'utf8');
-
-  return {
-    command: commandSpec('promtool', ['check', 'config', tempConfigPath]),
-    cleanup: () => rmSync(tempDir, { recursive: true, force: true }),
-  };
-}
-
-function prepareHostToolCommand(root, check) {
-  if (check.id === 'prometheus-config') {
-    return prepareHostPrometheusConfigCommand(root);
-  }
-
-  return {
-    command: check.hostCommand,
-    cleanup: () => {},
-  };
-}
-
 function commandFailure(check, command, result) {
   let retained = '';
   let retentionFailure = '';
@@ -348,13 +269,16 @@ function commandFailure(check, command, result) {
   return `${check.id}: ${formatCommand(command)} exited ${result.status}${suffix}`;
 }
 
+
 export function buildObservabilityToolCommands(options = {}) {
   const root = resolve(options.root ?? defaultRoot);
   const caddyChecks = [
-    [OBSERVABILITY_FILES.caddy, 'active Caddyfile'],
-    [OBSERVABILITY_FILES.caddyTemplate, 'template Caddyfile'],
-  ].map(([relativePath, label]) => ({
-    id: `caddy-${relativePath.endsWith('.template') ? 'template' : 'config'}`,
+    [OBSERVABILITY_FILES.caddy, 'active Caddyfile', 'config'],
+    [OBSERVABILITY_FILES.caddyTemplate, 'template Caddyfile', 'template'],
+    [OBSERVABILITY_FILES.caddyPilot, 'private pilot Caddyfile', 'private-pilot'],
+    [OBSERVABILITY_FILES.caddyProduction, 'production Caddyfile', 'production'],
+  ].map(([relativePath, label, suffix]) => ({
+    id: `caddy-${suffix}`,
     tool: 'caddy',
     label,
     hostCommand: commandSpec('caddy', ['validate', '--config', join(root, relativePath), '--adapter', 'caddyfile']),
@@ -377,53 +301,27 @@ export function buildObservabilityToolCommands(options = {}) {
   return [
     ...caddyChecks,
     {
-      id: 'prometheus-config',
-      tool: 'promtool',
-      label: 'Prometheus config and referenced rules',
-      hostCommand: commandSpec('promtool', ['check', 'config', join(root, OBSERVABILITY_FILES.prometheus)]),
-      containerCommand: commandSpec('docker', [
-        'run',
-        '--rm',
-        '-v',
-        dockerVolume(root, OBSERVABILITY_FILES.prometheus, containerPaths.prometheusConfig),
-        '-v',
-        dockerVolume(root, 'infrastructure/prometheus/alerts', containerPaths.prometheusAlertsDir),
-        '-v',
-        dockerVolume(
-          root,
-          PROMETHEUS_VALIDATION_CREDENTIALS_FILE,
-          containerPaths.prometheusCredentials,
-        ),
-        '--entrypoint',
-        '/bin/promtool',
-        OBSERVABILITY_TOOL_IMAGES.prometheus,
-        'check',
-        'config',
-        containerPaths.prometheusConfig,
-      ]),
-    },
-    {
       id: 'prometheus-rules',
       tool: 'promtool',
-      label: 'Prometheus alert rules',
-      hostCommand: commandSpec('promtool', ['check', 'rules', join(root, OBSERVABILITY_FILES.prometheusAlerts)]),
+      label: 'Estate Prometheus alert rules',
+      hostCommand: commandSpec('promtool', ['check', 'rules', join(root, OBSERVABILITY_FILES.estateRules)]),
       containerCommand: commandSpec('docker', [
         'run',
         '--rm',
         '-v',
-        dockerVolume(root, OBSERVABILITY_FILES.prometheusAlerts, containerPaths.prometheusAlertRules),
+        dockerVolume(root, 'docs/estate', containerPaths.estateDir),
         '--entrypoint',
         '/bin/promtool',
         OBSERVABILITY_TOOL_IMAGES.prometheus,
         'check',
         'rules',
-        containerPaths.prometheusAlertRules,
+        containerPaths.estateRules,
       ]),
     },
     {
       id: 'prometheus-rule-tests',
       tool: 'promtool',
-      label: 'Prometheus alert rule fixtures',
+      label: 'Estate Prometheus alert rule fixtures',
       hostCommand: commandSpec('promtool', [
         'test',
         'rules',
@@ -433,9 +331,9 @@ export function buildObservabilityToolCommands(options = {}) {
         'run',
         '--rm',
         '-v',
-        dockerVolume(root, 'infrastructure/prometheus/alerts', containerPaths.prometheusAlertsDir),
+        dockerVolume(root, 'docs/estate', containerPaths.estateDir),
         '--workdir',
-        containerPaths.prometheusRuleTestsDir,
+        containerPaths.estateRuleTestsDir,
         '--entrypoint',
         '/bin/promtool',
         OBSERVABILITY_TOOL_IMAGES.prometheus,
@@ -444,54 +342,6 @@ export function buildObservabilityToolCommands(options = {}) {
         ...PROMETHEUS_RULE_TEST_FILES.map((relativePath) => basename(relativePath)),
       ]),
     },
-    {
-      id: 'alertmanager-config',
-      tool: 'amtool',
-      label: 'Alertmanager config',
-      hostCommand: commandSpec('amtool', ['check-config', join(root, OBSERVABILITY_FILES.alertmanager)]),
-      containerCommand: commandSpec('docker', [
-        'run',
-        '--rm',
-        '-v',
-        dockerVolume(root, OBSERVABILITY_FILES.alertmanager, containerPaths.alertmanagerConfig),
-        '--entrypoint',
-        '/bin/amtool',
-        OBSERVABILITY_TOOL_IMAGES.alertmanager,
-        'check-config',
-        containerPaths.alertmanagerConfig,
-      ]),
-    },
-    ...[
-      [OBSERVABILITY_FILES.otelCollector, 'otel-traces-config'],
-      [OBSERVABILITY_FILES.logCollector, 'otel-logs-config'],
-    ].map(([relativePath, id]) => {
-      const environment = relativePath === OBSERVABILITY_FILES.logCollector
-        ? { PROMTAIL_HOST: 'lunchlineup-host' }
-        : undefined;
-      return {
-        id,
-        tool: 'otelcol-contrib',
-        label: relativePath,
-        hostCommand: commandSpec(
-          'otelcol-contrib',
-          ['validate', '--config', join(root, relativePath)],
-          { env: environment },
-        ),
-        containerCommand: commandSpec('docker', [
-          'run',
-          '--rm',
-          ...(environment ? ['-e', 'PROMTAIL_HOST=lunchlineup-host'] : []),
-          '-v',
-          dockerVolume(root, relativePath, containerPaths.otelCollectorConfig),
-          '--entrypoint',
-          '/otelcol-contrib',
-          OBSERVABILITY_TOOL_IMAGES.otelCollector,
-          'validate',
-          '--config',
-          containerPaths.otelCollectorConfig,
-        ]),
-      };
-    }),
   ];
 }
 
@@ -551,26 +401,20 @@ export function validateObservabilityTools(options = {}) {
       continue;
     }
 
-    let prepared;
     try {
-      prepared = prepareHostToolCommand(root, check);
-      const result = runToolCommand(prepared.command, root, runner);
+      const result = runToolCommand(check.hostCommand, root, runner);
       checks.push({
         id: check.id,
         label: check.label,
         mode: 'host',
-        command: check.id === 'prometheus-config'
-          ? `${formatCommand(check.hostCommand)} (using a temporary repo-local rule_files path)`
-          : formatCommand(prepared.command),
+        command: formatCommand(check.hostCommand),
         status: result.status,
       });
       if (result.status !== 0) {
-        errors.push(commandFailure(check, prepared.command, result));
+        errors.push(commandFailure(check, check.hostCommand, result));
       }
     } catch (error) {
       errors.push(`${check.id}: ${error.message}`);
-    } finally {
-      prepared?.cleanup();
     }
   }
 
@@ -587,6 +431,7 @@ export function validateObservabilityTools(options = {}) {
     skipped,
   };
 }
+
 
 function hasDuration(value) {
   return typeof value === 'string' && durationPattern.test(value);
@@ -661,17 +506,6 @@ function commandList(command) {
   return Array.isArray(command) ? command.map(String) : [String(command ?? '')];
 }
 
-function staticTargets(staticConfigs) {
-  return asArray(staticConfigs).flatMap((config) => asArray(config?.targets).map(String));
-}
-
-function jobTargets(job) {
-  return staticTargets(job?.static_configs);
-}
-
-function alertmanagerTargets(alerting) {
-  return asArray(alerting?.alertmanagers).flatMap((manager) => staticTargets(manager?.static_configs));
-}
 
 function stripCaddyComment(line) {
   let quoted = false;
@@ -1001,70 +835,6 @@ function validateWebContentSecurityPolicy(root, errors, checked) {
   }
 }
 
-function validateComposeObservability(compose, errors) {
-  const services = asMap(compose?.services);
-  const secrets = asMap(compose?.secrets);
-
-  for (const serviceName of ['proxy', 'prometheus', 'alertmanager', 'node-exporter']) {
-    const service = services[serviceName];
-    expect(errors, service, `docker-compose.yml: missing ${serviceName} service`);
-    if (!service) {
-      continue;
-    }
-    const image = String(service.image ?? '');
-    const dockerfile = String(asMap(service.build).dockerfile ?? '');
-    const releaseBuilt = releaseBuiltImageRefPattern.test(image)
-      && dockerfile === `infrastructure/docker/Dockerfile.${serviceName}`;
-    expect(
-      errors,
-      digestPinnedImageRefPattern.test(image) || releaseBuilt,
-      `docker-compose.yml: ${serviceName} image must be external-digest-pinned or release-manifest-built`,
-    );
-  }
-
-  const proxy = services.proxy;
-  if (proxy) {
-    const environment = environmentMap(proxy.environment);
-    expect(errors, hasVolume(proxy, './infrastructure/caddy/Caddyfile', '/etc/caddy/Caddyfile'), 'docker-compose.yml: proxy must mount the checked-in Caddyfile');
-    expect(errors, environment.CADDY_SITE_ADDRESSES?.includes('${CADDY_SITE_ADDRESSES:-'), 'docker-compose.yml: proxy must pass CADDY_SITE_ADDRESSES with a default');
-    expect(errors, environment.ADMIN_EMAIL?.includes('${ADMIN_EMAIL:-'), 'docker-compose.yml: proxy must pass ADMIN_EMAIL with a default');
-    expect(errors, listValue(proxy.networks).includes('external'), 'docker-compose.yml: proxy must attach to the external network');
-    expect(errors, listValue(proxy.networks).includes('app'), 'docker-compose.yml: proxy must attach to the app network');
-  }
-
-  const prometheus = services.prometheus;
-  if (prometheus) {
-    expect(errors, hasVolume(prometheus, './infrastructure/prometheus/prometheus.yml', '/etc/prometheus/prometheus.yml', 'ro'), 'docker-compose.yml: prometheus must mount prometheus.yml read-only');
-    expect(errors, hasVolume(prometheus, './infrastructure/prometheus/alerts', '/etc/prometheus/alerts', 'ro'), 'docker-compose.yml: prometheus must mount alert rules read-only');
-    expect(errors, hasSecret(prometheus, 'metrics_token'), 'docker-compose.yml: prometheus must receive metrics_token secret');
-    expect(errors, commandList(prometheus.command).includes('--config.file=/etc/prometheus/prometheus.yml'), 'docker-compose.yml: prometheus must load the mounted config file');
-    expect(errors, listValue(prometheus.networks).includes('management'), 'docker-compose.yml: prometheus must attach to management network');
-    expect(errors, listValue(prometheus.networks).includes('app'), 'docker-compose.yml: prometheus must attach to app network');
-  }
-
-  const alertmanager = services.alertmanager;
-  if (alertmanager) {
-    const publishedPorts = asArray(alertmanager.ports).map(String);
-    expect(errors, hasVolume(alertmanager, './infrastructure/alertmanager/alertmanager.yml', '/etc/alertmanager/alertmanager.yml', 'ro'), 'docker-compose.yml: alertmanager must mount alertmanager.yml read-only');
-    expect(errors, hasSecret(alertmanager, 'alertmanager_webhook_url'), 'docker-compose.yml: alertmanager must receive alertmanager_webhook_url secret');
-    expect(errors, commandList(alertmanager.command).includes('--config.file=/etc/alertmanager/alertmanager.yml'), 'docker-compose.yml: alertmanager must load the mounted config file');
-    expect(errors, listValue(alertmanager.networks).includes('management'), 'docker-compose.yml: alertmanager must stay on the management network');
-    expect(
-      errors,
-      publishedPorts.length === 1 && publishedPorts[0] === '127.0.0.1:9093:9093',
-      'docker-compose.yml: alertmanager must publish only exact 127.0.0.1:9093:9093',
-    );
-  }
-
-  const nodeExporter = services['node-exporter'];
-  if (nodeExporter) {
-    expect(errors, commandList(nodeExporter.command).includes('--collector.textfile.directory=/textfile_collector'), 'docker-compose.yml: node-exporter must expose the textfile collector');
-    expect(errors, listValue(nodeExporter.networks).includes('management'), 'docker-compose.yml: node-exporter must stay on the management network');
-  }
-
-  expect(errors, String(secrets.metrics_token?.file ?? '').includes('${METRICS_TOKEN_FILE:-'), 'docker-compose.yml: metrics_token secret must come from METRICS_TOKEN_FILE');
-  expect(errors, String(secrets.alertmanager_webhook_url?.file ?? '').includes('${ALERTMANAGER_WEBHOOK_URL_FILE:-'), 'docker-compose.yml: alertmanager_webhook_url secret must come from ALERTMANAGER_WEBHOOK_URL_FILE');
-}
 
 function validatePublicWebProbe(root, errors, checked) {
   const script = readText(root, OBSERVABILITY_FILES.publicWebProbe, errors, checked);
@@ -1129,354 +899,136 @@ function validatePublicWebProbe(root, errors, checked) {
   }
 }
 
-function validatePrometheusConfig(root, prometheus, compose, errors) {
+
+function validateComposeEstateShape(compose, errors) {
   const services = asMap(compose?.services);
-  const globalConfig = asMap(prometheus?.global);
+  const volumes = asMap(compose?.volumes);
+  const networks = asMap(compose?.networks);
+  const secrets = asMap(compose?.secrets);
 
-  expect(errors, hasDuration(globalConfig.scrape_interval), 'prometheus.yml: global.scrape_interval must be a Prometheus duration');
-  expect(errors, hasDuration(globalConfig.evaluation_interval), 'prometheus.yml: global.evaluation_interval must be a Prometheus duration');
-  expect(errors, globalConfig.external_labels?.cluster === 'lunchlineup', 'prometheus.yml: cluster external label must be lunchlineup');
-  expect(errors, globalConfig.external_labels?.environment === 'lunchlineup-compose', 'prometheus.yml: environment external label must be lunchlineup-compose');
-  expect(errors, asArray(prometheus?.rule_files).includes('/etc/prometheus/alerts/*.yml'), 'prometheus.yml: rule_files must load /etc/prometheus/alerts/*.yml');
-  expect(errors, alertmanagerTargets(prometheus?.alerting).includes('alertmanager:9093'), 'prometheus.yml: alerting must target alertmanager:9093');
+  for (const name of REMOVED_SERVICES) {
+    expect(errors, !Object.hasOwn(services, name), `docker-compose.yml: ${name} is an estate system and must not be a Compose service`);
+  }
+  for (const name of REMOVED_VOLUMES) {
+    expect(errors, !Object.hasOwn(volumes, name), `docker-compose.yml: volume ${name} belongs to a removed component`);
+  }
+  for (const name of REMOVED_NETWORKS) {
+    expect(errors, !Object.hasOwn(networks, name), `docker-compose.yml: network ${name} belongs to a removed component`);
+  }
+  for (const name of REMOVED_SECRETS) {
+    expect(errors, !Object.hasOwn(secrets, name), `docker-compose.yml: secret ${name} belongs to a removed component`);
+  }
+  expect(errors, String(secrets.metrics_token?.file ?? '').includes('${METRICS_TOKEN_FILE:-'), 'docker-compose.yml: metrics_token secret must come from METRICS_TOKEN_FILE');
 
-  const jobs = asArray(prometheus?.scrape_configs);
-  const jobsByName = new Map(jobs.map((job) => [job.job_name, job]));
-  expect(errors, jobs.length === jobsByName.size, 'prometheus.yml: scrape job names must be unique');
-
-  for (const [jobName, contract] of Object.entries(expectedScrapeJobs)) {
-    const job = jobsByName.get(jobName);
-    expect(errors, job, `prometheus.yml: missing ${jobName} scrape job`);
-    if (!job) {
-      continue;
-    }
-
-    expect(errors, JSON.stringify(jobTargets(job)) === JSON.stringify(contract.targets), `prometheus.yml: ${jobName} scrape targets must be ${contract.targets.join(', ')}`);
-    if (contract.metricsPath) {
-      expect(errors, job.metrics_path === contract.metricsPath, `prometheus.yml: ${jobName} metrics_path must be ${contract.metricsPath}`);
-    }
-    if (contract.interval) {
-      expect(errors, job.scrape_interval === contract.interval, `prometheus.yml: ${jobName} scrape_interval must be ${contract.interval}`);
-    }
-    if (contract.bearerTokenFile) {
-      expect(errors, job.authorization?.type === 'Bearer', `prometheus.yml: ${jobName} scrape must use Bearer authorization`);
-      expect(errors, job.authorization?.credentials_file === contract.bearerTokenFile, `prometheus.yml: ${jobName} scrape must read ${contract.bearerTokenFile}`);
-    }
+  for (const [name, service] of Object.entries(services)) {
+    const rendered = JSON.stringify(service);
+    expect(errors, !/OTEL_EXPORTER|otel-collector|tempo|promtail|PITR_|BACKUP_|archive-wal/.test(rendered), `docker-compose.yml: ${name} must not reference removed tracing, backup or PITR wiring`);
+    expect(errors, !listValue(service.networks).some((network) => REMOVED_NETWORKS.includes(network)), `docker-compose.yml: ${name} must not join a removed network`);
   }
 
-  for (const job of jobs) {
-    for (const target of jobTargets(job)) {
-      const serviceName = target.split(':')[0];
-      if (serviceName === 'localhost') {
-        continue;
-      }
-      expect(errors, services[serviceName], `prometheus.yml: target ${target} must resolve to a Compose service`);
-      expect(errors, !serviceName.startsWith('lunchlineup-'), `prometheus.yml: target ${target} must use Compose service DNS, not a fixed container name`);
+  const proxy = services.proxy;
+  expect(errors, proxy, 'docker-compose.yml: missing proxy service');
+  if (proxy) {
+    const environment = environmentMap(proxy.environment);
+    expect(errors, hasVolume(proxy, './infrastructure/caddy/Caddyfile', '/etc/caddy/Caddyfile'), 'docker-compose.yml: proxy must mount the checked-in Caddyfile');
+    expect(errors, environment.CADDY_SITE_ADDRESSES?.includes('${CADDY_SITE_ADDRESSES:-'), 'docker-compose.yml: proxy must pass CADDY_SITE_ADDRESSES with a default');
+    expect(errors, environment.ADMIN_EMAIL?.includes('${ADMIN_EMAIL:-'), 'docker-compose.yml: proxy must pass ADMIN_EMAIL with a default');
+    for (const network of ['external', 'app', 'management']) {
+      expect(errors, listValue(proxy.networks).includes(network), `docker-compose.yml: proxy must attach to the ${network} network`);
     }
+    expect(errors, hasSecret(proxy, 'metrics_token'), 'docker-compose.yml: proxy must receive metrics_token for the estate metrics gateway');
+    expect(errors, asArray(proxy.ports).every((port) => !String(port).includes(String(METRICS_GATEWAY_PORT))), 'docker-compose.yml: the base proxy must not publish the metrics gateway; only the private/production overlays do');
   }
 
-  for (const ruleFile of asArray(prometheus?.rule_files)) {
-    if (ruleFile.startsWith('/etc/prometheus/alerts/')) {
-      const relative = ruleFile.replace('/etc/prometheus/alerts/', 'infrastructure/prometheus/alerts/');
-      if (!relative.includes('*')) {
-        expect(errors, existsSync(join(root, relative)), `prometheus.yml: rule file ${ruleFile} must exist in the repo`);
-      }
-    }
+  const postgres = services.postgres;
+  expect(errors, postgres, 'docker-compose.yml: missing postgres service');
+  if (postgres) {
+    const command = commandList(postgres.command);
+    expect(errors, command.includes('archive_mode=${POSTGRES_ARCHIVE_MODE:-off}'), 'docker-compose.yml: postgres archive_mode must default to off and be set by POSTGRES_ARCHIVE_MODE');
+    expect(errors, command.includes('archive_command=${POSTGRES_ARCHIVE_COMMAND:-/bin/false}'), 'docker-compose.yml: postgres archive_command must default to fail-closed /bin/false and be set by POSTGRES_ARCHIVE_COMMAND');
+    expect(errors, listValue(postgres.networks).join(',') === 'data', 'docker-compose.yml: postgres must stay on the internal data network only');
   }
 }
 
-function validateBalancedExpression(expression) {
-  const stack = [];
-  const pairs = new Map([
-    [')', '('],
-    [']', '['],
-    ['}', '{'],
-  ]);
-  let quoted = false;
-  let escaped = false;
-
-  for (const char of expression) {
-    if (escaped) {
-      escaped = false;
-      continue;
-    }
-    if (char === '\\') {
-      escaped = true;
-      continue;
-    }
-    if (char === '"') {
-      quoted = !quoted;
-      continue;
-    }
-    if (quoted) {
-      continue;
-    }
-    if (char === '(' || char === '[' || char === '{') {
-      stack.push(char);
-      continue;
-    }
-    if (pairs.has(char) && stack.pop() !== pairs.get(char)) {
-      return false;
-    }
+function validateMetricsGateway(root, relativePath, errors, checked) {
+  const content = readText(root, relativePath, errors, checked);
+  expect(errors, content.includes(`http://:${METRICS_GATEWAY_PORT} {`), `${relativePath}: missing the :${METRICS_GATEWAY_PORT} estate metrics gateway site`);
+  expect(errors, content.includes('@authorized header Authorization "Bearer {file./run/secrets/metrics_token}"'), `${relativePath}: the metrics gateway must require the metrics_token bearer`);
+  expect(errors, content.includes('respond "unauthorized" 401'), `${relativePath}: the metrics gateway must answer 401 without the token`);
+  expect(errors, content.includes('respond "not found" 404'), `${relativePath}: the metrics gateway must answer 404 for unknown paths`);
+  const escape = (value) => value.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
+  for (const [service, { upstream, path }] of Object.entries(METRICS_GATEWAY_SERVICES)) {
+    const block = new RegExp(`handle /metrics/${escape(service)} \\{\\s+rewrite \\* ${escape(path)}\\s+reverse_proxy ${escape(upstream)}\\s+\\}`);
+    expect(errors, block.test(content), `${relativePath}: /metrics/${service} must rewrite to ${path} and proxy to ${upstream}`);
   }
-
-  return !quoted && stack.length === 0;
 }
 
-function extractJobLabelValues(expression) {
-  const values = [];
-  for (const match of expression.matchAll(/\bjob\s*(=|=~)\s*"([^"]+)"/g)) {
-    if (match[1] === '=~') {
-      values.push(...match[2].split('|').filter(Boolean));
-    } else {
-      values.push(match[2]);
-    }
-  }
-  return unique(values);
-}
-
-function validateAlertRules(root, alertRules, prometheus, errors) {
-  const configuredJobs = new Set(asArray(prometheus?.scrape_configs).map((job) => job.job_name).filter(Boolean));
-  const groups = asArray(alertRules?.groups);
-  const groupNames = groups.map((group) => group.name).filter(Boolean);
-  expect(errors, groups.length > 0, 'lunchlineup.yml: at least one alert group is required');
-  expect(errors, groupNames.length === unique(groupNames).length, 'lunchlineup.yml: alert group names must be unique');
-
-  const ruleEntries = [];
+function validateEstateRules(root, errors, checked) {
+  const rules = readYaml(root, OBSERVABILITY_FILES.estateRules, errors, checked);
+  if (!rules) return;
+  const groups = asArray(rules.groups);
+  expect(errors, groups.length > 0, `${OBSERVABILITY_FILES.estateRules}: must define rule groups`);
+  const names = new Set();
   for (const group of groups) {
-    expect(errors, typeof group.name === 'string' && group.name.startsWith('lunchlineup.'), 'lunchlineup.yml: alert group names must use the lunchlineup namespace');
-    expect(errors, hasDuration(group.interval), `lunchlineup.yml: group ${group.name ?? '<unnamed>'} must set a valid interval`);
-    expect(errors, asArray(group.rules).length > 0, `lunchlineup.yml: group ${group.name ?? '<unnamed>'} must contain rules`);
-    for (const rule of asArray(group.rules)) {
-      ruleEntries.push({ groupName: group.name, rule });
+    for (const rule of asArray(group?.rules)) {
+      if (rule?.alert) {
+        names.add(rule.alert);
+        expect(errors, !forbiddenAlertPattern.test(rule.alert), `${OBSERVABILITY_FILES.estateRules}: ${rule.alert} belongs to the estate backup system and must not be defined here`);
+        expect(errors, hasDuration(rule.for), `${OBSERVABILITY_FILES.estateRules}: ${rule.alert} needs a valid for: duration`);
+      }
+      const expr = String(rule?.expr ?? '');
+      expect(errors, !/job=~?"(?:api|api-v2|worker|engine|webhook-replay|control)"/.test(expr), `${OBSERVABILITY_FILES.estateRules}: ${rule?.alert} must select job="lunchlineup" with a service label, not a per-service job`);
     }
   }
-
-  const alertNames = ruleEntries.map(({ rule }) => rule.alert).filter(Boolean);
-  expect(errors, alertNames.length === unique(alertNames).length, 'lunchlineup.yml: alert names must be unique');
-  for (const expectedAlert of expectedAlerts) {
-    expect(errors, alertNames.includes(expectedAlert), `lunchlineup.yml: missing ${expectedAlert} alert`);
+  for (const alert of expectedAlerts) {
+    expect(errors, names.has(alert), `${OBSERVABILITY_FILES.estateRules}: missing alert ${alert}`);
   }
+  const serviceDown = groups.flatMap((group) => asArray(group?.rules)).find((rule) => rule?.alert === 'ServiceDown');
+  expect(errors, String(serviceDown?.expr ?? '').includes('up{job="lunchlineup"} == 0'), `${OBSERVABILITY_FILES.estateRules}: ServiceDown must cover job="lunchlineup"`);
+  const text = readText(root, OBSERVABILITY_FILES.estateRules, errors, checked);
+  expect(errors, !/lunchlineup_(?:pitr|backup)_/.test(text), `${OBSERVABILITY_FILES.estateRules}: no in-stack backup or PITR telemetry rules`);
 
-  for (const { groupName, rule } of ruleEntries) {
-    const alertName = rule.alert ?? '<unnamed>';
-    expect(errors, typeof rule.alert === 'string' && rule.alert.length > 0, `lunchlineup.yml: group ${groupName} has an alert without a name`);
-    expect(errors, typeof rule.expr === 'string' && rule.expr.trim().length > 0, `lunchlineup.yml: ${alertName} must set expr`);
-    expect(errors, validateBalancedExpression(String(rule.expr ?? '')), `lunchlineup.yml: ${alertName} expr must have balanced PromQL delimiters`);
-    expect(errors, hasDuration(rule.for), `lunchlineup.yml: ${alertName} must set a valid for duration`);
-    expect(errors, ['critical', 'warning'].includes(rule.labels?.severity), `lunchlineup.yml: ${alertName} must set severity critical or warning`);
-    expect(errors, typeof rule.labels?.team === 'string' && rule.labels.team.length > 0, `lunchlineup.yml: ${alertName} must set labels.team`);
-    expect(errors, typeof rule.annotations?.summary === 'string' && rule.annotations.summary.length > 0, `lunchlineup.yml: ${alertName} must set annotations.summary`);
-    expect(errors, typeof rule.annotations?.description === 'string' && rule.annotations.description.length > 0, `lunchlineup.yml: ${alertName} must set annotations.description`);
-
-    const runbook = rule.annotations?.runbook;
-    expect(errors, typeof runbook === 'string' && /^docs\/runbooks\/[^/]+\.md$/.test(runbook), `lunchlineup.yml: ${alertName} runbook must be a checked-in docs/runbooks markdown path`);
-    if (typeof runbook === 'string') {
-      expect(errors, existsSync(join(root, runbook)), `lunchlineup.yml: ${alertName} runbook ${runbook} must exist`);
-    }
-
-    for (const jobName of extractJobLabelValues(String(rule.expr ?? ''))) {
-      expect(errors, configuredJobs.has(jobName), `lunchlineup.yml: ${alertName} references unknown Prometheus job ${jobName}`);
-    }
-  }
-
-  const serviceDown = ruleEntries.find(({ rule }) => rule.alert === 'ServiceDown')?.rule;
-  if (serviceDown) {
-    const coveredJobs = extractJobLabelValues(serviceDown.expr);
-    for (const expectedJob of ['api', 'api-v2', 'engine', 'worker', 'webhook-replay', 'control', 'node']) {
-      expect(errors, coveredJobs.includes(expectedJob), `lunchlineup.yml: ServiceDown must cover ${expectedJob}`);
-    }
-  }
-
-  const missingTarget = ruleEntries.find(({ rule }) => rule.alert === 'ExpectedScrapeTargetMissing')?.rule;
-  if (missingTarget) {
-    const expectedExpression = Object.entries(expectedScrapeJobs).flatMap(([job, contract]) =>
-      contract.targets.map(instance => `absent(up{job="${job}",instance="${instance}"})`),
-    ).join(' or ');
-    const normalize = value => String(value ?? '').replace(/\s+/g, ' ').trim();
-    expect(errors, normalize(missingTarget.expr) === expectedExpression, 'lunchlineup.yml: ExpectedScrapeTargetMissing must cover every exact expected job/instance without fallback');
-    expect(errors, missingTarget.for === '2m', 'lunchlineup.yml: ExpectedScrapeTargetMissing must retain the 2m pending period');
-    expect(errors, missingTarget.labels?.severity === 'critical' && missingTarget.labels?.team === 'ops', 'lunchlineup.yml: ExpectedScrapeTargetMissing must page critical ops');
-    expect(errors, Object.keys(asMap(missingTarget.labels)).sort().join(',') === 'severity,team', 'lunchlineup.yml: ExpectedScrapeTargetMissing must preserve query-derived job and instance labels');
-    expect(errors, missingTarget.annotations?.runbook === 'docs/runbooks/monitoring-target-missing.md', 'lunchlineup.yml: ExpectedScrapeTargetMissing must reference its recovery runbook');
-  }
-
-  const publicWebUnavailable = ruleEntries.find(({ rule }) => rule.alert === 'PublicWebUnavailable')?.rule;
-  if (publicWebUnavailable) {
-    expect(errors, String(publicWebUnavailable.expr).includes('lunchlineup_public_web_probe_success{job="node"} == 0'), 'lunchlineup.yml: PublicWebUnavailable must page on a failed node textfile probe');
-    expect(errors, publicWebUnavailable.labels?.severity === 'critical', 'lunchlineup.yml: PublicWebUnavailable must be critical');
-  }
-
-  const publicWebProbeStale = ruleEntries.find(({ rule }) => rule.alert === 'PublicWebProbeStale')?.rule;
-  if (publicWebProbeStale) {
-    const expression = String(publicWebProbeStale.expr);
-    expect(errors, expression.includes('lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node"}'), 'lunchlineup.yml: PublicWebProbeStale must use the last-attempt timestamp');
-    expect(errors, expression.includes('absent('), 'lunchlineup.yml: PublicWebProbeStale must fail closed when telemetry is absent');
-    expect(errors, publicWebProbeStale.labels?.severity === 'critical', 'lunchlineup.yml: PublicWebProbeStale must be critical');
-  }
-
-  for (const [alertName, metric] of [
-    ['PasswordResetEmailDeadLetters', 'lunchlineup_password_reset_email_total'],
-    ['StaffInvitationDeadLetters', 'lunchlineup_staff_invitation_outbox_total'],
-    ['NotificationOutboxDeadLetters', 'lunchlineup_notification_outbox_total'],
-  ]) {
-    const alert = ruleEntries.find(({ rule }) => rule.alert === alertName)?.rule;
-    if (!alert) continue;
-    const expression = String(alert.expr);
-    expect(errors, expression.includes(`increase(${metric}`), `lunchlineup.yml: ${alertName} must use recent terminal transitions`);
-    expect(errors, expression.includes('status="dead_lettered"'), `lunchlineup.yml: ${alertName} must select dead-letter transitions`);
-    expect(errors, expression.includes('[15m]'), `lunchlineup.yml: ${alertName} must recover after the bounded 15-minute incident window`);
-  }
-
-  const retentionExecutionMissing = ruleEntries.find(({ rule }) =>
-    rule.alert === 'ApplicationDataRetentionExecutionTelemetryMissing')?.rule;
-  if (retentionExecutionMissing) {
-    const expression = String(retentionExecutionMissing.expr);
-    expect(errors, expression.includes('absent('), 'lunchlineup.yml: application-data execution telemetry must fail closed when missing');
-    expect(errors, expression.includes('mode="execute"'), 'lunchlineup.yml: application-data execution missing alert must require execute mode');
-    expect(errors, expression.includes('stage="application_data"'), 'lunchlineup.yml: application-data execution missing alert must require the application_data stage');
-  }
-
-  const retentionExecutionStale = ruleEntries.find(({ rule }) =>
-    rule.alert === 'ApplicationDataRetentionExecutionStale')?.rule;
-  if (retentionExecutionStale) {
-    const expression = String(retentionExecutionStale.expr);
-    expect(errors, expression.includes('mode="execute"'), 'lunchlineup.yml: application-data execution stale alert must require execute mode');
-    expect(errors, expression.includes('stage="application_data"'), 'lunchlineup.yml: application-data execution stale alert must require the application_data stage');
-    expect(errors, expression.includes('> 93600'), 'lunchlineup.yml: application-data execution stale alert must use the 26-hour boundary');
+  for (const key of ['estateRuleTestMain', 'estateRuleTestNative', 'estateRuleTestDeletion']) {
+    const fixture = readYaml(root, OBSERVABILITY_FILES[key], errors, checked);
+    expect(errors, asArray(fixture?.tests).length > 0 && JSON.stringify(fixture?.rule_files) === '["../lunchlineup-rules.yml"]', `${OBSERVABILITY_FILES[key]}: fixtures must load docs/estate/lunchlineup-rules.yml`);
   }
 }
 
-
-// Closed source contracts deliberately reject unreviewed query rewrites.
-// Whitespace normalization is not a PromQL parser or runtime qualification.
-const NATIVE_ALERT_CONTRACTS = Object.freeze({
-  "NativeApiMetricsMissing": {
-    "expr": "absent(up{job=\"api-v2\"})",
-    "for": "2m",
-    "severity": "critical",
-    "team": "ops"
-  },
-  "NativeApiHttpInstrumentationUnavailable": {
-    "expr": "(up{job=\"api-v2\"} == 1) unless on (job, instance) (lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"} == 1)",
-    "for": "2m",
-    "severity": "critical",
-    "team": "ops"
-  },
-  "HighNativeApiErrorRate": {
-    "expr": "(((sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or on (job, route) (0 * sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])))) / sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > 0.05)\nand on (job, route) (sum by (job, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0)",
-    "for": "2m",
-    "severity": "critical",
-    "team": "engineering"
-  },
-  "HighNativeApiLatency": {
-    "expr": "histogram_quantile(0.99, sum by (le, job, route) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m]))) > 2",
-    "for": "5m",
-    "severity": "warning",
-    "team": "engineering"
-  },
-  "ApiAvailabilityBudgetFastBurn": {
-    "expr": "((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0))\nand\n((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[1h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h]))) > (14.4 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[1h])) > 0))",
-    "for": "2m",
-    "severity": "critical",
-    "team": "engineering"
-  },
-  "ApiAvailabilityBudgetSlowBurn": {
-    "expr": "((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30m])) > 0))\nand\n((((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[6h])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h]))) > (6 * 0.001)) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[6h])) > 0))",
-    "for": "15m",
-    "severity": "warning",
-    "team": "engineering"
+function validateEstateTargets(root, errors, checked) {
+  const targets = readYaml(root, OBSERVABILITY_FILES.estateTargets, errors, checked);
+  if (!targets) return;
+  const jobs = asArray(targets.scrape_configs);
+  expect(errors, jobs.length === 1 && jobs[0]?.job_name === 'lunchlineup', `${OBSERVABILITY_FILES.estateTargets}: must define exactly one scrape job named lunchlineup`);
+  const job = jobs[0] ?? {};
+  expect(errors, job.authorization?.type === 'Bearer' && typeof job.authorization?.credentials_file === 'string', `${OBSERVABILITY_FILES.estateTargets}: must scrape with a Bearer credentials_file`);
+  expect(errors, job.scheme === undefined || job.scheme === 'http', `${OBSERVABILITY_FILES.estateTargets}: the gateway speaks plain HTTP on the private network`);
+  const seen = new Map();
+  for (const config of asArray(job.static_configs)) {
+    expect(errors, JSON.stringify(config.targets) === JSON.stringify([`10.231.10.108:${METRICS_GATEWAY_PORT}`]), `${OBSERVABILITY_FILES.estateTargets}: every target must be the VM107 gateway 10.231.10.108:${METRICS_GATEWAY_PORT}`);
+    seen.set(config.labels?.service, config.labels?.__metrics_path__);
   }
-});
-const NATIVE_DASHBOARD_CONTRACTS = Object.freeze({
-  "1": {
-    "targets": {
-      "A": "sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))"
-    },
-    "unit": "reqps"
-  },
-  "2": {
-    "targets": {
-      "A": "histogram_quantile(0.99, sum by (le) (rate(lunchlineup_api_v2_http_request_duration_seconds_bucket{job=\"api-v2\",scope=\"application\"}[5m])))"
-    },
-    "unit": "s"
-  },
-  "5": {
-    "targets": {
-      "A": "sum by (method, route) (rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\"}[1m]))"
-    },
-    "unit": "reqps"
-  },
-  "6": {
-    "targets": {
-      "A": "((sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[5m])) or vector(0)) / sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m]))) and (sum(rate(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[5m])) > 0)"
-    },
-    "unit": "percentunit"
-  },
-  "10": {
-    "targets": {
-      "A": "up{job=~\"api|api-v2|engine|worker|webhook-replay|control|node\"}"
-    }
-  },
-  "13": {
-    "targets": {
-      "A": "(100 * (1 - ((sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=\"5xx\"}[30d])) or vector(0)) / sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d]))))) and (sum(increase(lunchlineup_api_v2_http_requests_total{job=\"api-v2\",scope=\"application\",status_class=~\"2xx|3xx|5xx\"}[30d])) > 0)"
-    },
-    "unit": "percent"
-  },
-  "22": {
-    "targets": {
-      "A": "sum(rate(http_requests_total{job=\"api\"}[1m]))"
-    }
-  },
-  "23": {
-    "targets": {
-      "A": "histogram_quantile(0.99, sum by (le) (rate(http_request_duration_ms_bucket{job=\"api\"}[5m])))"
-    }
-  },
-  "24": {
-    "targets": {
-      "A": "sum by (method, route) (rate(http_requests_total{job=\"api\"}[1m]))"
-    }
-  },
-  "25": {
-    "targets": {
-      "A": "sum(rate(http_requests_total{job=\"api\",status=~\"5..\"}[5m])) / clamp_min(sum(rate(http_requests_total{job=\"api\"}[5m])), 0.001)"
-    }
-  },
-  "26": {
-    "targets": {
-      "A": "up{job=\"api-v2\"}",
-      "B": "lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"}",
-      "C": "absent(up{job=\"api-v2\"})",
-      "D": "(up{job=\"api-v2\"} == 1) unless on (job, instance) (lunchlineup_api_v2_http_instrumentation_ready{job=\"api-v2\"} == 1)"
-    },
-    "unit": "short"
-  },
-  "27": {
-    "targets": {
-      "A": "sum by (reason) (rate(lunchlineup_api_v2_http_requests_aborted_total{job=\"api-v2\",scope=\"application\"}[5m]))"
-    },
-    "unit": "reqps"
-  },
-  "28": {
-    "targets": {
-      "A": "min by (dependency) (lunchlineup_dependency_up{job=\"api\",dependency=~\"database|redis|rabbitmq\"})"
-    },
-    "unit": "short"
+  for (const service of Object.keys(METRICS_GATEWAY_SERVICES)) {
+    expect(errors, seen.get(service) === `/metrics/${service}`, `${OBSERVABILITY_FILES.estateTargets}: ${service} must use __metrics_path__ /metrics/${service}`);
   }
-});
-function normalizedPromqlContract(value) {
-  const text = String(value ?? '');
-  let quoted = false, escaped = false, normalized = '';
-  for (const char of text) {
-    if (escaped) { normalized += char; escaped = false; continue; }
-    if (quoted && char === '\\') { normalized += char; escaped = true; continue; }
-    if (char === '"') { quoted = !quoted; normalized += char; continue; }
-    if (quoted || !/\s/.test(char)) normalized += char;
-  }
-  return normalized;
+  expect(errors, seen.size === Object.keys(METRICS_GATEWAY_SERVICES).length, `${OBSERVABILITY_FILES.estateTargets}: unexpected extra scrape services`);
 }
+
+function validateEstateDashboards(root, errors, checked) {
+  for (const key of ['platformDashboard', 'deletionDashboard']) {
+    const text = readText(root, OBSERVABILITY_FILES[key], errors, checked);
+    let dashboard;
+    try {
+      dashboard = JSON.parse(text);
+    } catch (error) {
+      addError(errors, `${OBSERVABILITY_FILES[key]}: invalid JSON: ${error.message}`);
+      continue;
+    }
+    expect(errors, asArray(dashboard.panels).length > 0, `${OBSERVABILITY_FILES[key]}: must define panels`);
+    expect(errors, !/lunchlineup_(?:pitr|backup)_/.test(text), `${OBSERVABILITY_FILES[key]}: no in-stack backup or PITR panels`);
+    expect(errors, !/job=\\"(?:api|api-v2|worker|engine|webhook-replay|control)\\"/.test(text), `${OBSERVABILITY_FILES[key]}: queries must select job="lunchlineup" with a service label`);
+  }
+}
+
 function validateNativeCompose(compose, errors) {
   const services = asMap(compose?.services), api = services['api-v2'];
   expect(errors, api, 'docker-compose.yml: missing api-v2 service');
@@ -1494,133 +1046,33 @@ function validateNativeCompose(compose, errors) {
   expect(errors, api.ports === undefined || (Array.isArray(api.ports) && api.ports.length === 0), 'docker-compose.yml: api-v2 must not publish metrics or application ports');
   expect(errors, api.network_mode === undefined, 'docker-compose.yml: api-v2 must use scoped Compose networks');
   const networks = listValue(api.networks);
-  expect(errors, networks.includes('app') && listValue(services.prometheus?.networks).includes('app'), 'docker-compose.yml: api-v2 and prometheus must share app network');
-  expect(errors, networks.every(name => ['app', 'data', 'telemetry'].includes(name)), 'docker-compose.yml: api-v2 must keep its existing internal networks');
+  expect(errors, networks.includes('app') && listValue(services.proxy?.networks).includes('app'), 'docker-compose.yml: api-v2 and the proxy metrics gateway must share the app network');
+  expect(errors, networks.every(name => ['app', 'data'].includes(name)), 'docker-compose.yml: api-v2 must keep its existing internal networks');
   expect(errors, api.read_only === true && api.privileged !== true && listValue(api.cap_drop).includes('ALL') && asArray(api.cap_add).length === 0, 'docker-compose.yml: api-v2 must retain locked runtime privileges');
   expect(errors, listValue(api.security_opt).includes('no-new-privileges:true'), 'docker-compose.yml: api-v2 must retain no-new-privileges');
   const shadowTargets = new Set(['/', '/run', '/run/secrets', '/run/secrets/metrics_token']);
   expect(errors, !asArray(api.volumes).some(volume => shadowTargets.has(parseVolume(volume).target)), 'docker-compose.yml: api-v2 volumes must not shadow the metrics secret');
 }
-function validateNativeScrape(prometheus, errors) {
-  const job = asArray(prometheus?.scrape_configs).find(value => value?.job_name === 'api-v2');
-  if (!job) return; // Existing required-job guard reports absence.
-  const keys = ['job_name', 'static_configs', 'metrics_path', 'authorization', 'scrape_interval', 'scrape_timeout', 'sample_limit', 'body_size_limit'];
-  expect(errors, Object.keys(job).every(key => keys.includes(key)), 'prometheus.yml: api-v2 scrape must not add unreviewed relabel, proxy or authentication overrides');
-  expect(errors, job.scrape_timeout === '5s' && job.sample_limit === 12000 && job.body_size_limit === '8MB', 'prometheus.yml: api-v2 must retain bounded 5s/12000/8MB scrape limits');
-  const auth = asMap(job.authorization);
-  expect(errors, Object.keys(auth).length === 2 && Object.keys(auth).every(key => ['type', 'credentials_file'].includes(key)), 'prometheus.yml: api-v2 must use only file-backed Bearer authorization');
-  const configs = asArray(job.static_configs);
-  expect(errors, configs.length === 1 && isObject(configs[0]) && Object.keys(configs[0]).length === 1 && Array.isArray(configs[0].targets), 'prometheus.yml: api-v2 must use one static target block without label overrides');
-}
-function validateNativeAlertContracts(alertRules, errors) {
-  const rules = asArray(alertRules?.groups).flatMap(group => asArray(group.rules));
-  for (const [name, contract] of Object.entries(NATIVE_ALERT_CONTRACTS)) {
-    const rule = rules.find(value => value?.alert === name);
-    expect(errors, rule, 'lunchlineup.yml: missing native alert ' + name);
-    if (!rule) continue;
-    expect(errors, normalizedPromqlContract(rule.expr) === normalizedPromqlContract(contract.expr), 'lunchlineup.yml: ' + name + ' must retain the reviewed native selector/window/unit contract');
-    expect(errors, rule.for === contract.for && rule.labels?.severity === contract.severity && rule.labels?.team === contract.team, 'lunchlineup.yml: ' + name + ' must retain reviewed duration/severity/team');
-  }
-  const missing = rules.find(rule => rule.alert === 'NativeApiMetricsMissing');
-  if (missing) expect(errors, missing.labels?.job === 'api-v2', 'lunchlineup.yml: NativeApiMetricsMissing must carry fixed job api-v2');
-}
-function validateNativeDashboard(root, errors, checked) {
-  const text = readText(root, OBSERVABILITY_FILES.platformDashboard, errors, checked);
-  let dashboard;
-  try { dashboard = JSON.parse(text); } catch { addError(errors, 'platform-overview.json: dashboard must be valid JSON'); return; }
-  const panels = asArray(dashboard?.panels), ids = panels.map(panel => panel.id);
-  expect(errors, ids.length === unique(ids).length && ids.every(id => Number.isSafeInteger(id) && id > 0), 'platform-overview.json: panel IDs must be unique positive integers');
-  expect(errors, dashboard?.uid === 'lunchlineup-platform', 'platform-overview.json: retain provisioned dashboard UID');
-  for (const [id, contract] of Object.entries(NATIVE_DASHBOARD_CONTRACTS)) {
-    const panel = panels.find(value => value.id === Number(id));
-    expect(errors, panel, 'platform-overview.json: missing monitored panel ' + id);
-    if (!panel) continue;
-    expect(errors, panel.datasource?.uid === 'prometheus', 'platform-overview.json: panel ' + id + ' must use provisioned prometheus');
-    const targets = asArray(panel.targets), refs = targets.map(target => target.refId);
-    expect(errors, refs.length === unique(refs).length && JSON.stringify([...refs].sort()) === JSON.stringify(Object.keys(contract.targets).sort()), 'platform-overview.json: panel ' + id + ' must retain owned target references');
-    for (const [ref, expr] of Object.entries(contract.targets)) {
-      const actual = targets.find(target => target.refId === ref)?.expr;
-      expect(errors, validateBalancedExpression(String(actual ?? '')) && normalizedPromqlContract(actual) === normalizedPromqlContract(expr), 'platform-overview.json: panel ' + id + '/' + ref + ' must retain reviewed query ownership');
-    }
-    if (contract.unit) expect(errors, panel.fieldConfig?.defaults?.unit === contract.unit, 'platform-overview.json: panel ' + id + ' must retain reviewed units');
-    if ([1, 2, 10, 13].includes(Number(id))) {
-      expect(errors, panel.type === 'stat' && targets.every(target => target.instant === true) && JSON.stringify(panel.options?.reduceOptions?.calcs) === '["last"]' && panel.fieldConfig?.defaults?.noValue === 'Unknown', 'platform-overview.json: native stat ' + id + ' must use instant/last/Unknown without stale successful fallback');
-    }
-  }
-  const availability = panels.find(panel => panel.id === 13);
-  if (availability) expect(errors, String(availability.title).includes('provisional') && String(availability.description).includes('complete 30-day SLO'), 'platform-overview.json: native availability must retain provisional history qualification');
-}
-
-function validateAlertmanagerConfig(alertmanager, errors) {
-  expect(errors, hasDuration(alertmanager?.global?.resolve_timeout), 'alertmanager.yml: global.resolve_timeout must be a duration');
-
-  const route = alertmanager?.route;
-  expect(errors, isObject(route), 'alertmanager.yml: route is required');
-  if (route) {
-    for (const label of ['alertname', 'service', 'severity']) {
-      expect(errors, asArray(route.group_by).includes(label), `alertmanager.yml: route.group_by must include ${label}`);
-    }
-    expect(errors, hasDuration(route.group_wait), 'alertmanager.yml: route.group_wait must be a duration');
-    expect(errors, hasDuration(route.group_interval), 'alertmanager.yml: route.group_interval must be a duration');
-    expect(errors, hasDuration(route.repeat_interval), 'alertmanager.yml: route.repeat_interval must be a duration');
-    expect(errors, route.receiver === 'production-paging-webhook', 'alertmanager.yml: root route must send to production-paging-webhook');
-
-    const criticalRoute = asArray(route.routes).find((child) => asArray(child.matchers).includes('severity="critical"'));
-    expect(errors, criticalRoute, 'alertmanager.yml: critical severity route is required');
-    if (criticalRoute) {
-      expect(errors, criticalRoute.receiver === 'production-paging-webhook', 'alertmanager.yml: critical route must page production-paging-webhook');
-      expect(errors, hasDuration(criticalRoute.repeat_interval), 'alertmanager.yml: critical route repeat_interval must be a duration');
-    }
-  }
-
-  const receivers = asArray(alertmanager?.receivers);
-  const receiver = receivers.find((candidate) => candidate.name === 'production-paging-webhook');
-  expect(errors, receiver, 'alertmanager.yml: production-paging-webhook receiver is required');
-  if (receiver) {
-    const webhookConfigs = asArray(receiver.webhook_configs);
-    expect(errors, webhookConfigs.length > 0, 'alertmanager.yml: production-paging-webhook must define webhook_configs');
-    for (const config of webhookConfigs) {
-      expect(errors, config.url === undefined, 'alertmanager.yml: webhook URL must not be checked in as plaintext');
-      expect(errors, config.url_file === '/run/secrets/alertmanager_webhook_url', 'alertmanager.yml: webhook must read /run/secrets/alertmanager_webhook_url');
-      expect(errors, config.send_resolved === true, 'alertmanager.yml: webhook must send resolved notifications');
-    }
-  }
-}
-
 export function validateObservabilityConfigs(options = {}) {
   const root = resolve(options.root ?? defaultRoot);
   const errors = [];
   const checked = new Set();
 
   const compose = readYaml(root, OBSERVABILITY_FILES.compose, errors, checked);
-  const prometheus = readYaml(root, OBSERVABILITY_FILES.prometheus, errors, checked);
-  const alertRules = readYaml(root, OBSERVABILITY_FILES.prometheusAlerts, errors, checked);
-  const alertmanager = readYaml(root, OBSERVABILITY_FILES.alertmanager, errors, checked);
-  readYaml(root, OBSERVABILITY_FILES.otelCollector, errors, checked);
-  readYaml(root, OBSERVABILITY_FILES.logCollector, errors, checked);
 
   validateCaddyfile(root, OBSERVABILITY_FILES.caddy, errors, checked);
   validateCaddyfile(root, OBSERVABILITY_FILES.caddyTemplate, errors, checked);
+  validateMetricsGateway(root, OBSERVABILITY_FILES.caddyPilot, errors, checked);
+  validateMetricsGateway(root, OBSERVABILITY_FILES.caddyProduction, errors, checked);
   validateWebContentSecurityPolicy(root, errors, checked);
   validatePublicWebProbe(root, errors, checked);
-  validateNativeDashboard(root, errors, checked);
-  const nativeRuleFixture = readYaml(root, OBSERVABILITY_FILES.nativeRuleFixture, errors, checked);
-  expect(errors, asArray(nativeRuleFixture?.tests).length > 0 && JSON.stringify(nativeRuleFixture?.rule_files) === '["../lunchlineup.yml"]', 'native-api.test.yml: native rule controls must load the owned production rules');
+  validateEstateRules(root, errors, checked);
+  validateEstateTargets(root, errors, checked);
+  validateEstateDashboards(root, errors, checked);
 
   if (compose) {
-    validateComposeObservability(compose, errors);
+    validateComposeEstateShape(compose, errors);
     validateNativeCompose(compose, errors);
-  }
-  if (prometheus && compose) {
-    validatePrometheusConfig(root, prometheus, compose, errors);
-    validateNativeScrape(prometheus, errors);
-  }
-  if (alertRules && prometheus) {
-    validateAlertRules(root, alertRules, prometheus, errors);
-    validateNativeAlertContracts(alertRules, errors);
-  }
-  if (alertmanager) {
-    validateAlertmanagerConfig(alertmanager, errors);
   }
 
   return {
@@ -1732,3 +1184,4 @@ export function main(argv = process.argv.slice(2), streams = { stdout: process.s
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   process.exitCode = main();
 }
+

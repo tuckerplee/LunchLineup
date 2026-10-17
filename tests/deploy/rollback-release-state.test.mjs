@@ -144,15 +144,6 @@ test('rollback state materializer preserves every verified previous release inpu
       readFileSync(join(outputDir, 'app', 'docker-compose.yml'), 'utf8'),
       readFileSync(join(root, 'docker-compose.yml'), 'utf8'),
     );
-    for (const unit of [
-      'lunchlineup-backup.service',
-      'lunchlineup-backup.timer',
-      'lunchlineup-pitr-base-backup.service',
-      'lunchlineup-pitr-base-backup.timer',
-    ]) assert.equal(
-      readFileSync(join(outputDir, 'app', 'infrastructure', 'systemd', unit), 'utf8'),
-      readFileSync(join(root, 'infrastructure', 'systemd', unit), 'utf8'),
-    );
     for (const executable of [
       'scripts/activate-retained-rollback.sh',
       'scripts/rollback-vm217-transport.sh',

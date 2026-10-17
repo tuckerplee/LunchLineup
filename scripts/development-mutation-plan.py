@@ -11,10 +11,8 @@ import re
 
 MAX_BYTES = 1048576
 SERVICES = frozenset(('proxy', 'web', 'api', 'webhook-replay', 'migrate', 'engine',
-    'pdf-parser', 'worker', 'pgbouncer', 'pitr-wal-provider', 'api-v2',
-    'pitr-lifecycle-audit', 'postgres', 'redis', 'rabbitmq', 'control', 'autoheal',
-    'prometheus', 'backup', 'pitr-base-backup', 'pitr-restore', 'alertmanager',
-    'node-exporter', 'loki', 'promtail', 'otel-collector', 'tempo', 'grafana'))
+    'pdf-parser', 'worker', 'pgbouncer', 'api-v2', 'postgres', 'redis', 'rabbitmq',
+    'control', 'autoheal'))
 # Operation -> exact resource kind. These are contracts, not admitted APIs.
 OPERATIONS = {
     'image-import': 'image', 'image-tag': 'image',
@@ -59,10 +57,8 @@ OPERATION_LIMITS = {
 
 # Exact candidate logical names, not caller-selected Docker names/options.
 VOLUME_OPTIONS = {name: {} for name in (
-    'caddy_data', 'caddy_config', 'postgres_data', 'postgres_pitr_restore_data',
-    'backup_data', 'redis_data', 'rabbitmq_data', 'pitr_staging', 'prometheus_data',
-    'alertmanager_data', 'loki_data', 'promtail_positions', 'tempo_data',
-    'grafana_data', 'tenant_export_artifacts')}
+    'caddy_data', 'caddy_config', 'postgres_data', 'redis_data', 'rabbitmq_data',
+    'tenant_export_artifacts')}
 VOLUME_OPTIONS.update({
     'availability_uploads': {'type': 'tmpfs', 'device': 'tmpfs',
         'o': 'size=268435456,mode=0777,noexec,nosuid,nodev'},
@@ -71,7 +67,7 @@ VOLUME_OPTIONS.update({
 })
 # These exact candidate configurations conflict with the retained boundary.
 # Inventory remains mandatory; no operation can silently substitute a recipe.
-UNSUPPORTED_CONTAINER_SERVICES = frozenset(('autoheal', 'node-exporter'))
+UNSUPPORTED_CONTAINER_SERVICES = frozenset(('autoheal',))
 BACKUP_ARTIFACT_PHASES = {
     'snapshot-export': ('', 'plain'),
     'snapshot-encrypt': ('plain', 'encrypted'),
@@ -642,14 +638,9 @@ def validate_bound_load_effect(raw_plan, effect, **independent):
 ARCHIVE_SERVICE_ARTIFACTS = {
     'proxy': 'proxy', 'web': 'web', 'api': 'api', 'webhook-replay': 'api',
     'migrate': 'migrate', 'engine': 'engine', 'pdf-parser': 'worker',
-    'worker': 'worker', 'pgbouncer': 'pgbouncer', 'pitr-wal-provider': 'backup',
-    'api-v2': 'api-v2', 'pitr-lifecycle-audit': 'backup', 'postgres': 'postgres',
-    'redis': 'redis', 'rabbitmq': 'rabbitmq', 'control': 'control',
-    'autoheal': 'autoheal', 'prometheus': 'prometheus', 'backup': 'backup',
-    'pitr-base-backup': 'backup', 'pitr-restore': 'backup',
-    'alertmanager': 'alertmanager', 'node-exporter': 'node-exporter',
-    'loki': 'loki', 'promtail': 'otel-collector', 'otel-collector': 'otel-collector',
-    'tempo': 'tempo', 'grafana': 'grafana',
+    'worker': 'worker', 'pgbouncer': 'pgbouncer', 'api-v2': 'api-v2',
+    'postgres': 'postgres', 'redis': 'redis', 'rabbitmq': 'rabbitmq',
+    'control': 'control', 'autoheal': 'autoheal',
 }
 
 

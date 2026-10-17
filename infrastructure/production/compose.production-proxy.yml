@@ -11,6 +11,12 @@ services:
         published: "80"
         host_ip: "${PROXY_HTTP_BIND:?Set PROXY_HTTP_BIND to the production VM private IP}"
         protocol: tcp
+      # Estate Prometheus scrape port (token-protected metrics gateway; see
+      # docs/estate/README.md). Same private bind address as the app port.
+      - target: 9180
+        published: "9180"
+        host_ip: "${PROXY_HTTP_BIND:?Set PROXY_HTTP_BIND to the production VM private IP}"
+        protocol: tcp
     environment:
       PRIVATE_APP_HOST: lunchlineup.com
       CADDY_SITE_ADDRESSES: http://lunchlineup.com
@@ -27,9 +33,3 @@ services:
       - type: volume
         source: caddy_config
         target: /config
-  backup:
-    environment:
-      # Read-only container root: gpg needs a writable home on the /tmp tmpfs.
-      GNUPGHOME: /tmp
-      # Offsite is REQUIRED in production; there is no local-only override here.
-      BACKUP_OFFSITE_ENABLED: "true"

@@ -12,8 +12,8 @@
       "expectedPass": 1,
       "expectedSelectedSkip": 0,
       "sourcePin": {
-        "bytes": 30637,
-        "sha256": "88fa39603b42fbd8dd6b015e9945bc8ac3400078a2574ed68d0c4c9d0a629d4d"
+        "bytes": 27768,
+        "sha256": "18a4c00953c864fe4fbe83a14cea93ceb4445cc21fb1cd00f0d7ca9d474de968"
       }
     },
     {
@@ -49,8 +49,6 @@
   "images": {
     "caddy": "caddy:2-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
     "prometheus": "prom/prometheus:v3.14.0-distroless@sha256:50c707e96da5ade383cb1707790576480485e93de06aa60ad8802cb5f744bd0a",
-    "alertmanager": "prom/alertmanager:v0.34.0@sha256:690c7b525f4367aa91f73e2f91c632206d32e97c6384bdbf2fb7a861b420340d",
-    "otel": "otel/opentelemetry-collector-contrib:0.159.0@sha256:1f2c54a30e713fac6b3ae77a1ec84010c2007e29ced8ec666214fc2f6739c1cc",
     "postgres": "postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685"
   },
   "acceptance": {

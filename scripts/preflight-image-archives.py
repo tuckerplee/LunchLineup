@@ -443,14 +443,9 @@ _FD_PARSE_LOCK = threading.Lock()
 SERVICE_ARTIFACTS = {
     'proxy': 'proxy', 'web': 'web', 'api': 'api', 'webhook-replay': 'api',
     'migrate': 'migrate', 'engine': 'engine', 'pdf-parser': 'worker',
-    'worker': 'worker', 'pgbouncer': 'pgbouncer', 'pitr-wal-provider': 'backup',
-    'api-v2': 'api-v2', 'pitr-lifecycle-audit': 'backup', 'postgres': 'postgres',
-    'redis': 'redis', 'rabbitmq': 'rabbitmq', 'control': 'control',
-    'autoheal': 'autoheal', 'prometheus': 'prometheus', 'backup': 'backup',
-    'pitr-base-backup': 'backup', 'pitr-restore': 'backup',
-    'alertmanager': 'alertmanager', 'node-exporter': 'node-exporter',
-    'loki': 'loki', 'promtail': 'otel-collector', 'otel-collector': 'otel-collector',
-    'tempo': 'tempo', 'grafana': 'grafana',
+    'worker': 'worker', 'pgbouncer': 'pgbouncer', 'api-v2': 'api-v2',
+    'postgres': 'postgres', 'redis': 'redis', 'rabbitmq': 'rabbitmq',
+    'control': 'control', 'autoheal': 'autoheal',
 }
 
 
