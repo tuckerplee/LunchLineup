@@ -69,7 +69,7 @@ Calendar shift saves now distinguish the submitted editor's lifetime from the ca
 
 ## Retained production safety requirements and historical procedure reference
 
-Production database recovery is the estate pgBackRest PITR path described in `postgres-pitr-recovery.md` (repository on the NAS over SFTP, configured by estate-infra). The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that the estate stanza protects. Do not launch until estate-infra confirms WAL archiving is attached (`POSTGRES_ARCHIVE_MODE`/`POSTGRES_ARCHIVE_COMMAND`) and a restore drill has passed.
+Production database recovery is the pgBackRest PITR path described in `postgres-pitr-recovery.md` (pgBackRest inside the postgres container, repository on the NAS over SFTP, backup schedules by estate-infra). The validated runtime and migration URLs must target the Compose `postgres:5432/POSTGRES_DB` service that the estate stanza protects. Do not launch until `PGBACKREST_ENABLED=true` is deployed (`pgbackrest check` passes), estate-infra confirms scheduled backups, and a restore drill has passed.
 
 ## Purpose
 
@@ -314,7 +314,7 @@ Production deploy must start `pdf-parser` explicitly before the full stack and i
 
 Backups are an estate system. Before launch, estate-infra confirms and records (the record is referenced from `LAUNCH_PROOF_DR_DRILL_URI`):
 
-- pgBackRest is attached to the production Postgres through `POSTGRES_ARCHIVE_MODE=on` and `POSTGRES_ARCHIVE_COMMAND` (see `infrastructure/postgres/README.md`), archives to the NAS repository over SFTP, and reports a current full backup.
+- pgBackRest runs in the production Postgres container (`PGBACKREST_ENABLED=true`, see `infrastructure/postgres/README.md`), archives to the NAS repository over SFTP, and reports a current full backup.
 - Host restic covers the uploads volume, the runtime env and the secret files.
 - A pgBackRest restore (including point-in-time) into a disposable database has been exercised, followed by the `migrate` service, an API health check and a tenant-scoped schedule query, with the elapsed time recorded.
 - Estate monitoring alerts on stale backups and failing WAL archiving. Those rules live in the estate, not in `docs/estate/lunchlineup-rules.yml`.

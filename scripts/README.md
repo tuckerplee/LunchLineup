@@ -2,7 +2,7 @@
 
 ## Files
 
-- `deploy-release.sh`: target-parameterized (`--target pilot|production`) verified image load, deploy with receipt and image rollback (no backup step; backups are estate-owned); see `docs/runbooks/production-cutover.md`.
+- `deploy-release.sh`: target-parameterized (`--target pilot|production`) verified image load, deploy with receipt and image rollback (takes no backup and installs no timer; when `PGBACKREST_ENABLED=true` it verifies the pgBackRest host files, adds `infrastructure/postgres/compose.pgbackrest.yml` and runs `pgbackrest stanza-create` and `check` after postgres is healthy; production requires it); see `docs/runbooks/production-cutover.md`.
 - `check-development-browser-database.mjs`: Validates fixed disposable database freshness and restricted application-role observations; does not provision a database.
 - `fixed-browser-source-profile.mjs`: Reads the protected fixed-browser source profile and binds its version-two source identity to the exact invocation while preserving the generic default.
 - `read-fixed-browser-phase.py`: Reads the protected fixed phase record and verifies the visible read-only runtime-input mount before selecting a browser phase.

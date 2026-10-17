@@ -8,6 +8,7 @@
 // public-launch policy in scripts/validate-production-launch.mjs. It never makes
 // a network call and never prints a secret value.
 import { spawnSync } from 'node:child_process';
+import { statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -44,6 +45,10 @@ export const REQUIRED_KEYS = [
   'PAID_GA_SIGNATURE_PROCESS', 'PAID_GA_TRANSFER_TERMS', 'PAID_GA_CONTACT_OWNER_EMAIL',
   'PAID_GA_APPROVAL_RECORD_URI', 'PUBLIC_SIGNUP_MODE', 'NEXT_PUBLIC_SIGNUP_MODE',
   'CONTROL_PLANE_PASSWORD',
+  // Postgres PITR: pgBackRest inside the postgres container, repo2 = SFTP to the NAS.
+  'PGBACKREST_ENABLED', 'PGBACKREST_STANZA', 'PGBACKREST_SFTP_HOST', 'PGBACKREST_SFTP_USER',
+  'PGBACKREST_REPO_PATH', 'PGBACKREST_SFTP_KEY_FILE', 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE',
+  'PGBACKREST_CIPHER_PASS_FILE',
   'LAUNCH_PROOF_MANIFEST_URI', 'OIDC_ENABLED', 'NEXT_PUBLIC_OIDC_ENABLED',
 ];
 
@@ -182,6 +187,33 @@ export function checkProductionEnv(env, { legalConfig = readLegalLaunchConfig() 
     fail('APP_DB_PASSWORD must differ from POSTGRES_PASSWORD.');
   }
 
+  // 5b. pgBackRest (production PITR). Files are host paths mounted read-only into postgres;
+  // scripts/deploy-release.sh verifies they exist on the VM before touching containers.
+  if (value('PGBACKREST_ENABLED') && value('PGBACKREST_ENABLED') !== 'true') {
+    fail('PGBACKREST_ENABLED must be exactly true in production (PITR is mandatory).');
+  }
+  if (value('PGBACKREST_STANZA') && !/^[a-z0-9][a-z0-9_-]{0,63}$/.test(value('PGBACKREST_STANZA'))) {
+    fail('PGBACKREST_STANZA must be lowercase letters, digits, - or _ (max 64).');
+  }
+  if (value('PGBACKREST_SFTP_HOST') && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$/.test(value('PGBACKREST_SFTP_HOST'))) {
+    fail('PGBACKREST_SFTP_HOST must be a host name or IP address.');
+  }
+  if (value('PGBACKREST_SFTP_PORT') && !/^[0-9]{1,5}$/.test(value('PGBACKREST_SFTP_PORT'))) {
+    fail('PGBACKREST_SFTP_PORT must be a port number.');
+  }
+  if (value('PGBACKREST_SFTP_USER') && !/^[a-z_][a-z0-9_-]{0,31}$/.test(value('PGBACKREST_SFTP_USER'))) {
+    fail('PGBACKREST_SFTP_USER must be a lowercase account name.');
+  }
+  if (value('PGBACKREST_REPO_PATH') && !/^\/[A-Za-z0-9._/-]{0,255}$/.test(value('PGBACKREST_REPO_PATH'))) {
+    fail('PGBACKREST_REPO_PATH must be an absolute path inside the SFTP chroot.');
+  }
+  for (const key of ['PGBACKREST_SFTP_KEY_FILE', 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE', 'PGBACKREST_CIPHER_PASS_FILE']) {
+    if (value(key) && !/^\/[^\s"'`$\\]+$/.test(value(key))) fail(`${key} must be an absolute host file path without spaces or shell characters.`);
+  }
+  const pgbrFiles = ['PGBACKREST_SFTP_KEY_FILE', 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE', 'PGBACKREST_CIPHER_PASS_FILE']
+    .map((key) => value(key)).filter(Boolean);
+  if (new Set(pgbrFiles).size !== pgbrFiles.length) fail('PGBACKREST_*_FILE paths must be three different files.');
+
   // 6. Signup mode agreement and mode-specific prerequisites
   const mode = value('PUBLIC_SIGNUP_MODE');
   if (mode && mode !== value('NEXT_PUBLIC_SIGNUP_MODE')) {
@@ -229,6 +261,23 @@ export function checkProductionEnv(env, { legalConfig = readLegalLaunchConfig() 
   return errors;
 }
 
+// With --verify-local-secret-files on the deploy host: the pgBackRest key, known_hosts and
+// cipher passphrase files must exist, be non-empty and (key, passphrase) be private.
+export function verifyPgbackrestFiles(env) {
+  const errors = [];
+  for (const key of ['PGBACKREST_SFTP_KEY_FILE', 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE', 'PGBACKREST_CIPHER_PASS_FILE']) {
+    const path = String(env[key] ?? '').trim();
+    if (!path) continue;
+    let info;
+    try { info = statSync(path); } catch { errors.push(`${key}: ${path} does not exist on this host.`); continue; }
+    if (!info.isFile() || info.size === 0) errors.push(`${key}: ${path} must be a non-empty regular file.`);
+    else if (key !== 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE' && process.platform !== 'win32' && (info.mode & 0o077) !== 0) {
+      errors.push(`${key}: ${path} must not be group/world accessible (chmod 600).`);
+    }
+  }
+  return errors;
+}
+
 function runLaunchPolicy(envPath, extraArgs) {
   const result = spawnSync(
     process.execPath,
@@ -260,6 +309,7 @@ function main() {
   const errors = [
     ...collector.errors,
     ...checkProductionEnv(env, legalConfigPath ? { legalConfig: readLegalLaunchConfig(resolve(legalConfigPath)) } : {}),
+    ...(args.includes('--verify-local-secret-files') ? verifyPgbackrestFiles(env) : []),
     ...runLaunchPolicy(envPath, args.filter((argument) => argument === '--verify-local-secret-files')),
   ];
   const unique = [...new Set(errors)];

@@ -149,7 +149,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 3m
@@ -178,7 +178,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -223,7 +223,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -268,7 +268,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -313,7 +313,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -358,7 +358,7 @@ tests:
         values: "1 stale _ _ _ 1+0x3"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -403,7 +403,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -448,7 +448,7 @@ tests:
         values: "1+0x8"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1 stale _ _ _ 1+0x3"
     alert_rule_test:
       - eval_time: 0m
@@ -462,12 +462,12 @@ tests:
         exp_alerts:
           - exp_labels:
               job: "node"
-              instance: "10.231.10.108:9100"
+              host: "p1-lunchlineup-dev01"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected node metrics target is missing"
-              description: "Prometheus has no current up series for the expected node target 10.231.10.108:9100; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected node target host p1-lunchlineup-dev01; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -490,7 +490,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -529,7 +529,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -568,7 +568,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -607,7 +607,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -646,7 +646,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -685,7 +685,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -709,7 +709,7 @@ tests:
       - eval_time: 2m
         alertname: ServiceDown
         exp_alerts: []
-  - name: C12 node wrong healthy instance cannot mask expected target
+  - name: C12 node wrong healthy host cannot mask expected target
     interval: 1m
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
@@ -726,7 +726,7 @@ tests:
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",instance=\"10.231.10.109:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-other-host\",instance=\"10.231.10.109:9100\"}"
         values: "1+0x4"
     alert_rule_test:
       - eval_time: 1m
@@ -737,12 +737,12 @@ tests:
         exp_alerts:
           - exp_labels:
               job: "node"
-              instance: "10.231.10.108:9100"
+              host: "p1-lunchlineup-dev01"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected node metrics target is missing"
-              description: "Prometheus has no current up series for the expected node target 10.231.10.108:9100; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected node target host p1-lunchlineup-dev01; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -764,7 +764,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -809,7 +809,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -854,7 +854,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -899,7 +899,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -944,7 +944,7 @@ tests:
         values: "0+0x3 1+0x3"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -989,7 +989,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -1034,7 +1034,7 @@ tests:
         values: "1+0x7"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
         values: "0+0x3 1+0x3"
     alert_rule_test:
       - eval_time: 1m
@@ -1048,6 +1048,7 @@ tests:
         exp_alerts:
           - exp_labels:
               job: "node"
+              host: "p1-lunchlineup-dev01"
               instance: "10.231.10.108:9100"
               severity: critical
               team: ops
@@ -1061,3 +1062,40 @@ tests:
       - eval_time: 4m
         alertname: ServiceDown
         exp_alerts: []
+
+  # Host/textfile rules key on the estate host label, never on instance.
+  - name: Host rules select job node and host label only
+    interval: 1m
+    input_series:
+      - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01",instance="10.231.10.108:9100"}'
+        values: "0+0x6"
+      - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-other-host",instance="10.231.10.109:9100"}'
+        values: "0+0x6"
+      - series: 'lunchlineup_public_web_probe_success{job="textfile-other",host="p1-lunchlineup-dev01",instance="10.231.10.108:9100"}'
+        values: "0+0x6"
+      - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01",instance="renamed-instance:9100"}'
+        values: "0+0x6"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: PublicWebUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: "node"
+              host: "p1-lunchlineup-dev01"
+              instance: "10.231.10.108:9100"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "LunchLineup public web edge is unavailable"
+              description: "The bounded external HTTPS probe is failing; DNS, TLS, Caddy, or the Next.js root page is unavailable or serving the wrong release."
+              runbook: docs/runbooks/public-web-unavailable.md
+          - exp_labels:
+              job: "node"
+              host: "p1-lunchlineup-dev01"
+              instance: "renamed-instance:9100"
+              severity: critical
+              team: ops
+            exp_annotations:
+              summary: "LunchLineup public web edge is unavailable"
+              description: "The bounded external HTTPS probe is failing; DNS, TLS, Caddy, or the Next.js root page is unavailable or serving the wrong release."
+              runbook: docs/runbooks/public-web-unavailable.md

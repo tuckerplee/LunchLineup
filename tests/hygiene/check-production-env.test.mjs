@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
-import { checkProductionEnv, REQUIRED_KEYS } from '../../scripts/check-production-env.mjs';
+import { checkProductionEnv, REQUIRED_KEYS, verifyPgbackrestFiles } from '../../scripts/check-production-env.mjs';
 import { BASE } from '../fixtures/production-env-fixture.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
@@ -51,6 +51,39 @@ test('flags every missing required key by name', () => {
   for (const dead of ['BACKUP_OFFSITE_URI', 'BACKUP_ENCRYPTION_KEY_SECRET_FILE', 'PITR_S3_ENDPOINT', 'PITR_S3_BUCKET', 'PITR_LIFECYCLE_POLICY_PROOF_URI', 'ALERTMANAGER_WEBHOOK_URL_FILE', 'GRAFANA_USER', 'GRAFANA_PASSWORD']) {
     assert.ok(!REQUIRED_KEYS.includes(dead), `${dead} belongs to a removed component and must not be required`);
     assert.ok(!(dead in BASE), `${dead} must not be in the production fixture`);
+  }
+});
+
+test('requires pgBackRest PITR settings in production and validates their shape', () => {
+  for (const key of ['PGBACKREST_ENABLED', 'PGBACKREST_STANZA', 'PGBACKREST_SFTP_HOST', 'PGBACKREST_SFTP_USER',
+    'PGBACKREST_REPO_PATH', 'PGBACKREST_SFTP_KEY_FILE', 'PGBACKREST_SFTP_KNOWN_HOSTS_FILE', 'PGBACKREST_CIPHER_PASS_FILE']) {
+    const values = env();
+    delete values[key];
+    assert.ok(checkProductionEnv(values, { legalConfig: APPROVED_LEGAL }).some((e) => e.startsWith(`${key} is required`)), key);
+  }
+  assert.ok(check({ PGBACKREST_ENABLED: 'false' }).some((e) => /PGBACKREST_ENABLED must be exactly true/.test(e)));
+  assert.ok(check({ PGBACKREST_STANZA: 'Bad Stanza' }).some((e) => /PGBACKREST_STANZA/.test(e)));
+  assert.ok(check({ PGBACKREST_REPO_PATH: 'repo' }).some((e) => /PGBACKREST_REPO_PATH/.test(e)));
+  assert.ok(check({ PGBACKREST_SFTP_KEY_FILE: 'relative/key' }).some((e) => /PGBACKREST_SFTP_KEY_FILE must be an absolute/.test(e)));
+  assert.ok(check({ PGBACKREST_CIPHER_PASS_FILE: BASE.PGBACKREST_SFTP_KEY_FILE }).some((e) => /three different files/.test(e)));
+  assert.ok(check({ PGBACKREST_SFTP_PORT: 'ssh' }).some((e) => /PGBACKREST_SFTP_PORT/.test(e)));
+  assert.deepEqual(check({ PGBACKREST_SFTP_PORT: '22' }), []);
+});
+
+test('verifyPgbackrestFiles fails closed on missing or empty host files', () => {
+  const scratch = mkdtempSync(join(tmpdir(), 'll-pgbr-files-'));
+  try {
+    const good = (name, body = 'x') => { const p = join(scratch, name); writeFileSync(p, body, { mode: 0o600 }); return p; };
+    const files = {
+      PGBACKREST_SFTP_KEY_FILE: good('key'),
+      PGBACKREST_SFTP_KNOWN_HOSTS_FILE: good('known_hosts'),
+      PGBACKREST_CIPHER_PASS_FILE: good('cipher'),
+    };
+    assert.deepEqual(verifyPgbackrestFiles(files), []);
+    assert.ok(verifyPgbackrestFiles({ ...files, PGBACKREST_SFTP_KEY_FILE: join(scratch, 'absent') }).some((e) => /does not exist/.test(e)));
+    assert.ok(verifyPgbackrestFiles({ ...files, PGBACKREST_CIPHER_PASS_FILE: good('empty', '') }).some((e) => /non-empty regular file/.test(e)));
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
   }
 });
 

@@ -10,8 +10,8 @@ log_min_duration_statement = {{observability.slowQueryThresholdMs}}
 listen_addresses = '*'
 max_connections = {{postgres.maxConnections}}
 
-# Write-Ahead Log (WAL) configuration. Archiving is off by default; the estate
-# pgBackRest attaches through POSTGRES_ARCHIVE_MODE / POSTGRES_ARCHIVE_COMMAND.
+# Write-Ahead Log (WAL) configuration. Archiving is off by default; pgBackRest is
+# switched on by PGBACKREST_ENABLED=true (image entrypoint, infrastructure/postgres/README.md).
 wal_level = replica
 archive_mode = off
 archive_command = '/bin/false'

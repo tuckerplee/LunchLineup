@@ -9,7 +9,7 @@
 - `Dockerfile.engine`: Python scheduling engine image on the digest-pinned Chainguard base carrying the fixed OpenSSL packages.
 - `Dockerfile.migrations`: database migration image with Prisma tooling and `psql` for restricted application-role provisioning.
 - `Dockerfile.pgbouncer`: PgBouncer runtime with current Alpine security packages.
-- `Dockerfile.postgres`: Postgres 16 runtime with current Alpine packages and `su-exec` replacing the vulnerable `gosu` helper.
+- `Dockerfile.postgres`: Postgres 16 runtime with current Alpine packages, `su-exec` replacing the vulnerable `gosu` helper, the pinned `pgbackrest` package and the wrapper entrypoint that stays inert unless `PGBACKREST_ENABLED=true` (`infrastructure/postgres/README.md`).
 - `Dockerfile.proxy`: exact Caddy release source rebuilt with patched Go dependencies and current Alpine security packages.
 - `Dockerfile.web`: Next.js web image.
 - `Dockerfile.worker`: background worker image on the same fixed, digest-pinned Chainguard Python base.

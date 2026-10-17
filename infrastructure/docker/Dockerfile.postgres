@@ -1,9 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
 FROM postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685
+# pgbackrest is pinned to the exact Alpine community package for this base
+# (Alpine 3.24). Bump it together with the base digest; `apk` fails the build if the
+# pinned revision is no longer published, so a drifted package cannot slip in.
+ARG PGBACKREST_VERSION=2.58.0-r0
 RUN apk upgrade --no-cache \
-    && apk add --no-cache su-exec \
+    && apk add --no-cache su-exec "pgbackrest=${PGBACKREST_VERSION}" \
     && grep -q 'gosu postgres' /usr/local/bin/docker-entrypoint.sh \
     && sed -i 's/gosu postgres/su-exec postgres/g' /usr/local/bin/docker-entrypoint.sh \
     && ! grep -q 'gosu postgres' /usr/local/bin/docker-entrypoint.sh \
-    && rm -f /usr/local/bin/gosu
+    && rm -f /usr/local/bin/gosu \
+    && pgbackrest version \
+    && install -d -o postgres -g postgres -m 0750 /var/spool/pgbackrest /var/log/pgbackrest
+# Wrapper entrypoint: does nothing but exec the stock entrypoint unless
+# LL_PGBR_ENABLED=true (set only by infrastructure/postgres/compose.pgbackrest.yml).
+COPY --chmod=0755 infrastructure/postgres/lunchlineup-postgres-entrypoint.sh /usr/local/bin/lunchlineup-postgres-entrypoint.sh
+ENTRYPOINT ["lunchlineup-postgres-entrypoint.sh"]
+CMD ["postgres"]
