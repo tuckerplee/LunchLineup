@@ -356,7 +356,8 @@ test('public web paging probe is external, bounded, release-aware, and fail-clos
   assert.match(service, /TimeoutStartSec=25s/);
   assert.match(service, /ReadWritePaths=\/var\/lib\/node_exporter\/textfile_collector/);
   assert.match(timer, /OnUnitActiveSec=60s/);
-  assert.match(alerts, /alert: PublicWebUnavailable[\s\S]*lunchlineup_public_web_probe_success\{job="node",instance=~"[^"]+"\} == 0/);
+  assert.match(alerts, /alert: PublicWebUnavailable[\s\S]*lunchlineup_public_web_probe_success\{job="node",host="p1-lunchlineup-dev01"\} == 0/);
+  assert.doesNotMatch(alerts, /job="node",instance/);
   assert.match(alerts, /alert: PublicWebProbeStale[\s\S]*absent\(lunchlineup_public_web_probe_last_attempt_timestamp_seconds/);
   assert.match(runbook, /Caddy `502`/);
   assert.match(runbook, /Do not write `DEPLOYED_GIT_SHA` manually/);

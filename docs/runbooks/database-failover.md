@@ -19,7 +19,7 @@ Postgres is unreachable, health checks fail, or the stack reports the database d
 1. **If OOM**: increase container memory limits in `docker-compose.yml`, then restart the affected services.
 2. **If disk full**: run `docker compose exec postgres vacuumdb --all --verbose`. If WAL archiving is attached and failing, fix the estate archive path first; do not delete WAL.
 3. **If corrupted**: stop the application services and have estate-infra restore with pgBackRest (`postgres-pitr-recovery.md`). Rehearse in a disposable stack first when time allows.
-4. **If config error**: check `postgresql.conf` and the `POSTGRES_ARCHIVE_MODE`/`POSTGRES_ARCHIVE_COMMAND` runtime values for invalid settings, then regenerate from known-good defaults.
+4. **If config error**: check `postgresql.conf`, the `PGBACKREST_*` runtime values and `pgbackrest check` (archive failures retain WAL in `pg_wal`) for invalid settings, then regenerate from known-good defaults.
 
 ## Verification after recovery
 

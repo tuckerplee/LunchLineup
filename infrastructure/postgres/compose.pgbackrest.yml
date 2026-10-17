@@ -1,0 +1,74 @@
+# pgBackRest overlay for the postgres service. Include it ONLY when
+# PGBACKREST_ENABLED=true; scripts/deploy-release.sh and
+# scripts/deploy-private-pilot.sh add it automatically and fail closed on any
+# missing setting or file. Without it the stack is byte-for-byte the default:
+# archive_mode off, no pgBackRest activity, postgres on the internal data network only.
+#
+#   docker compose -f docker-compose.yml -f <proxy overlay> \
+#     -f infrastructure/postgres/compose.pgbackrest.yml --env-file <runtime.env> ...
+#
+# The repository is repo2 (type sftp) on the NAS chroot user. Required host files
+# (mounted read-only, copied into a postgres-owned tmpfs at start, never baked into
+# the image): the SFTP private key, an unhashed known_hosts file and the repo cipher
+# passphrase file. See infrastructure/postgres/README.md.
+services:
+  postgres:
+    environment:
+      LL_PGBR_ENABLED: "true"
+      LL_PGBR_STANZA: "${PGBACKREST_STANZA:?Set PGBACKREST_STANZA in .env}"
+      LL_PGBR_SFTP_HOST: "${PGBACKREST_SFTP_HOST:?Set PGBACKREST_SFTP_HOST in .env}"
+      LL_PGBR_SFTP_PORT: "${PGBACKREST_SFTP_PORT:-22}"
+      LL_PGBR_SFTP_USER: "${PGBACKREST_SFTP_USER:?Set PGBACKREST_SFTP_USER in .env}"
+      LL_PGBR_REPO_PATH: "${PGBACKREST_REPO_PATH:?Set PGBACKREST_REPO_PATH in .env}"
+      LL_PGBR_RETENTION_FULL: "${PGBACKREST_RETENTION_FULL:-4}"
+      LL_PGBR_RETENTION_DIFF: "${PGBACKREST_RETENTION_DIFF:-7}"
+      LL_PGBR_PG_USER: "${POSTGRES_USER:?Set POSTGRES_USER in .env}"
+      # Native pgBackRest option: every `pgbackrest` invocation (archive_command, docker
+      # compose exec/run) reads the rendered config from the tmpfs.
+      PGBACKREST_CONFIG: /run/pgbackrest/pgbackrest.conf
+    # Merged with the base tmpfs list. Owned by uid/gid 70 (postgres); the entrypoint
+    # renders config, key, known_hosts and lock directory here on every start.
+    tmpfs:
+      - /run/pgbackrest:rw,noexec,nosuid,nodev,size=1m,mode=0700,uid=70,gid=70
+    volumes:
+      - pgbackrest_spool:/var/spool/pgbackrest
+      - pgbackrest_log:/var/log/pgbackrest
+      - type: bind
+        source: "${PGBACKREST_SFTP_KEY_FILE:?Set PGBACKREST_SFTP_KEY_FILE in .env}"
+        target: /run/pgbackrest-src/sftp_key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PGBACKREST_SFTP_KNOWN_HOSTS_FILE:?Set PGBACKREST_SFTP_KNOWN_HOSTS_FILE in .env}"
+        target: /run/pgbackrest-src/known_hosts
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PGBACKREST_CIPHER_PASS_FILE:?Set PGBACKREST_CIPHER_PASS_FILE in .env}"
+        target: /run/pgbackrest-src/cipher_pass
+        read_only: true
+        bind:
+          create_host_path: false
+    # postgres keeps the internal `data` network and gains the dedicated egress
+    # network. It is the only service on pgbackrest-egress.
+    networks:
+      data:
+      pgbackrest-egress:
+        gw_priority: 1
+
+networks:
+  # Same shape as outbound-egress (non-internal bridge, no inter-container
+  # traffic), used by postgres alone and only for SFTP to the NAS. Restrict it to
+  # PGBACKREST_SFTP_HOST:PGBACKREST_SFTP_PORT in the VM/estate firewall
+  # (DOCKER-USER); Compose cannot express destination filters.
+  pgbackrest-egress:
+    driver: bridge
+    internal: false
+    driver_opts:
+      com.docker.network.bridge.enable_icc: "false"
+
+volumes:
+  pgbackrest_spool:
+  pgbackrest_log:

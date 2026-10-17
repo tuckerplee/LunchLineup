@@ -8,9 +8,11 @@
 # job="lunchlineup" and service=<api|api-v2|worker|engine|webhook-replay|control>,
 # and the instance label of the application targets is the metrics gateway
 # 10.231.10.108:9180 (VM107). Host metrics (node_exporter, including the textfile
-# collector probes written by the systemd timers) use job="node" with the VM's
-# node_exporter instance, matched here as 10.231.10.108:<port>. When this is
-# reused for another VM, change those two addresses.
+# collector /var/lib/node_exporter/textfile_collector probes written by the systemd
+# timers) use job="node" and are selected by the estate `host` label, not by instance:
+# host="p1-lunchlineup-dev01" (estate labels site=p1, host=p1-lunchlineup-dev01,
+# role=app, env=dev; target 10.231.10.108:9100; honor_labels true). When this is
+# reused for another VM, change the gateway address and that host label.
 #
 # Dropped from the in-stack rule set: every rule about the removed in-stack
 # components (backup freshness, base-backup freshness and WAL-archive health).
@@ -20,7 +22,7 @@ groups:
     interval: 1m
     rules:
       - alert: ServiceDown
-        expr: up{job="lunchlineup"} == 0 or up{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"} == 0
+        expr: up{job="lunchlineup"} == 0 or up{job="node",host="p1-lunchlineup-dev01"} == 0
         for: 2m
         labels:
           severity: critical
@@ -41,14 +43,14 @@ groups:
           or absent(up{job="lunchlineup",service="worker",instance="10.231.10.108:9180"})
           or absent(up{job="lunchlineup",service="webhook-replay",instance="10.231.10.108:9180"})
           or absent(up{job="lunchlineup",service="control",instance="10.231.10.108:9180"})
-          or absent(up{job="node",instance="10.231.10.108:9100"})
+          or absent(up{job="node",host="p1-lunchlineup-dev01"})
         for: 2m
         labels:
           severity: critical
           team: ops
         annotations:
           summary: "Expected {{ if $labels.service }}{{ $labels.service }}{{ else }}{{ $labels.job }}{{ end }} metrics target is missing"
-          description: "Prometheus has no current up series for the expected {{ if $labels.service }}{{ $labels.service }}{{ else }}{{ $labels.job }}{{ end }} target {{ $labels.instance }}; another instance cannot satisfy this check."
+          description: "Prometheus has no current up series for the expected {{ if $labels.service }}{{ $labels.service }}{{ else }}{{ $labels.job }}{{ end }} target {{ if $labels.host }}host {{ $labels.host }}{{ else }}{{ $labels.instance }}{{ end }}; another instance cannot satisfy this check."
           runbook: "docs/runbooks/monitoring-target-missing.md"
 
       - alert: NativeApiMetricsMissing
@@ -78,7 +80,7 @@ groups:
           runbook: "docs/runbooks/production-readiness.md"
 
       - alert: PublicWebUnavailable
-        expr: lunchlineup_public_web_probe_success{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"} == 0
+        expr: lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"} == 0
         for: 2m
         labels:
           severity: critical
@@ -90,8 +92,8 @@ groups:
 
       - alert: PublicWebProbeStale
         expr: |
-          time() - lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"} > 180
-          or absent(lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"})
+          time() - lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",host="p1-lunchlineup-dev01"} > 180
+          or absent(lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",host="p1-lunchlineup-dev01"})
         for: 2m
         labels:
           severity: critical
@@ -166,9 +168,9 @@ groups:
 
       - alert: PublicWebAvailabilityBudgetFastBurn
         expr: |
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"}[5m])) > (14.4 * 0.001)
+          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[5m])) > (14.4 * 0.001)
           and
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"}[1h])) > (14.4 * 0.001)
+          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[1h])) > (14.4 * 0.001)
         for: 2m
         labels:
           severity: critical
@@ -180,9 +182,9 @@ groups:
 
       - alert: PublicWebAvailabilityBudgetSlowBurn
         expr: |
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"}[30m])) > (6 * 0.001)
+          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[30m])) > (6 * 0.001)
           and
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"}[6h])) > (6 * 0.001)
+          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[6h])) > (6 * 0.001)
         for: 15m
         labels:
           severity: warning
@@ -453,9 +455,9 @@ groups:
       - alert: DiskSpaceLow
         expr: |
           (
-            node_filesystem_avail_bytes{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?",fstype!~"tmpfs|overlay|squashfs|aufs"}
+            node_filesystem_avail_bytes{job="node",host="p1-lunchlineup-dev01",fstype!~"tmpfs|overlay|squashfs|aufs"}
             /
-            node_filesystem_size_bytes{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?",fstype!~"tmpfs|overlay|squashfs|aufs"}
+            node_filesystem_size_bytes{job="node",host="p1-lunchlineup-dev01",fstype!~"tmpfs|overlay|squashfs|aufs"}
           ) < 0.15
         for: 10m
         labels:
@@ -467,7 +469,7 @@ groups:
           runbook: "docs/runbooks/database-failover.md"
 
       - alert: HostFilesystemTelemetryMissing
-        expr: absent(node_filesystem_size_bytes{job="node",instance=~"10[.]231[.]10[.]108(:[0-9]+)?"})
+        expr: absent(node_filesystem_size_bytes{job="node",host="p1-lunchlineup-dev01"})
         for: 15m
         labels:
           severity: warning

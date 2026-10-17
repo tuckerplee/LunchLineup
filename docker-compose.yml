@@ -630,9 +630,12 @@ services:
       - POSTGRES_USER=${POSTGRES_USER:?Set POSTGRES_USER in .env}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
       - POSTGRES_DB=${POSTGRES_DB:?Set POSTGRES_DB in .env}
-    # WAL archiving is OFF by default. Estate pgBackRest (configured outside this
-    # repo by estate-infra) attaches through POSTGRES_ARCHIVE_MODE and
-    # POSTGRES_ARCHIVE_COMMAND; see infrastructure/postgres/README.md.
+    # WAL archiving is OFF by default. pgBackRest (in this image, repo2 = SFTP on the
+    # NAS) is switched on only by PGBACKREST_ENABLED=true, which adds
+    # infrastructure/postgres/compose.pgbackrest.yml (volumes, mounted key files, the
+    # postgres-only pgbackrest-egress network) and makes the image entrypoint force
+    # archive_mode=on; POSTGRES_ARCHIVE_MODE/COMMAND are for a manual hook only.
+    # See infrastructure/postgres/README.md.
     command: [ "postgres", "-c", "config_file=/etc/postgresql/postgresql.conf", "-c", "archive_mode=${POSTGRES_ARCHIVE_MODE:-off}", "-c", "archive_command=${POSTGRES_ARCHIVE_COMMAND:-/bin/false}" ]
     healthcheck:
       test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:?Set POSTGRES_USER in .env} -d ${POSTGRES_DB:?Set POSTGRES_DB in .env}" ]
@@ -717,6 +720,9 @@ services:
     restart: unless-stopped
 
   # ─── Autoheal (restart unhealthy containers) ───
+  # The pinned image logs each restart to its own stdout by default ("... found to be
+  # unhealthy - Restarting container now ..."); Alloy ships it. No log flag is needed
+  # (docs/estate/README.md).
   autoheal:
     <<: *locked-runtime
     tmpfs:

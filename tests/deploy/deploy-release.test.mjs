@@ -20,6 +20,21 @@ const PREV = 'sha256:' + 'b'.repeat(64);
 
 function tmp(prefix) { return mkdtempSync(join(tmpdir(), prefix)); }
 
+// pgBackRest host files (key, known_hosts, passphrase) that a production runtime env must name.
+function pgbackrestEnv() {
+  const dir = tmp('rel-pgbr-');
+  const files = {};
+  for (const [key, name] of [['PGBACKREST_SFTP_KEY_FILE', 'key'], ['PGBACKREST_SFTP_KNOWN_HOSTS_FILE', 'known_hosts'], ['PGBACKREST_CIPHER_PASS_FILE', 'cipher']]) {
+    writeFileSync(join(dir, name), 'x\n');
+    chmodSync(join(dir, name), 0o600);
+    files[key] = toPosix(join(dir, name));
+  }
+  return {
+    PGBACKREST_ENABLED: 'true', PGBACKREST_STANZA: 'lunchlineup', PGBACKREST_SFTP_HOST: 'p0-nas01',
+    PGBACKREST_SFTP_USER: 'pgbr-lunchlineup', PGBACKREST_REPO_PATH: '/repo', ...files,
+  };
+}
+
 // Stub docker: logs argv; behaviour controlled by STUB_* env vars.
 function stubBin(logName = 'docker.log') {
   const bin = tmp('rel-bin-');
@@ -66,6 +81,7 @@ function runtimeEnv(overrides = {}, { drop = [] } = {}) {
     MIGRATION_PRODUCTION_CONFIRM: 'apply-lunchlineup-production-migrations',
     DEPLOY_RELEASE_SHA: SHA,
     IMAGE_TAG: 'rel1',
+    ...pgbackrestEnv(),
     ...overrides,
   };
   for (const k of drop) delete base[k];
@@ -74,7 +90,7 @@ function runtimeEnv(overrides = {}, { drop = [] } = {}) {
   return file;
 }
 
-const prodEnv = { PROD_BIND_IP: '10.231.10.120' };
+const prodEnv = { PROD_BIND_IP: '10.231.10.120', APP_DIR: toPosix(root) };
 const checkProd = (file) => runBash(`configure_target production; RUNTIME_ENV="${toPosix(file)}"; check_runtime_env; echo OK`, { env: prodEnv });
 
 test('script is syntactically valid bash', { skip: !bash }, () => {
@@ -144,7 +160,7 @@ test('pilot runtime env still refuses production hosts and accepts its own', { s
     PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
     PROXY_HTTP_BIND: '10.231.10.108', DATA_TARGET_ENV: 'development',
   });
-  const run = (f) => runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo OK`);
+  const run = (f) => runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo OK`, { env: { APP_DIR: toPosix(root) } });
   assert.equal(run(good).status, 0, run(good).stderr);
   const bad = runtimeEnv({ DATA_TARGET_ENV: 'production' });
   assert.notEqual(run(bad).status, 0);

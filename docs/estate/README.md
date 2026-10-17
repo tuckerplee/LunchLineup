@@ -7,13 +7,13 @@ LunchLineup does not run its own monitoring, alerting, dashboard, log, tracing o
 | Metrics | Estate Prometheus (`prometheus.int.tuckerl.ee:9090`) | Token-protected `/metrics` endpoints behind a scrape gateway on the VM (below), plus `lunchlineup-targets.yml` |
 | Alerting | Estate Alertmanager (`alertmanager.int.tuckerl.ee:9093`) owns routing and mail. No Slack or PagerDuty webhooks. | `lunchlineup-rules.yml` (rules only; nothing here routes or sends) |
 | Dashboards | Estate Grafana | `dashboards/*.json` reference copies |
-| Logs | Alloy on the VM (estate-infra `log_shipper` role) pushing to estate Loki | Containers log to the Docker `json-file` driver; Alloy picks up the container logs |
+| Logs | Alloy on the VM (estate-infra `log_shipper` role) pushing to estate Loki | Containers log to the Docker `json-file` driver; Alloy picks up the container logs, including `autoheal` restart lines (below) |
 | Tracing | None | Nothing is added; the OTLP exporters stay dormant because no endpoint is configured |
-| Postgres PITR | pgBackRest, repository on the NAS over SFTP | A configurable WAL archive hook that is off by default (`infrastructure/postgres/README.md`) |
+| Postgres PITR | pgBackRest inside the postgres container, repository `repo2` on the NAS over SFTP | The image, the `compose.pgbackrest.yml` overlay and deploy checks (off unless `PGBACKREST_ENABLED=true`; `infrastructure/postgres/README.md`). Backup schedules are estate-owned. |
 | File backups | Host restic online backup | Nothing |
 | Transactional end-user email (Resend) | Product functionality, unchanged | Unchanged |
 
-There is no S3 offsite target and no in-container dump anywhere in this repository.
+There is no S3 offsite target and no in-container dump anywhere in this repository. The one backup tool in the stack is pgBackRest in the postgres container, configured and driven as described under Backups and recovery.
 
 ## Files
 
@@ -28,7 +28,7 @@ There is no S3 offsite target and no in-container dump anywhere in this reposito
 Copy these; estate-infra owns everything after the copy. Do not edit the estate-infra repository from here.
 
 - `lunchlineup-targets.yml`: the one `lunchlineup` scrape job (use it as a `scrape_config_files` entry or paste it into `prometheus.yml`).
-- `lunchlineup-rules.yml`: alert rules for the estate Prometheus `rule_files`. Application series use `job="lunchlineup"` with a `service` label; host series use `job="node"` with instance `10.231.10.108:<port>`. Rules about the removed in-stack components (backup, base backup and WAL archive freshness) are dropped.
+- `lunchlineup-rules.yml`: alert rules for the estate Prometheus `rule_files`. Application series use `job="lunchlineup"` with a `service` label; host series use `job="node"` and are selected by the estate `host` label (`host="p1-lunchlineup-dev01"`), never by instance. Rules about the removed in-stack components (backup, base backup and WAL archive freshness) are dropped.
 - `tests/*.test.yml`: `promtool test rules` fixtures for the rules (`promtool test rules docs/estate/tests/*.test.yml`).
 - `dashboards/platform-overview.json`, `dashboards/tenant-deletion-billing.json`: Grafana dashboards. They use datasource UIDs `prometheus` and `loki`; map them to the estate datasource UIDs on import. The "Application Logs" panel queries `{job="lunchlineup"}`; adjust the label to whatever the Alloy `log_shipper` role attaches.
 
@@ -55,7 +55,7 @@ Network: the gateway is published only by `infrastructure/development-admission/
 
 Labels produced by `lunchlineup-targets.yml`: `job="lunchlineup"`, `service=<api|api-v2|worker|engine|webhook-replay|control>`, `instance="10.231.10.108:9180"`. Scrape interval 15s, timeout 10s, body limit 8 MB.
 
-Host metrics (disk space, the public web probe, retention-purge timers) are not part of this job. They come from the VM's own node_exporter textfile collector (`/var/lib/node_exporter/textfile_collector`, written by the systemd timers in `infrastructure/systemd/`), which the estate scrapes with its normal node job; the rules expect that job to be named `node` with instance `10.231.10.108:<port>`. Adjust those two selectors if the estate node job is named differently.
+Host metrics (disk space, the public web probe, retention-purge timers) are not part of this job. They come from the VM's own node_exporter textfile collector (`/var/lib/node_exporter/textfile_collector`, written by the systemd timers in `infrastructure/systemd/`), which the estate scrapes with its normal node job. The rules select `job="node"` and `host="p1-lunchlineup-dev01"`; they do not depend on `instance`. Estate labels for this host: `site=p1`, `host=p1-lunchlineup-dev01`, `role=app`, `env=dev`, target `10.231.10.108:9100`, `honor_labels: true` so the labels in the exporter output are kept. Any app script or unit that writes a `.prom` file must write it to `/var/lib/node_exporter/textfile_collector/` (the shipped units and `infrastructure/control/public-web-probe.sh` already do). For another VM change the `host` label in `lunchlineup-rules.yml`.
 
 ## Alert delivery
 
@@ -67,9 +67,14 @@ Compose keeps every service on the `json-file` logging driver with size-capped r
 
 ## Backups and recovery
 
-- Postgres: pgBackRest with its repository on the NAS over SFTP, configured outside the app by estate-infra. Attach it by setting `POSTGRES_ARCHIVE_MODE=on` and `POSTGRES_ARCHIVE_COMMAND` in the runtime env (see `infrastructure/postgres/README.md`); both are off/fail-closed by default and Postgres runs normally without them. Restores follow `docs/runbooks/postgres-pitr-recovery.md`.
-- Files: host restic online backup (uploads volume, runtime env and secret files).
+- Postgres: pgBackRest runs inside the postgres container (pinned package in the image; `repo2` is type `sftp` on the NAS chroot user, host `p0-nas01` port 22). It is OFF by default. `PGBACKREST_ENABLED=true` plus the `PGBACKREST_*` keys, key/known_hosts/passphrase files on the VM (see `infrastructure/postgres/README.md`) make the deploy scripts add `infrastructure/postgres/compose.pgbackrest.yml`: `archive_mode=on`, `archive_command=pgbackrest --stanza=<stanza> archive-push %p`, and a dedicated `pgbackrest-egress` network attached to postgres only. Deploys fail closed on a missing file and run the idempotent `pgbackrest stanza-create` and `pgbackrest check`. Restores follow `docs/runbooks/postgres-pitr-recovery.md`.
+- **Backup schedule (estate-infra):** the application installs no timer or cron. Estate-infra schedules, on the VM, `docker exec -u postgres <postgres container> pgbackrest --stanza=lunchlineup --type=full backup` (for example weekly) and `--type=diff` (daily), alerts on the exit status and on `pgbackrest info` freshness, and opens the egress firewall from the `pgbackrest-egress` network to `PGBACKREST_SFTP_HOST:22` only. A manual full backup uses the same command.
+- Files: host restic online backup (uploads volume, runtime env and secret files). Include the pgBackRest key, `known_hosts` and passphrase files and keep an independent copy of the passphrase: without it the repository cannot be restored.
 - The estate drill evidence replaces the former in-stack `backup`/`pitr-*` drills.
+
+## Autoheal restarts in the logs
+
+The `autoheal` service (profile `ops`, image digest-pinned `willfarrell/autoheal`) restarts containers whose Docker healthcheck reports `unhealthy`. The pinned image already writes every restart decision to its own stdout/stderr by default, so no flag is needed and Alloy ships it with the other container logs (`json-file` driver). Verified against the pinned digest: a restart emits `DD-MM-YYYY HH:MM:SS Container /<name> (<id>) found to be unhealthy - Restarting container now with <N>s timeout`; a failed restart emits `Restarting container <id> failed` on stderr. In Loki filter the autoheal container's stream for `found to be unhealthy`, for example `{job="lunchlineup"} |= "found to be unhealthy"` (adjust the label to what the Alloy `log_shipper` role attaches). The webhook/apprise notification variables (`WEBHOOK_URL`, `APPRISE_URL`) stay unset: alert delivery is the estate Alertmanager only.
 
 ## What was removed from this repository
 

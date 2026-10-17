@@ -1,1 +1,4 @@
 packages/db/prisma/migrations/*.sql text eol=lf
+
+# Shell scripts copied into images must keep LF endings on Windows checkouts.
+infrastructure/postgres/*.sh text eol=lf

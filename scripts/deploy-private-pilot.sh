@@ -7,8 +7,10 @@
 # scripts/export-internal-ci-release-images.sh on the VM218 builder.
 # This script never builds, never prunes, never deletes volumes, and only
 # targets dev.lunchlineup.com. Integrity = sha256 of each archive plus the
-# loaded image ID, both taken from the exporter metadata. Backups are an estate
-# system (pgBackRest + restic); this script takes none.
+# loaded image ID, both taken from the exporter metadata. When PGBACKREST_ENABLED=true
+# the postgres container's pgBackRest is verified (host files) and set up
+# (`stanza-create`, `check`) after postgres is healthy; the script takes no backup and
+# installs no timer (the estate schedules `pgbackrest backup`).
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
@@ -35,11 +37,73 @@ env_value() { # exactly-once KEY=value lookup in the runtime env
   grep "^$1=" "$RUNTIME_ENV" | cut -d= -f2-
 }
 
+env_optional() { # KEY=value lookup that may be absent (empty output), but never duplicated
+  local n; n="$(grep -c "^$1=" "$RUNTIME_ENV" || true)"
+  [[ "$n" -le 1 ]] || fail "$1 must occur at most once in $RUNTIME_ENV"
+  if [[ "$n" == 1 ]]; then grep "^$1=" "$RUNTIME_ENV" | cut -d= -f2-; fi
+}
+
+# pgBackRest (estate PITR inside the postgres container) is opt-in per runtime env.
+# PGBACKREST_ENABLED=true adds infrastructure/postgres/compose.pgbackrest.yml. Everything
+# is verified on the host BEFORE any container changes. Default (unset/false): archive_mode
+# stays off and nothing pgBackRest-related runs.
+PGBACKREST_ON=false
+PGBACKREST_STANZA_VALUE=""
+COMPOSE_EXTRA=()
+
 compose() {
   COMPOSE_SERVICE_ENV_FILE="$RUNTIME_ENV" "$DOCKER" compose --project-name "$PROJECT" --project-directory "$APP_DIR" \
     --env-file "$RUNTIME_ENV" \
     -f "$APP_DIR/docker-compose.yml" \
-    -f "$APP_DIR/infrastructure/development-admission/compose.private-proxy.yml" "$@"
+    -f "$APP_DIR/infrastructure/development-admission/compose.private-proxy.yml" ${COMPOSE_EXTRA[@]+"${COMPOSE_EXTRA[@]}"} "$@"
+}
+
+check_pgbackrest() {
+  local enabled key path mode
+  PGBACKREST_ON=false; COMPOSE_EXTRA=()
+  enabled="$(env_optional PGBACKREST_ENABLED)"
+  case "${enabled:-false}" in
+    false) echo "pgBackRest: disabled (archive_mode off)"; return 0 ;;
+    true) ;;
+    *) fail "PGBACKREST_ENABLED must be true or false" ;;
+  esac
+  [[ -f "$APP_DIR/infrastructure/postgres/compose.pgbackrest.yml" ]] || fail "infrastructure/postgres/compose.pgbackrest.yml missing from the checkout"
+  PGBACKREST_STANZA_VALUE="$(env_value PGBACKREST_STANZA)"
+  [[ "$PGBACKREST_STANZA_VALUE" =~ ^[a-z0-9][a-z0-9_-]{0,63}$ ]] || fail "PGBACKREST_STANZA is invalid"
+  [[ "$(env_value PGBACKREST_SFTP_HOST)" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$ ]] || fail "PGBACKREST_SFTP_HOST is invalid"
+  [[ "$(env_value PGBACKREST_SFTP_USER)" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "PGBACKREST_SFTP_USER is invalid"
+  [[ "$(env_value PGBACKREST_REPO_PATH)" =~ ^/[A-Za-z0-9._/-]{0,255}$ ]] || fail "PGBACKREST_REPO_PATH must be an absolute path on the SFTP chroot"
+  [[ "$(env_optional PGBACKREST_SFTP_PORT)" =~ ^([0-9]{1,5})?$ ]] || fail "PGBACKREST_SFTP_PORT must be a port number"
+  for key in PGBACKREST_SFTP_KEY_FILE PGBACKREST_SFTP_KNOWN_HOSTS_FILE PGBACKREST_CIPHER_PASS_FILE; do
+    path="$(env_value "$key")"
+    [[ "$path" == /* ]] || fail "$key must be an absolute host path"
+    [[ -f "$path" && ! -L "$path" && -s "$path" && -r "$path" ]] || fail "$key: $path is missing, empty, unreadable or a symlink (pgBackRest requires it)"
+  done
+  for key in PGBACKREST_SFTP_KEY_FILE PGBACKREST_CIPHER_PASS_FILE; do
+    path="$(env_value "$key")"
+    mode="$(stat -c %a "$path")"
+    (( (8#$mode & 8#077) == 0 )) || fail "$key must not be group/world accessible (chmod 600 $path)"
+  done
+  PGBACKREST_ON=true
+  COMPOSE_EXTRA=(-f "$APP_DIR/infrastructure/postgres/compose.pgbackrest.yml")
+  echo "pgBackRest: enabled (stanza $PGBACKREST_STANZA_VALUE)"
+}
+
+# After postgres is healthy: idempotent stanza-create, then `check` (which forces a WAL
+# switch and proves archive-push reaches the repository). Fail closed on any error.
+pgbackrest_setup() {
+  [[ "$PGBACKREST_ON" == true ]] || return 0
+  step "pgBackRest stanza-create and check ($PGBACKREST_STANZA_VALUE)"
+  local deadline=$(( $(date +%s) + HEALTH_TIMEOUT_SECONDS )) pg
+  until pg="$(compose ps --format '{{.Health}}' postgres 2>/dev/null)" && [[ "$pg" == healthy ]]; do
+    (( $(date +%s) < deadline )) || fail "postgres did not become healthy within ${HEALTH_TIMEOUT_SECONDS}s; pgBackRest not set up"
+    sleep 3
+  done
+  compose exec -T -u postgres postgres pgbackrest "--stanza=$PGBACKREST_STANZA_VALUE" stanza-create \
+    || fail "pgbackrest stanza-create failed"
+  compose exec -T -u postgres postgres pgbackrest "--stanza=$PGBACKREST_STANZA_VALUE" check \
+    || fail "pgbackrest check failed (WAL archiving to the repository is not working)"
+  echo "pgBackRest ready. First/manual full backup: docker compose exec -T -u postgres postgres pgbackrest --stanza=$PGBACKREST_STANZA_VALUE --type=full backup"
 }
 
 # --- 2. target check ---------------------------------------------------------
@@ -79,6 +143,7 @@ check_target() {
   IMAGE_PREFIX_VALUE="$(grep '^IMAGE_PREFIX=' "$RUNTIME_ENV" | cut -d= -f2- || true)"
   IMAGE_PREFIX_VALUE="${IMAGE_PREFIX_VALUE:-lunchlineup}"
   [[ "$IMAGE_PREFIX_VALUE" =~ ^[a-z0-9][a-z0-9._/-]*$ ]] || fail "IMAGE_PREFIX is invalid"
+  check_pgbackrest
 }
 
 # --- 1. image load -----------------------------------------------------------
@@ -157,6 +222,7 @@ main() {
   load_images "$1"
   compose config --quiet || fail "compose config invalid"
   step "start postgres"; compose up -d --no-build --pull never postgres
+  pgbackrest_setup
   run_migrations
   step "start stack"; compose up -d --no-build --pull never
   wait_for_health
