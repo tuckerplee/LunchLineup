@@ -734,9 +734,13 @@ services:
       - ./infrastructure/redis/redis.conf.template:/usr/local/etc/redis/redis.conf:ro
     networks:
       - data
-    command: [ "redis-server", "/usr/local/etc/redis/redis.conf" ]
+    # REDIS_PASSWORD enables AUTH; REDIS_URL must then carry it (redis://default:<password>@redis:6379).
+    # Production requires it (scripts/check-production-env.mjs); throwaway CI stacks may omit it.
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD:-}
+    command: [ "sh", "-c", "exec redis-server /usr/local/etc/redis/redis.conf $${REDIS_PASSWORD:+--requirepass \"$$REDIS_PASSWORD\"}" ]
     healthcheck:
-      test: [ "CMD", "redis-cli", "ping" ]
+      test: [ "CMD-SHELL", "if [ -n \"$$REDIS_PASSWORD\" ]; then export REDISCLI_AUTH=\"$$REDIS_PASSWORD\"; fi; redis-cli ping | grep -q PONG" ]
       interval: 10s
       timeout: 3s
       retries: 3

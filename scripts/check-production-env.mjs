@@ -24,7 +24,7 @@ export const REQUIRED_KEYS = [
   'NEXT_PUBLIC_APP_ENV', 'NEXT_PUBLIC_API_URL', 'COOKIE_SECURE', 'ADMIN_EMAIL',
   'POSTGRES_USER', 'POSTGRES_DB', 'POSTGRES_PASSWORD', 'APP_DB_USER', 'APP_DB_PASSWORD',
   'PLATFORM_ADMIN_DB_CONTEXT_SECRET', 'DATABASE_URL', 'MIGRATION_DATABASE_URL',
-  'REDIS_URL', 'RABBITMQ_USER', 'RABBITMQ_PASSWORD', 'RABBITMQ_URL',
+  'REDIS_PASSWORD', 'REDIS_URL', 'RABBITMQ_USER', 'RABBITMQ_PASSWORD', 'RABBITMQ_URL',
   'JWT_SECRET', 'JWT_REFRESH_SECRET', 'SESSION_SECRET', 'OTP_HMAC_SECRET', 'CSRF_SECRET',
   'MFA_SECRET_ENCRYPTION_KEY_CURRENT', 'WEBHOOK_DELIVERY_ENCRYPTION_KEY_CURRENT',
   'PASSWORD_RESET_OUTBOX_ENCRYPTION_KEY', 'AVAILABILITY_IMPORT_ENCRYPTION_KEY',
@@ -173,6 +173,12 @@ export function checkProductionEnv(env, { legalConfig = readLegalLaunchConfig() 
   }
   if (new Set(sessionSecrets.map(([, v]) => v)).size !== sessionSecrets.length) {
     fail('JWT_SECRET, JWT_REFRESH_SECRET, SESSION_SECRET, OTP_HMAC_SECRET and CSRF_SECRET must all differ.');
+  }
+  if (value('REDIS_PASSWORD') && value('REDIS_PASSWORD').length < 32) fail('REDIS_PASSWORD must be at least 32 characters.');
+  if (value('REDIS_PASSWORD') && value('REDIS_URL')) {
+    let redisPassword = '';
+    try { redisPassword = decodeURIComponent(new URL(value('REDIS_URL')).password); } catch { /* mismatch reported below */ }
+    if (redisPassword !== value('REDIS_PASSWORD')) fail('REDIS_URL must carry REDIS_PASSWORD (redis://default:<password>@redis:6379).');
   }
   if (value('POSTGRES_PASSWORD') && value('POSTGRES_PASSWORD') === value('APP_DB_PASSWORD')) {
     fail('APP_DB_PASSWORD must differ from POSTGRES_PASSWORD.');
