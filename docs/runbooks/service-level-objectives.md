@@ -8,7 +8,7 @@ The native observability files are private source proposals until their exact se
 
 ## Availability objectives and ownership
 
-The candidate retains the future 99.9% rolling 30-day objectives for public web probes and application responses. The public web objective covers one-minute probes of the canonical HTTPS application and expected release/rendering markers; its existing rules remain separate. No public probe may be run under the current scope.
+The candidate retains the future 99.9% rolling 30-day objective for application responses. Public web availability is measured by the estate blackbox probe (https://dev.lunchlineup.com/ and /health), not by an application-owned probe or rule. No public probe may be run under the current scope.
 
 The browser API response objective has one owner: completed responses at the native front door, selected by job="api-v2" and scope="application". Eligible classes are 2xx, 3xx, 5xx; 5xx is the failure numerator. This implements the existing documented exclusion of client errors. The previous retained denominator included 4xx; the new selector is an explicit source proposal requiring review.
 
@@ -29,7 +29,7 @@ Paired native burn rules select only the native response family:
 
 ServiceDown includes the native job. NativeApiMetricsMissing detects a missing entire job; scaling needs an independently owned expected-target inventory. NativeApiHttpInstrumentationUnavailable pages when a successful scrape lacks a marker of1. HighNativeApiErrorRate uses the native eligible response ratio; HighNativeApiLatency uses seconds and a two-second threshold.
 
-A successful /metrics scrape does not check dependencies. Native /v2/ready separately exercises database readiness and quota readiness; quota readiness already executes PING and the Lua protocol. Retained RequiredApiDependencyUnavailable covers retained database/Redis/RabbitMQ health. Neither gauge may be relabeled as the other's readiness. PublicWebProbeStale remains separate and critical.
+A successful /metrics scrape does not check dependencies. Native /v2/ready separately exercises database readiness and quota readiness; quota readiness already executes PING and the Lua protocol. Retained RequiredApiDependencyUnavailable covers retained database/Redis/RabbitMQ health. Neither gauge may be relabeled as the other's readiness.
 
 The metric token is startup-cached, explicitly configured and read from the mounted secret. An unreadable or conflicting source must fail startup. Rotation requires a coordinated replacement of the admitted private candidate and scrape configuration with failed-scrape alarms observable; do not assume hot reload or simultaneous-token acceptance.
 

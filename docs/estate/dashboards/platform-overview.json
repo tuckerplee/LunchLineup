@@ -402,50 +402,6 @@
       "description": "Completed native front-door application responses only: 2xx, 3xx, 5xx are eligible; 5xx are failures. No traffic yields no data. This response-window estimate is provisional until complete historical collection and independent launch evidence exist. Current scrape health cannot certify a complete 30-day SLO or months of private testing. Aborts, process death and readiness are separate gates."
     },
     {
-      "id": 14,
-      "type": "stat",
-      "title": "Public Web Availability SLO (30d)",
-      "datasource": {
-        "type": "prometheus",
-        "uid": "prometheus"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "expr": "100 * avg_over_time(lunchlineup_public_web_probe_success{job=\"node\",instance=~\"10[.]231[.]10[.]108(:[0-9]+)?\"}[30d])",
-          "legendFormat": "availability"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percent",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "red",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 99.5
-              },
-              {
-                "color": "green",
-                "value": 99.9
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "h": 5,
-        "w": 12,
-        "x": 12,
-        "y": 36
-      }
-    },
-    {
       "id": 15,
       "type": "stat",
       "title": "Availability PDF Parser Readiness",

@@ -48,17 +48,12 @@ test('restart target survives rollback staging cleanup through the durable curre
   }
 });
 
-test('probe and retention jobs intentionally follow the active current pointer', () => {
+test('retention jobs intentionally follow the active current pointer', () => {
 
   for (const unit of [
-    'lunchlineup-public-web-probe.service',
     'lunchlineup-retained-record-review.service',
     'lunchlineup-retention-purge.service',
   ]) {
     assert.match(readUnit(unit), /\/opt\/lunchlineup\/current/);
   }
-  assert.match(
-    readFileSync(join(systemdRoot, 'lunchlineup-public-web-probe.env.example'), 'utf8'),
-    /PUBLIC_WEB_PROBE_EXPECTED_RELEASE_FILE=\/opt\/lunchlineup\/current\/DEPLOYED_GIT_SHA/,
-  );
 });

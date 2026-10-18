@@ -311,7 +311,7 @@ test('docs describe the key set, fail-closed deploy, restore and estate-owned sc
 test('node and textfile rules select job node plus the estate host label, never instance', () => {
   const rules = read('docs/estate/lunchlineup-rules.yml');
   const selectors = [...rules.matchAll(/\{[^{}]*job="node"[^{}]*\}/g)].map((m) => m[0]);
-  assert.ok(selectors.length >= 9, `expected node selectors, got ${selectors.length}`);
+  assert.ok(selectors.length >= 5, `expected node selectors, got ${selectors.length}`);
   for (const selector of selectors) {
     assert.match(selector, /host="p1-lunchlineup-dev01"/, selector);
     assert.doesNotMatch(selector, /instance/, selector);

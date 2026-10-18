@@ -3,9 +3,6 @@
 ## Files
 
 - `README.md`: this systemd scheduler installation guide.
-- `lunchlineup-public-web-probe.env.example`: canonical public URL, release pointer, request bounds, and textfile metric path.
-- `lunchlineup-public-web-probe.service`: hardened one-shot public DNS/TLS/Caddy/Next.js probe.
-- `lunchlineup-public-web-probe.timer`: one-minute public availability schedule.
 - `lunchlineup-retained-record-review.service`: hardened seven-year retained-record candidate dry-run.
 - `lunchlineup-retained-record-review.timer`: daily retained-record eligibility review timer.
 - `lunchlineup-retention-purge.env.example`: shared endpoint, service-token, and application-data output environment for both retention schedules.
@@ -15,29 +12,6 @@
 ## Host prerequisites
 
 The units here write Prometheus textfile metrics to `/var/lib/node_exporter/textfile_collector/`, which the VM's own node_exporter (an estate service, not part of the application stack) serves to the estate Prometheus. Backups are not scheduled from this folder: Postgres PITR is the estate pgBackRest and file backups are host restic, both owned by estate-infra (`docs/estate/README.md`).
-
-## Public Web Availability Probe
-
-Install the probe from the same clean, GitHub-pushed checkout used for production. The unit executes `/opt/lunchlineup/current/infrastructure/control/public-web-probe.sh` outside Compose so it follows the active retained release while exercising public DNS, TLS, Caddy, and the rendered Next.js page. The service has no secrets, accepts only a public HTTPS root URL, disables redirects, and bounds connect time, total time, and response bytes. It verifies the response release header against the canonical `/opt/lunchlineup/current/DEPLOYED_GIT_SHA` marker and writes metrics atomically to node-exporter's existing textfile collector. Because both the script and marker resolve through the same atomic `current` pointer, rollback cannot leave the probe pinned to a stale root-level marker.
-
-Example installation:
-
-```bash
-install -d -m 0750 /etc/lunchlineup
-install -d -o lunchlineup -g lunchlineup -m 0755 /var/lib/node_exporter/textfile_collector
-install -o root -g lunchlineup -m 0640 infrastructure/systemd/lunchlineup-public-web-probe.env.example /etc/lunchlineup/public-web-probe.env
-install -m 0644 infrastructure/systemd/lunchlineup-public-web-probe.service /etc/systemd/system/lunchlineup-public-web-probe.service
-install -m 0644 infrastructure/systemd/lunchlineup-public-web-probe.timer /etc/systemd/system/lunchlineup-public-web-probe.timer
-systemd-analyze verify /etc/systemd/system/lunchlineup-public-web-probe.service /etc/systemd/system/lunchlineup-public-web-probe.timer
-systemctl daemon-reload
-systemctl start lunchlineup-public-web-probe.service
-journalctl -u lunchlineup-public-web-probe.service -n 50 --no-pager
-test -s /var/lib/node_exporter/textfile_collector/lunchlineup_public_web.prom
-systemctl enable --now lunchlineup-public-web-probe.timer
-systemctl list-timers lunchlineup-public-web-probe.timer
-```
-
-Platform on-call owns `PublicWebUnavailable` and `PublicWebProbeStale`. Follow `docs/runbooks/public-web-unavailable.md`; do not write `DEPLOYED_GIT_SHA` manually to silence a release mismatch.
 
 ## Retention Schedulers
 
