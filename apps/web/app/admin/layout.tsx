@@ -1,6 +1,7 @@
 import { LogoutLink } from '@/components/auth/LogoutLink';
 import { getServerUser } from '@/lib/server-auth';
 import { redirect } from 'next/navigation';
+import { AppMessagesProvider } from '@/components/messages/AppMessages';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { LogOut } from 'lucide-react';
 import { AdminNav } from './AdminNav';
@@ -124,7 +125,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
                     </div>
                 </header>
 
-                <main id="workspace-main-content" tabIndex={-1} className="workspace-content">{children}</main>
+                <main id="workspace-main-content" tabIndex={-1} className="workspace-content"><AppMessagesProvider>{children}</AppMessagesProvider></main>
             </section>
         </div>
     );
