@@ -197,7 +197,7 @@ check_runtime_env() {
   esac
   case "$TARGET" in
     pilot)
-      if grep -Eiq '(^|[/.=@])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com' "$RUNTIME_ENV"; then
+      if grep -Eiq '(^|[/.=@,])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com' "$RUNTIME_ENV"; then
         fail "runtime env references a production or retired dev lunchlineup.com host"
       fi
       ;;

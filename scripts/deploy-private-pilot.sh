@@ -120,7 +120,7 @@ check_host_references() {
       || fail "EMAIL_FROM must send from @beta.lunchlineup.com"
   fi
   if grep -v '^EMAIL_FROM=' "$RUNTIME_ENV" \
-      | grep -Eiq '(^|[/.=@])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com'; then
+      | grep -Eiq '(^|[/.=@,])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com'; then
     fail "runtime env references a production or retired dev lunchlineup.com host"
   fi
 }
