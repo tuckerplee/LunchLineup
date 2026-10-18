@@ -380,7 +380,7 @@ test('Compose services are project-scoped and discover each other by service DNS
     assert.doesNotMatch(compose, new RegExp(`^  ${service}:`, 'm'), `${service} is an estate system`);
   }
   // The estate Prometheus reaches every service through the VM metrics gateway, never by container name.
-  assert.match(targets, /targets: \['10\.231\.10\.108:9180'\]/);
+  assert.match(targets, /targets: \['10.1.50.10:9180'\]/);
   assert.doesNotMatch(targets, /lunchlineup-(api|engine|worker|control)|api:3000|worker:3003/);
   const gateway = read('infrastructure/caddy/Caddyfile.production');
   for (const upstream of ['api:3000', 'engine:8000', 'worker:3003', 'webhook-replay:3004', 'control:3001', 'api-v2:3002']) {
