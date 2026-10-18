@@ -87,7 +87,8 @@ http://:9180 {
 	header /api/* Cache-Control "no-store"
 
 	@betaWeb {
-		host beta.lunchlineup.com {$PRIVATE_APP_HOST:localhost}
+		# PRIVATE_APP_HOST is beta.lunchlineup.com; Caddy refuses a repeated host in a matcher.
+		host {$PRIVATE_APP_HOST:localhost}
 		not path /api/* /health
 	}
 	header @betaWeb Cache-Control "private, no-store, no-transform"
