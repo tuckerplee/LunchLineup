@@ -31,7 +31,7 @@
 # host=p1-lunchlineup-dev01, role=app, env=dev); lunchlineup-rules.yml selects
 # job="node" with host="p1-lunchlineup-dev01", not the instance. The textfile
 # collector directory is /var/lib/node_exporter/textfile_collector.
-# Public HTTPS probing of https://dev.lunchlineup.com/ and /health is done by the
+# Public HTTPS probing of https://beta.lunchlineup.com/ and /health is done by the
 # estate blackbox probe, not by the application; the app ships no public web probe.
 scrape_configs:
   - job_name: lunchlineup

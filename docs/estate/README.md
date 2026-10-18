@@ -57,7 +57,7 @@ Labels produced by `lunchlineup-targets.yml`: `job="lunchlineup"`, `service=<api
 
 Host metrics (disk space, retention-purge timers) are not part of this job. They come from the VM's own node_exporter textfile collector (`/var/lib/node_exporter/textfile_collector`, written by the systemd timers in `infrastructure/systemd/`), which the estate scrapes with its normal node job. The rules select `job="node"` and `host="p1-lunchlineup-dev01"`; they do not depend on `instance`. Estate labels for this host: `site=p1`, `host=p1-lunchlineup-dev01`, `role=app`, `env=dev`, target `10.1.50.10:9100`, `honor_labels: true` so the labels in the exporter output are kept. Any app script or unit that writes a `.prom` file must write it to `/var/lib/node_exporter/textfile_collector/` (the shipped units already do). For another VM change the `host` label in `lunchlineup-rules.yml`.
 
-Public web availability is not measured by the application. Public HTTPS probing (`https://dev.lunchlineup.com/` and `/health`) is the estate blackbox probe, the estate's single probe for that job; the application ships no public web probe, timer or textfile metric, and the rules here carry no public-web alerts.
+Public web availability is not measured by the application. Public HTTPS probing (`https://beta.lunchlineup.com/` and `/health`) is the estate blackbox probe, the estate's single probe for that job; the application ships no public web probe, timer or textfile metric, and the rules here carry no public-web alerts.
 
 ## Alert delivery
 
