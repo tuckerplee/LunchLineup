@@ -476,7 +476,7 @@ describe('setup-shifts response-loss recovery', () => {
   it('provides actionable fallbacks for non-JSON 403 and 409 responses', async () => {
     await expect(readSetupShiftsResponse(new Response('unavailable', { status: 403 }))).rejects.toMatchObject({
       status: 403,
-      message: expect.stringMatching(/active paid subscription.*usage credits/i),
+      message: expect.stringMatching(/active subscription.*out of credits/i),
     });
     await expect(readSetupShiftsResponse(new Response('conflict', { status: 409 }))).rejects.toMatchObject({
       status: 409,
@@ -494,7 +494,7 @@ describe('setup-shifts response-loss recovery', () => {
     expect(source).toContain("...(shiftId ? { shiftId } : {})");
     expect(source).toContain("}), idempotencyKey)");
     expect(source).toContain('setupShiftMutationLabel');
-    expect(source).toContain('window.confirm(`Confirm setup:');
+    expect(source).not.toContain('window.confirm');
   });
 });
 

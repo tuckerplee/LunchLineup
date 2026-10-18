@@ -23,13 +23,11 @@ describe('lunch and break launch-safety UI contract', () => {
     expect(pageSource).not.toContain('step3EmployeePool.slice(0, 24)');
   });
 
-  it('names and confirms the exact billable setup mutation before network submission', () => {
-    const confirmationIndex = pageSource.indexOf('window.confirm(`Confirm setup:');
-    const submissionIndex = pageSource.indexOf('const result = await submitSetupShifts(');
-    expect(pageSource).toContain('setupShiftMutationLabel');
-    expect(pageSource).toContain('exactly ${setupShiftsCreditCost} usage credit');
-    expect(confirmationIndex).toBeGreaterThan(-1);
-    expect(confirmationIndex).toBeLessThan(submissionIndex);
+  it('saves setup shifts with a plain verb, no cost wording, and no native confirm', () => {
+    expect(pageSource).toContain("const setupShiftMutationLabel = 'Save shifts'");
+    expect(pageSource).not.toMatch(/usage credit|separately purchased|exactly ${/);
+    expect(pageSource).not.toContain('window.confirm');
+    expect(pageSource).toContain("useStatusMessage('error'");
   });
 
   it('removes placeholder controls and unsupported break-card movement claims', () => {

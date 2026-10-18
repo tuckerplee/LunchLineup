@@ -495,7 +495,7 @@ function responseMessage(payload: unknown): string | null {
 
 function fallbackResponseMessage(status: number): string {
   if (status === 403) {
-    return 'Setup shifts require an active paid subscription and enough separately purchased usage credits.';
+    return 'Saving shifts is blocked: this workspace needs an active subscription or has run out of credits.';
   }
   if (status === 409) {
     return 'This setup-shift attempt conflicts with its stored result. Retry unchanged setup to recover it, or change the setup details to start a new attempt.';

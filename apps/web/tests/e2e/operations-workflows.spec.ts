@@ -88,8 +88,7 @@ test.describe.serial('Full-stack operations workflows', { tag: '@full-stack' }, 
     await page.getByRole('button', { name: 'Select staff' }).click();
     await expect(page.getByText('Casey Manager')).toBeVisible();
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
-    page.once('dialog', async (dialog) => dialog.accept());
-    await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
+    await page.getByRole('button', { name: 'Save shifts' }).click();
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     await expect(page.locator('.meal-event').filter({ hasText: 'Lunch' })).toBeVisible();
     await expect(page.locator('.break-event').filter({ hasText: 'Break' }).first()).toBeVisible();

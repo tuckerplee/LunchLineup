@@ -271,7 +271,7 @@ export async function readShiftBreakUpdateResponse<T>(response: Response): Promi
   const message = typeof responseDetail === 'string' && responseDetail.trim()
     ? responseDetail.trim()
     : response.status === 403
-      ? 'Saving manual lunch/break changes requires an active paid subscription and enough configured usage credits.'
+      ? 'Saving lunch/break changes is blocked: this workspace needs an active subscription or has run out of credits.'
       : response.status === 409
         ? 'This shift lunch/break save conflicts with its stored result. Retry unchanged values to recover it, or change the values to start a new attempt.'
         : `Unable to save shift lunch/breaks (${response.status}).`;

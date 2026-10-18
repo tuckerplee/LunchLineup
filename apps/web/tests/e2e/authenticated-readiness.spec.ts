@@ -137,8 +137,7 @@ test.describe('Authenticated scheduling SaaS readiness', { tag: '@desktop-chromi
     await expect(page.locator('.shift-marker-break').first()).toBeVisible();
 
     await page.getByRole('button', { name: 'Publish' }).click();
-    await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
-    const confirmPublish = page.getByRole('button', { name: 'Confirm - 1 credit' });
+    const confirmPublish = page.getByRole('button', { name: 'Confirm publish' });
     await confirmPublish.evaluate((button) => {
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
       button.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -1314,12 +1313,11 @@ test.describe('Mobile schedule publish readiness', { tag: '@mobile-chromium' }, 
     await expect(page.getByText(/Shift created and saved/)).toBeVisible();
 
     await page.getByRole('button', { name: 'Publish' }).click();
-    await expect(page.locator('.scheduler-publish-row__cost').getByText('Configured total: 1 credit')).toBeVisible();
     const publishRequestPromise = page.waitForRequest((request) => (
       request.method() === 'POST'
       && /\/api\/v2\/schedules\/[0-9a-f-]{36}\/publications$/.test(new URL(request.url()).pathname)
     ));
-    await page.getByRole('button', { name: 'Confirm - 1 credit' }).click();
+    await page.getByRole('button', { name: 'Confirm publish' }).click();
     const publishRequest = await publishRequestPromise;
 
     expect(publishRequest.headers()['idempotency-key']).toMatch(/^[0-9a-f-]{36}$/i);
