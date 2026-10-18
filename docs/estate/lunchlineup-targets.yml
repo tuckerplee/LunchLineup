@@ -11,6 +11,10 @@
 #
 #   http://10.231.10.108:9180/metrics/<service>
 #
+# NOTE (renumbering): VM107 moves to 10.1.50.10 (p1-lunchlineup-dev01.int.tuckerl.ee).
+# The app publishes on PILOT_BIND_IP (default 10.231.10.108). Updating the targets
+# below to 10.1.50.10:9180 (and the rules/fixtures) is the estate owner's change.
+#
 # <service> is one of api, api-v2, worker, engine, webhook-replay, control. The
 # gateway forwards each path to the service's own /metrics endpoint inside the
 # stack, so nothing else on the VM needs to be reachable. Every request must carry

@@ -1,3 +1,8 @@
+# VM107 private bind address comes from PILOT_BIND_IP in the runtime env (default
+# 10.231.10.108 = current address; set 10.1.50.10 after the renumbering). It must
+# equal PROXY_HTTP_BIND (checked by scripts/deploy-private-pilot.sh and deploy-release.sh).
+# CADDY_TRUSTED_PROXIES (default 10.231.10.30/32 = CT940; 10.1.20.20/32 after the move)
+# is the address Caddy trusts for X-Forwarded-*; see infrastructure/caddy/README.md.
 # Private-only overlay. Never use without exact admitted effective-config review.
 # Compose !override support required; ordinary empty-array merge is NOT equivalent.
 services:
@@ -6,17 +11,18 @@ services:
     ports: !override
       - target: 8080
         published: "80"
-        host_ip: "10.231.10.108"
+        host_ip: "${PILOT_BIND_IP:-10.231.10.108}"
         protocol: tcp
       # Estate Prometheus scrape port (token-protected metrics gateway; see
       # docs/estate/README.md). Same private bind address as the app port.
       - target: 9180
         published: "9180"
-        host_ip: "10.231.10.108"
+        host_ip: "${PILOT_BIND_IP:-10.231.10.108}"
         protocol: tcp
     environment:
       PRIVATE_APP_HOST: dev.lunchlineup.com
       CADDY_SITE_ADDRESSES: http://dev.lunchlineup.com
+      CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-10.231.10.30/32}"
     volumes: !override
       - type: bind
         source: ./infrastructure/caddy/Caddyfile.private-pilot

@@ -19,6 +19,8 @@ PROJECT=lunchlineup
 EXPECTED_HOSTNAME=lunchlineup-dev
 PILOT_HOST=dev.lunchlineup.com
 PILOT_ORIGIN="https://$PILOT_HOST"
+# Private bind address of the pilot VM. Default is the current address; the runtime env
+# may set PILOT_BIND_IP (e.g. 10.1.50.10 after renumbering), resolved in check_runtime_env.
 PILOT_BIND=10.231.10.108
 LOCK_FILE=/run/lock/lunchlineup-deploy.lock
 HOLD_FILES=(/etc/lunchlineup/vm107-launch.hold /etc/lunchlineup/private-launch.hold)
@@ -130,6 +132,15 @@ check_target() {
   # addresses/CIDRs are acceptable; blanket true and hop counts are not.
   [[ "$(env_value TRUST_PROXY)" =~ ^(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)(,(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?))*$ ]] \
     || fail "TRUST_PROXY must list named private ranges or explicit addresses/CIDRs (not true or a hop count)"
+  value="$(env_optional PILOT_BIND_IP)"
+  if [[ -n "$value" ]]; then
+    [[ "$value" =~ ^(10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})$ ]] \
+    || fail "PILOT_BIND_IP must be a private IPv4 address"
+    PILOT_BIND="$value"
+  fi
+  value="$(env_optional CADDY_TRUSTED_PROXIES)"
+  [[ -z "$value" || "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?( ([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)*$ ]] \
+    || fail "CADDY_TRUSTED_PROXIES must be space-separated IPv4 addresses/CIDRs"
   [[ "$(env_value PROXY_HTTP_BIND)" == "$PILOT_BIND" && "$(env_value PROXY_HTTP_PORT)" == 80 ]] \
     || fail "PROXY_HTTP_BIND/PORT must be $PILOT_BIND:80"
   value="$(env_value DATA_TARGET_ENV)"

@@ -25,7 +25,8 @@ Browser -> Cloudflare (TLS ends) -> Cloudflare Tunnel -> nginx CT940 10.231.10.3
 
 - Public routing is only via the Tunnel and CT940. The new VM binds Caddy to its
   private IP, never `0.0.0.0`. Caddy trusts only `10.231.10.30/32`
-  (`infrastructure/caddy/Caddyfile.production`), so nginx must send
+  by default (`infrastructure/caddy/Caddyfile.production`; override with the runtime-env key
+  `CADDY_TRUSTED_PROXIES`, e.g. `10.1.20.20/32` once CT940 is renumbered to `p1-proxy01.int.tuckerl.ee`), so nginx must send
   `X-Forwarded-Proto https` and `X-Forwarded-For`.
 - `www.lunchlineup.com` is redirected (301) to `https://lunchlineup.com` at nginx
   and never reaches the app; `ALLOWED_HOSTS` is the apex only.

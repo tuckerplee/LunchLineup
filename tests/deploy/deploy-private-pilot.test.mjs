@@ -88,6 +88,6 @@ test('load_images refuses a loaded image ID mismatch and does not tag', { skip: 
 
 test('private-pilot Caddyfile trusts only the CT940 proxy; production Caddyfile untouched', () => {
   const pilot = readFileSync(join(root, 'infrastructure/caddy/Caddyfile.private-pilot'), 'utf8');
-  assert.match(pilot, /trusted_proxies static 10\.231\.10\.30\/32/);
+  assert.match(pilot, /trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:10\.231\.10\.30\/32\}/);
   assert.doesNotMatch(readFileSync(join(root, 'infrastructure/caddy/Caddyfile'), 'utf8'), /10\.231\.10\.30/);
 });

@@ -108,7 +108,7 @@ test('the metrics gateway is private, token-protected and reachable for the esta
       assert.ok(caddyfile.includes(`handle /metrics/${service} {\n\t\t\trewrite * ${path}\n\t\t\treverse_proxy ${upstream}`), service);
     }
   }
-  assert.match(privateOverlay, /target: 9180\s+published: "9180"\s+host_ip: "10\.231\.10\.108"/);
+  assert.match(privateOverlay, /target: 9180\s+published: "9180"\s+host_ip: "\$\{PILOT_BIND_IP:-10\.231\.10\.108\}"/);
   assert.match(productionOverlay, /target: 9180\s+published: "9180"\s+host_ip: "\$\{PROXY_HTTP_BIND:\?/);
   // The public/local base stack never publishes the gateway.
   assert.doesNotMatch(base, /9180/);

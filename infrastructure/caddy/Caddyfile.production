@@ -4,9 +4,11 @@
 {
 	http_port 8080
 	# CT940 nginx (10.231.10.30) terminates TLS and sends X-Forwarded-Proto/Host.
+	# CADDY_TRUSTED_PROXIES (space-separated CIDRs, default is the current CT940 address;
+	# 10.1.20.20/32 after the renumbering) overrides the address.
 	# Trust only it so Caddy preserves https instead of overwriting with http.
 	servers {
-		trusted_proxies static 10.231.10.30/32
+		trusted_proxies static {$CADDY_TRUSTED_PROXIES:10.231.10.30/32}
 		trusted_proxies_strict
 		client_ip_headers X-Forwarded-For
 	}
