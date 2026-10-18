@@ -9,7 +9,7 @@ describe('API v2 application operation catalog', () => {
     const routeKeys = APPLICATION_API_OPERATIONS.map(({ method, path }) => `${method} ${path}`);
     const operationIds = APPLICATION_API_OPERATIONS.map(({ operationId }) => operationId);
 
-    expect(APPLICATION_API_OPERATIONS).toHaveLength(129);
+    expect(APPLICATION_API_OPERATIONS).toHaveLength(130);
     expect(new Set(routeKeys).size).toBe(routeKeys.length);
     expect(new Set(operationIds).size).toBe(operationIds.length);
     for (const operation of APPLICATION_API_OPERATIONS) {
