@@ -18,6 +18,11 @@
  * persisting anything. `--apply` commits. Temporary PINs are written ONLY to the
  * `--pin-out` file (created exclusively, mode 0600) and never to stdout/stderr.
  *
+ * A second mode, `--existing-tenant <slug-or-name> --issue-pins-for ROLES`, issues
+ * temporary PINs to EXISTING users of an EXISTING tenant (never creates a tenant,
+ * entitlement, location or user) and reports whether scheduling and lunch_breaks
+ * are entitled there. Same dry-run/--apply/--pin-out/staging-only guards.
+ *
  * Runs with only what the api-v2 image ships (node + @prisma/client): no build,
  * no TypeScript, no repository checkout. See docs/runbooks/pilot-tenant-provisioning.md.
  */
@@ -108,7 +113,7 @@ export class ProvisioningError extends Error {}
 class DryRunRollback extends Error {}
 
 // ------------------------------------------------------------- safety guards
-export function assertSafeTarget(env = process.env) {
+export function assertSafeTarget(env = process.env, { requireInternalBetaFlag = true } = {}) {
   const target = String(env.DATA_TARGET_ENV ?? '').trim().toLowerCase();
   if (!ALLOWED_TARGETS.includes(target)) {
     throw new ProvisioningError(
@@ -134,7 +139,7 @@ export function assertSafeTarget(env = process.env) {
     throw new ProvisioningError('Refusing: PLATFORM_ADMIN_DB_CONTEXT_SECRET is required (tenant creation runs in the platform-admin database context).');
   }
   // The grant is only honoured by the runtime on an internal-beta origin with the flag on.
-  if (String(env.INTERNAL_BETA_ENTITLEMENTS_ENABLED ?? '').trim().toLowerCase() !== 'true') {
+  if (requireInternalBetaFlag && String(env.INTERNAL_BETA_ENTITLEMENTS_ENABLED ?? '').trim().toLowerCase() !== 'true') {
     throw new ProvisioningError('Refusing: INTERNAL_BETA_ENTITLEMENTS_ENABLED must be "true"; otherwise the grant would be inert.');
   }
   const origin = String(env.APP_ORIGIN ?? '').trim();
@@ -162,7 +167,15 @@ const OPTION_SPEC = {
   'send-invite': { type: 'boolean' },
   'employees-csv': { type: 'string' }, 'pin-out': { type: 'string' },
   operator: { type: 'string' }, apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, help: { type: 'boolean' },
+  'existing-tenant': { type: 'string' }, 'issue-pins-for': { type: 'string' },
+  'only-without-credentials': { type: 'boolean' }, all: { type: 'boolean' },
 };
+// Options that only make sense when creating/reconciling a tenant; refused in --existing-tenant mode.
+const CREATION_ONLY_OPTIONS = [
+  'org-name', 'org-slug', 'plan', 'trial-days', 'grant-credits', 'grant-days', 'grant-label', 'grant-reason',
+  'location', 'manager-email', 'manager-name', 'manager-role', 'send-invite', 'employees-csv',
+];
+export const PIN_ISSUE_ROLES = Object.freeze(['STAFF', 'MANAGER', 'ADMIN']);
 
 export const USAGE = `Usage: provision-pilot-tenant.mjs --org-name NAME --org-slug SLUG --manager-email EMAIL [options]
 
@@ -172,6 +185,16 @@ Required
   --org-name NAME           Display name of the pilot organization
   --org-slug SLUG           Natural key (lowercase letters, digits, hyphens; 3-62 chars)
   --manager-email EMAIL     Owner/manager account (email one-time-passcode login)
+
+Issue temporary PINs to existing users of an existing tenant (creates nothing else):
+  provision-pilot-tenant.mjs --existing-tenant SLUG_OR_NAME --issue-pins-for STAFF,ADMIN [options]
+  --existing-tenant X       Tenant slug (preferred) or exact name (case-insensitive); must already exist
+  --issue-pins-for ROLES    Comma list of STAFF, MANAGER, ADMIN
+  --only-without-credentials  Default: only users with no passwordHash and no pinHash
+  --all                     Instead: every active user with those roles gets a NEW PIN (replaces existing PINs)
+  --pin-out PATH            Required with --apply when any PIN is issued (new file, mode 0600)
+  --operator NAME, --apply  As below. Users without a username are reported, never issued.
+
 Options
   --location "NAME|IANA_TZ[|ADDRESS]"   Repeatable; natural key is the name (case-insensitive)
   --manager-name NAME       Default "Pilot Owner"
@@ -195,6 +218,10 @@ export function parseCli(argv) {
   const { values } = parseArgs({ args: argv, options: OPTION_SPEC, allowPositionals: false, strict: true });
   if (values.help) return { help: true };
   if (values.apply && values['dry-run']) throw new ProvisioningError('Choose either --apply or --dry-run, not both.');
+  if (values['existing-tenant'] !== undefined || values['issue-pins-for'] !== undefined
+    || values['only-without-credentials'] || values.all) {
+    return parsePinIssueCli(values);
+  }
   const required = (key) => {
     const value = String(values[key] ?? '').trim();
     if (!value) throw new ProvisioningError(`--${key} is required.`);
@@ -243,6 +270,30 @@ export function parseCli(argv) {
     credits: integer('grant-credits', 100, 1, INTERNAL_BETA_MAX_CREDITS),
     locations, sendInvite: Boolean(values['send-invite']),
     employeesCsv: values['employees-csv'] ?? null, pinOut: values['pin-out'] ?? null,
+    operator: String(values.operator ?? process.env.USER ?? 'operator').trim().slice(0, 64) || 'operator',
+  };
+}
+
+export function parsePinIssueCli(values) {
+  const tenantRef = String(values['existing-tenant'] ?? '').trim();
+  if (!tenantRef) throw new ProvisioningError('--existing-tenant is required (slug or exact tenant name).');
+  if (tenantRef.length > 120 || /[\u0000-\u001f\u007f]/.test(tenantRef)) throw new ProvisioningError('--existing-tenant must be 1-120 printable characters.');
+  if (values['issue-pins-for'] === undefined) throw new ProvisioningError('--issue-pins-for is required with --existing-tenant (for example STAFF,ADMIN).');
+  const conflicting = CREATION_ONLY_OPTIONS.filter((key) => values[key] !== undefined && values[key] !== false);
+  if (conflicting.length) {
+    throw new ProvisioningError(`--existing-tenant never creates anything; remove ${conflicting.map((k) => `--${k}`).join(', ')}.`);
+  }
+  if (values['only-without-credentials'] && values.all) {
+    throw new ProvisioningError('Choose either --only-without-credentials (default) or --all, not both.');
+  }
+  const roles = [...new Set(String(values['issue-pins-for']).split(',').map((r) => r.trim().toUpperCase()).filter(Boolean))];
+  if (!roles.length) throw new ProvisioningError('--issue-pins-for needs at least one role.');
+  const unknown = roles.filter((r) => !PIN_ISSUE_ROLES.includes(r));
+  if (unknown.length) throw new ProvisioningError(`--issue-pins-for accepts only ${PIN_ISSUE_ROLES.join(', ')} (got ${unknown.join(', ')}).`);
+  const apply = Boolean(values.apply);
+  return {
+    mode: 'issue-pins', apply, tenantRef, roles, all: Boolean(values.all),
+    pinOut: values['pin-out'] ?? null,
     operator: String(values.operator ?? process.env.USER ?? 'operator').trim().slice(0, 64) || 'operator',
   };
 }
@@ -684,17 +735,172 @@ async function reconcileGrant(tx, tenant, options, now) {
   return { action: 'create', grantId, expiresAt: entitlement.expiresAt, creditsGranted: options.credits, newBalance: updated.usageCredits, coveredFeatures: [...INTERNAL_BETA_COVERED_FEATURES] };
 }
 
+// ------------------------------------------------- existing-tenant PIN issuance
+const NON_ISSUABLE_TENANT_STATUSES = new Set(['SUSPENDED', 'CANCELLED', 'PURGED']);
+
+async function resolveExistingTenant(tx, ref) {
+  let matches = [];
+  if (SLUG.test(ref)) matches = await tx.tenant.findMany({ where: { slug: ref, deletedAt: null } });
+  if (!matches.length) matches = await tx.tenant.findMany({ where: { name: { equals: ref, mode: 'insensitive' }, deletedAt: null } });
+  if (!matches.length) throw new ProvisioningError(`No existing tenant matches "${ref}" (slug or exact name). This mode never creates a tenant.`);
+  if (matches.length > 1) {
+    throw new ProvisioningError(`"${ref}" matches ${matches.length} tenants (${matches.map((t) => t.slug).join(', ')}); use the slug.`);
+  }
+  return matches[0];
+}
+
+function internalBetaRuntimeEnabled(env) {
+  return String(env.INTERNAL_BETA_ENTITLEMENTS_ENABLED ?? '').trim().toLowerCase() === 'true' && isInternalBetaOrigin(env.APP_ORIGIN);
+}
+
+/** Mirrors apps/api-v2 platform/feature-entitlement.ts activeInternalBetaGrant + its ledger/audit cross-check. */
+async function internalBetaGrantActive(tx, tenant, now, env) {
+  if (!internalBetaRuntimeEnabled(env)) return false;
+  if (tenant.status !== 'TRIAL' || !(tenant.trialEndsAt instanceof Date) || tenant.trialEndsAt <= now) return false;
+  const setting = await tx.tenantSetting.findUnique({ where: { tenantId_key: { tenantId: tenant.id, key: INTERNAL_BETA_ENTITLEMENT_KEY } }, select: { value: true } });
+  const grant = setting?.value;
+  if (!grant || typeof grant !== 'object' || Array.isArray(grant)) return false;
+  const approvedAt = typeof grant.approvedAt === 'string' ? new Date(grant.approvedAt) : null;
+  const expiresAt = typeof grant.expiresAt === 'string' ? new Date(grant.expiresAt) : null;
+  if (grant.version !== 1 || grant.source !== 'internal_beta' || grant.status !== 'ACTIVE'
+    || !Array.isArray(grant.features) || grant.features.length !== 1 || grant.features[0] !== 'scheduling'
+    || !printable(grant.grantId, 255) || grant.auditId !== `${grant.grantId}-internal-beta-audit`
+    || grant.creditTransactionId !== grant.grantId
+    || !Number.isSafeInteger(grant.creditsGranted) || grant.creditsGranted < 1 || grant.creditsGranted > INTERNAL_BETA_MAX_CREDITS
+    || !printable(grant.ledgerReason, 500) || !printable(grant.reason, 240) || !printable(grant.approvedByUserId, 255)
+    || !approvedAt || !Number.isFinite(approvedAt.getTime()) || approvedAt > now
+    || !expiresAt || !Number.isFinite(expiresAt.getTime()) || expiresAt <= now || expiresAt <= approvedAt
+    || expiresAt > tenant.trialEndsAt) return false;
+  const [credit, audit] = await Promise.all([
+    tx.creditTransaction.findUnique({ where: { id: grant.creditTransactionId }, select: { tenantId: true, amount: true, debtAmount: true, reason: true, balanceAfter: true, debtAfter: true } }),
+    tx.auditLog.findUnique({ where: { id: grant.auditId }, select: { tenantId: true, action: true, resource: true, resourceId: true, newValue: true } }),
+  ]);
+  const audited = audit?.newValue && typeof audit.newValue === 'object' && !Array.isArray(audit.newValue) ? audit.newValue.entitlement : null;
+  return Boolean(credit && audit && audited && typeof audited === 'object'
+    && credit.tenantId === tenant.id && credit.amount === grant.creditsGranted && credit.debtAmount === 0
+    && credit.reason === grant.ledgerReason && Number.isSafeInteger(credit.balanceAfter) && credit.balanceAfter >= 0 && credit.debtAfter === 0
+    && audit.tenantId === tenant.id && audit.action === 'INTERNAL_BETA_ENTITLEMENT_GRANTED'
+    && audit.resource === 'TenantSetting' && audit.resourceId === grant.grantId
+    && ['grantId', 'auditId', 'creditTransactionId', 'creditsGranted', 'ledgerReason', 'reason', 'approvedAt', 'approvedByUserId', 'expiresAt']
+      .every((key) => audited[key] === grant[key]));
+}
+
+/**
+ * Read-only report of whether scheduling and lunch_breaks are entitled, following the
+ * decision order of assertFeatureEntitled (apps/api-v2/src/platform/feature-entitlement.ts):
+ * feature_access override, then ACTIVE + Stripe subscription with a future period end OR a
+ * valid internal-beta grant on a TRIAL tenant, then the plan's feature list.
+ */
+export async function entitlementReport(tx, tenant, now, env) {
+  const code = String(tenant.planTier ?? '').trim().toUpperCase();
+  const plan = await tx.planDefinition.findUnique({ where: { code } });
+  const planList = planFeatures(plan, code);
+  const setting = await tx.tenantSetting.findUnique({ where: { tenantId_key: { tenantId: tenant.id, key: 'feature_access' } }, select: { value: true } });
+  const activeSubscription = tenant.status === 'ACTIVE' && Boolean(String(tenant.stripeSubscriptionId ?? '').trim())
+    && tenant.stripeSubscriptionCurrentPeriodEnd instanceof Date && tenant.stripeSubscriptionCurrentPeriodEnd > now;
+  const betaGrant = activeSubscription ? false : await internalBetaGrantActive(tx, tenant, now, env);
+  const basis = activeSubscription ? 'stripe_subscription' : betaGrant ? 'internal_beta_grant' : 'none';
+  const report = { basis, usageCredits: tenant.usageCredits, creditDebt: tenant.creditDebt };
+  for (const feature of INTERNAL_BETA_COVERED_FEATURES) {
+    const override = setting?.value?.features?.[feature];
+    const overrideObject = override && typeof override === 'object' && !Array.isArray(override) ? override : null;
+    let reason = null;
+    if (overrideObject && (overrideObject.source === 'disabled' || overrideObject.enabled === false)) reason = 'disabled by the tenant feature_access override';
+    else if (basis === 'none') {
+      reason = tenant.status === 'ACTIVE'
+        ? 'tenant is ACTIVE but has no Stripe subscription with a future period end, and the internal-beta grant only covers TRIAL tenants (BILLING_PROVIDER=disabled does not change this)'
+        : tenant.status === 'TRIAL'
+          ? 'no valid internal-beta grant (missing, expired, or INTERNAL_BETA_ENTITLEMENTS_ENABLED/APP_ORIGIN not set in this environment)'
+          : `tenant status ${tenant.status} has no entitlement path`;
+    } else if (!(overrideObject?.enabled === true && ['manual', 'stripe', 'credits'].includes(String(overrideObject.source)))
+      && !planList.includes(feature)) reason = `plan ${code} does not include ${feature}`;
+    report[feature] = reason ? { entitled: false, reason } : { entitled: true };
+  }
+  report.billableWrites = tenant.creditDebt === 0 && tenant.usageCredits >= 1
+    ? 'wallet has credits' : 'wallet is empty or in debt: scheduling and lunch-break writes would be refused';
+  return report;
+}
+
+/** Issues temporary PINs to existing users of an existing tenant. Creates nothing else. */
+export async function issuePins(tx, options, { now, env }) {
+  const [{ name: databaseName } = {}] = await tx.$queryRaw`SELECT current_database() AS name`;
+  if (PRODUCTION_MARKER.test(String(databaseName ?? ''))) {
+    throw new ProvisioningError(`Refusing: connected database "${databaseName}" looks like production.`);
+  }
+  const tenant = await resolveExistingTenant(tx, options.tenantRef);
+  if (NON_ISSUABLE_TENANT_STATUSES.has(tenant.status)) {
+    throw new ProvisioningError(`Tenant "${tenant.slug}" has status ${tenant.status}; refusing to issue PINs.`);
+  }
+  await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenant.id} FOR UPDATE`;
+  const report = {
+    operation: 'issue-pins', changed: false,
+    tenant: {
+      id: tenant.id, slug: tenant.slug, name: tenant.name, planTier: tenant.planTier, status: tenant.status,
+      trialEndsAt: tenant.trialEndsAt instanceof Date ? tenant.trialEndsAt.toISOString() : null,
+      stripeSubscriptionPresent: Boolean(String(tenant.stripeSubscriptionId ?? '').trim()),
+      action: 'exists',
+    },
+    entitlement: await entitlementReport(tx, tenant, now, env),
+  };
+  const users = await tx.user.findMany({
+    where: { tenantId: tenant.id, deletedAt: null, role: { in: options.roles } },
+    select: { id: true, name: true, username: true, role: true, suspendedAt: true, passwordHash: true, pinHash: true },
+    orderBy: [{ username: 'asc' }, { name: 'asc' }, { id: 'asc' }],
+  });
+  const selection = {
+    roles: options.roles, credentialFilter: options.all ? 'all (existing PINs are replaced)' : 'only-without-credentials',
+    matchedUsers: users.length, issue: [], skippedHasCredentials: 0, skippedSuspended: 0, withoutUsableUsername: [],
+  };
+  const newPins = [];
+  for (const user of users) {
+    if (user.suspendedAt) { selection.skippedSuspended += 1; continue; }
+    const hasCredentials = Boolean(user.passwordHash) || Boolean(user.pinHash);
+    if (!options.all && hasCredentials) { selection.skippedHasCredentials += 1; continue; }
+    const username = typeof user.username === 'string' ? user.username.trim() : '';
+    if (!username) { selection.withoutUsableUsername.push({ name: user.name, role: user.role, reason: 'no username' }); continue; }
+    if (!USERNAME.test(username)) { selection.withoutUsableUsername.push({ name: user.name, role: user.role, reason: 'username is not 3-32 of a-z 0-9 . _ -' }); continue; }
+    const pin = temporaryPin();
+    const result = await tx.user.updateMany({
+      where: {
+        id: user.id, tenantId: tenant.id, deletedAt: null, suspendedAt: null,
+        ...(options.all ? {} : { passwordHash: null, pinHash: null }),
+      },
+      data: { pinHash: hashPin(pin), pinSetAt: now, pinResetRequired: true, pinLoginAttempts: 0, pinLockedUntil: null },
+    });
+    if (result.count !== 1) { selection.skippedHasCredentials += 1; continue; }
+    newPins.push({ username, name: user.name, pin });
+    selection.issue.push({ username, role: user.role, action: hasCredentials ? 'replace-pin' : 'issue-pin', pin: 'generated (see --pin-out)' });
+  }
+  report.pinIssue = selection;
+  if (newPins.length) {
+    report.changed = true;
+    await tx.auditLog.create({
+      data: {
+        tenantId: tenant.id, userId: null, actorUserId: null, actorTenantId: null,
+        action: 'PILOT_PINS_ISSUED', resource: 'Tenant', resourceId: tenant.id,
+        newValue: {
+          source: 'pilot-provisioning-script', operator: options.operator, roles: options.roles,
+          filter: options.all ? 'all' : 'only-without-credentials', pinsIssued: newPins.length,
+        },
+      },
+    });
+  }
+  return { report, newPins };
+}
+
 /** Runs reconcile in one platform-admin transaction; rolls back unless apply. */
 export async function provision({ prisma, env = process.env, options, employees = [], now = new Date(), outbox = null, fsApi = fs }) {
   let writtenPinFile = null;
   try {
     const result = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_current_platform_admin(true, ${String(env.PLATFORM_ADMIN_DB_CONTEXT_SECRET).trim()})`;
-      const outcome = await reconcile(tx, options, employees, { now, outbox });
+      const outcome = options.mode === 'issue-pins'
+        ? await issuePins(tx, options, { now, env })
+        : await reconcile(tx, options, employees, { now, outbox });
       if (options.apply && outcome.newPins.length) {
         if (!options.pinOut) throw new ProvisioningError('--pin-out is required to receive temporary PINs.');
         // Written before commit: a failed write aborts the transaction; a failed commit removes the file.
-        writtenPinFile = writePinFile(options.pinOut, options.slug, outcome.newPins);
+        writtenPinFile = writePinFile(options.pinOut, outcome.report.tenant?.slug ?? options.slug, outcome.newPins);
       }
       if (!options.apply) throw Object.assign(new DryRunRollback('dry-run'), { outcome });
       return outcome;
@@ -733,7 +939,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, io =
   try {
     const options = parseCli(argv);
     if (options.help) { io.out(USAGE); return 0; }
-    assertSafeTarget(env);
+    assertSafeTarget(env, { requireInternalBetaFlag: options.mode !== 'issue-pins' });
     const employees = options.employeesCsv ? parseEmployees(fs.readFileSync(options.employeesCsv, 'utf8')) : [];
     const appRoot = resolveAppRoot(env);
     const { PrismaClient } = createRequire(pathToFileURL(path.join(appRoot, 'package.json')))('@prisma/client');

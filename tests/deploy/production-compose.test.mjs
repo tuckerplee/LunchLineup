@@ -1934,3 +1934,15 @@ test('production runbooks use project-scoped Compose operations', () => {
   assert.match(runbooks, /RETENTION_PURGE_METRICS_FILE/);
   assert.doesNotMatch(productionReadiness, /RETENTION_PURGE|invoke-retained-record-purge|RetentionPurge/);
 });
+
+test('BILLING_PROVIDER defaults to stripe for the api and worker, and Stripe values are enforced by startup validation rather than compose when billing is disabled', () => {
+  const compose = read('docker-compose.yml');
+  assert.equal((compose.match(/- BILLING_PROVIDER=\$\{BILLING_PROVIDER:-stripe\}/g) ?? []).length, 2, 'api and worker');
+  for (const key of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET', 'STRIPE_METER_ERROR_WEBHOOK_SECRET', 'STRIPE_METER_ERROR_EVENT_DESTINATION_ID']) {
+    assert.match(compose, new RegExp(`- ${key}=\\$\\{${key}:-\\}`));
+    assert.doesNotMatch(compose, new RegExp(`\\$\\{${key}:\\?`));
+  }
+  const security = read('apps/api/src/common/bootstrap-security.ts');
+  assert.match(security, /if \(!billingDisabled\) \{\s+for \(const key of \['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET'\]\)/);
+  assert.match(read('.env.example'), /^BILLING_PROVIDER=stripe$/m);
+});

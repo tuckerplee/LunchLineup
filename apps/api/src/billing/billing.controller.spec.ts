@@ -85,6 +85,7 @@ describe('BillingController - Stripe webhook', () => {
             status: 'PAST_DUE',
             stripeSubscriptionPresent: true,
             subscriptionRecoveryAction: null,
+            billingProvider: 'stripe',
         });
         expect(stripeService.getTenantSubscriptionRecoveryAction).not.toHaveBeenCalled();
     });

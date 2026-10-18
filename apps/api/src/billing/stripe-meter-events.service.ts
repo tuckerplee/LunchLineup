@@ -1,6 +1,7 @@
 import { Injectable, Optional, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
+import { isBillingDisabled } from './billing-provider';
 
 type MeterEventInput = {
     eventName: string;
@@ -19,15 +20,23 @@ type MeterEventResult = {
 @Injectable()
 export class StripeMeterEventsService {
     private readonly stripe: Stripe | null;
+    private readonly billingDisabled: boolean;
 
     constructor(@Optional() private readonly configService?: ConfigService) {
-        const apiKey = this.configService?.get<string>('STRIPE_SECRET_KEY')?.trim() || process.env.STRIPE_SECRET_KEY?.trim();
+        this.billingDisabled = isBillingDisabled(
+            this.configService?.get<string>('BILLING_PROVIDER') ?? process.env.BILLING_PROVIDER,
+        );
+        const apiKey = this.billingDisabled
+            ? undefined
+            : this.configService?.get<string>('STRIPE_SECRET_KEY')?.trim() || process.env.STRIPE_SECRET_KEY?.trim();
         this.stripe = apiKey
             ? new Stripe(apiKey, { apiVersion: '2024-04-10' as any, maxNetworkRetries: 2 })
             : null;
     }
 
     async createMeterEvent(input: MeterEventInput): Promise<MeterEventResult> {
+        // Billing disabled: meter-event reporting is a deliberate no-op (nothing is sent anywhere).
+        if (this.billingDisabled) return { id: null, requestId: null };
         const event = await (this.getStripe().billing.meterEvents as any).create(
             {
                 event_name: input.eventName,

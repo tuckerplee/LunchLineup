@@ -6,6 +6,7 @@ import { PlanTier, PLAN_CONFIG } from './plans.config';
 import { resolveTenantPlanDefinition } from './plan-definitions';
 import { StripeMeterEventsService } from './stripe-meter-events.service';
 import { stripeErrorLog } from './stripe-error-diagnostic';
+import { isBillingDisabled } from './billing-provider';
 
 const ACTIVE_STAFF_METRIC = 'ACTIVE_STAFF';
 const STRIPE_METER_EVENT_NAME_RE = /^[A-Za-z0-9_.:-]{1,100}$/;
@@ -457,6 +458,8 @@ export class MeteringService {
 
     async reportUsageToStripe(tenantId: string, _legacyStripeSubscriptionItemId?: string) {
         const normalizedTenantId = this.requireNonEmpty(tenantId, 'tenantId');
+        // BILLING_PROVIDER=disabled: no usage event is prepared or sent; credit debits are unaffected.
+        if (isBillingDisabled()) return { skipped: true as const, reason: 'billing_disabled' as const };
         this.assertStripeMeteringEnabled();
         const eventName = this.resolveMeterEventName();
         const window = this.currentUtcDayWindow();

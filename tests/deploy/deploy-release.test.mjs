@@ -309,3 +309,25 @@ test('production overlay and Caddyfile: private bind, trusted CT940 only, no dev
   assert.doesNotMatch(caddy, /dev\.lunchlineup|beta\.lunchlineup|www\.lunchlineup/);
   assert.match(caddy, /Strict-Transport-Security/);
 });
+
+test('BILLING_PROVIDER=disabled is accepted for the pilot target only; production is always stripe', { skip: !bash }, () => {
+  const pilotBase = {
+    APP_ORIGIN: 'https://dev.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://dev.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://dev.lunchlineup.com', ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
+    PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
+    PROXY_HTTP_BIND: '10.231.10.108', DATA_TARGET_ENV: 'development',
+  };
+  const pilot = (extra) => {
+    const f = runtimeEnv({ ...pilotBase, ...extra });
+    return runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo OK`, { env: { APP_DIR: toPosix(root) } });
+  };
+  assert.equal(pilot({}).status, 0, pilot({}).stderr);
+  assert.equal(pilot({ BILLING_PROVIDER: 'stripe' }).status, 0);
+  assert.equal(pilot({ BILLING_PROVIDER: 'disabled' }).status, 0, pilot({ BILLING_PROVIDER: 'disabled' }).stderr);
+  assert.match(pilot({ BILLING_PROVIDER: 'free' }).stderr, /BILLING_PROVIDER must be stripe or disabled/);
+
+  assert.equal(checkProd(runtimeEnv({ BILLING_PROVIDER: 'stripe' })).status, 0);
+  const refused = checkProd(runtimeEnv({ BILLING_PROVIDER: 'disabled' }));
+  assert.notEqual(refused.status, 0);
+  assert.match(refused.stderr, /BILLING_PROVIDER must be stripe \(or unset\) for target production/);
+});

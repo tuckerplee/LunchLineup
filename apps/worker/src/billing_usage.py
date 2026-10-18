@@ -85,7 +85,14 @@ def int_env(name: str, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def billing_disabled() -> bool:
+    """BILLING_PROVIDER=disabled (non-production data targets only): nothing is ever sent to Stripe."""
+    return os.getenv("BILLING_PROVIDER", "").strip() == "disabled"
+
+
 def metered_usage_enabled() -> bool:
+    if billing_disabled():
+        return False
     return os.getenv("STRIPE_METERED_USAGE_ENABLED", "").strip().lower() == "true"
 
 
@@ -523,6 +530,8 @@ async def dispatch_usage(
     store: UsageStore | None = None,
     client: MeterClient | None = None,
 ) -> dict[str, Any]:
+    if billing_disabled():
+        return {"skipped": True, "reason": "billing_disabled"}
     if not metered_usage_enabled():
         raise NonRetryableBillingError("Stripe metered usage is disabled")
     tenant_id = _identifier(payload.get("tenant_id"), "tenant_id")

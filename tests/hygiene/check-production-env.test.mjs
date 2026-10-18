@@ -198,3 +198,23 @@ test('the checked-in template lists every required key and contains no real secr
   }
   assert.doesNotMatch(text, /sk_live_[A-Za-z0-9]{10}|re_[A-Za-z0-9]{20}|whsec_[A-Za-z0-9]{20}/);
 });
+
+test('BILLING_PROVIDER: only stripe (or unset) is accepted in production; disabled and unknown values are rejected', () => {
+  assert.deepEqual(check(), [], 'unset is the stripe default');
+  assert.deepEqual(check({ BILLING_PROVIDER: 'stripe' }), []);
+  for (const value of ['disabled', 'Disabled', 'none', 'off']) {
+    assert.ok(
+      check({ BILLING_PROVIDER: value }).some((e) => e.startsWith('BILLING_PROVIDER must be exactly stripe')),
+      `BILLING_PROVIDER=${value} must be rejected`,
+    );
+  }
+  // Disabled billing must not relax the Stripe requirements: the keys stay mandatory.
+  const withoutStripe = env({ BILLING_PROVIDER: 'disabled' });
+  delete withoutStripe.STRIPE_SECRET_KEY;
+  const errors = checkProductionEnv(withoutStripe, { legalConfig: APPROVED_LEGAL });
+  assert.ok(errors.some((e) => e.startsWith('STRIPE_SECRET_KEY is required')));
+  assert.ok(errors.some((e) => e.startsWith('BILLING_PROVIDER must be exactly stripe')));
+  const cli = runCli({ ...BASE, BILLING_PROVIDER: 'disabled' });
+  assert.equal(cli.status, 1);
+  assert.match(cli.stderr, /BILLING_PROVIDER must be exactly stripe/);
+});

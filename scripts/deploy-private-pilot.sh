@@ -145,6 +145,10 @@ check_target() {
     || fail "PROXY_HTTP_BIND/PORT must be $PILOT_BIND:80"
   value="$(env_value DATA_TARGET_ENV)"
   [[ "$value" == disposable || "$value" == development || "$value" == staging ]] || fail "DATA_TARGET_ENV must be disposable, development or staging"
+  # Explicit billing mode: stripe (default) or disabled. Disabled is allowed here only because the
+  # data target was just verified as non-production; the Stripe values are then simply not required.
+  value="$(env_optional BILLING_PROVIDER)"
+  [[ -z "$value" || "$value" == stripe || "$value" == disabled ]] || fail "BILLING_PROVIDER must be stripe or disabled"
   if grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com' "$RUNTIME_ENV"; then
     fail "runtime env references a production/beta lunchlineup.com host"
   fi

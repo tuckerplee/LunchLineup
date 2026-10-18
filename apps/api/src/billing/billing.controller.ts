@@ -4,6 +4,7 @@ import { Request } from 'express';
 import { RequirePermission } from '../auth/require-permission.decorator';
 import { FeatureAccessService } from './feature-access.service';
 import { StripeMeterErrorService } from './stripe-meter-error.service';
+import { assertBillingEnabled, isBillingDisabled } from './billing-provider';
 
 const Public = () => SetMetadata('isPublic', true);
 
@@ -23,12 +24,17 @@ export class BillingController {
     @RequirePermission('billing:read')
     async features(@Req() req: any) {
         const matrix = await this.featureAccessService.getFeatureMatrix(req.user.tenantId);
-        return { ...matrix, subscriptionRecoveryAction: null };
+        return {
+            ...matrix,
+            subscriptionRecoveryAction: null,
+            billingProvider: isBillingDisabled() ? 'disabled' : 'stripe',
+        };
     }
 
     @Get('subscription-recovery-action')
     @RequirePermission('billing:read')
     async subscriptionRecoveryAction(@Req() req: any) {
+        assertBillingEnabled();
         return {
             subscriptionRecoveryAction:
                 await this.stripeService.getTenantSubscriptionRecoveryAction(req.user.tenantId),
@@ -38,12 +44,14 @@ export class BillingController {
     @Get('price-options')
     @RequirePermission('billing:read')
     async priceOptions() {
+        assertBillingEnabled();
         return { data: this.stripeService.getPriceOptions() };
     }
 
     @Get('credit-packs')
     @RequirePermission('billing:read')
     async creditPackOptions() {
+        assertBillingEnabled();
         return { data: await this.stripeService.getCreditPackOptions() };
     }
 
@@ -53,6 +61,7 @@ export class BillingController {
         @Req() req: any,
         @Body() body: { code: string },
     ) {
+        assertBillingEnabled();
         return this.stripeService.createCreditPackCheckoutSession(req.user.tenantId, body.code);
     }
 
@@ -62,6 +71,7 @@ export class BillingController {
         @Req() req: any,
         @Body() body: { priceId: string }
     ) {
+        assertBillingEnabled();
         const tenantId = req.user.tenantId;
 
         return this.stripeService.createSubscriptionCheckoutSession(tenantId, {
@@ -73,6 +83,7 @@ export class BillingController {
     @Post('portal')
     @RequirePermission('billing:write')
     async portal(@Req() req: any) {
+        assertBillingEnabled();
         return this.stripeService.createBillingPortalSession(req.user.tenantId);
     }
 
@@ -82,12 +93,14 @@ export class BillingController {
         @Req() req: any,
         @Body() body: { priceId: string },
     ) {
+        assertBillingEnabled();
         return this.stripeService.changeTenantSubscriptionPlan(req.user.tenantId, body.priceId);
     }
 
     @Post('resume')
     @RequirePermission('billing:write')
     async resume(@Req() req: any) {
+        assertBillingEnabled();
         return this.stripeService.resumeTenantSubscription(req.user.tenantId);
     }
 
@@ -98,6 +111,7 @@ export class BillingController {
         @Req() req: StripeWebhookRequest,
         @Headers('stripe-signature') signature?: string
     ) {
+        assertBillingEnabled();
         const payload = Buffer.isBuffer(req.rawBody)
             ? req.rawBody
             : Buffer.isBuffer(req.body)
@@ -120,6 +134,7 @@ export class BillingController {
         @Req() req: StripeWebhookRequest,
         @Headers('stripe-signature') signature?: string,
     ) {
+        assertBillingEnabled();
         const payload = Buffer.isBuffer(req.rawBody)
             ? req.rawBody
             : Buffer.isBuffer(req.body)

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
     hasActivePaidSubscription,
+    isBillingDisabled,
     normalizeBillingFeatureMatrix,
     normalizeCreditPackOptions,
     normalizePriceOptions,
@@ -125,6 +126,7 @@ export function useBillingSettings({
 }: UseBillingSettingsOptions) {
     const billingRequestRef = useRef(0);
     const creditPackRequestRef = useRef(0);
+    const billingDisabledRef = useRef(false);
     const [billingState, setBillingState] = useState<BillingState>(EMPTY_BILLING_STATE);
     const [creditPackState, setCreditPackState] = useState<CreditPackState>(EMPTY_CREDIT_PACK_STATE);
     const [billingNotice, setBillingNotice] = useState<BillingNotice>(null);
@@ -148,12 +150,27 @@ export function useBillingSettings({
         }
 
         setBillingState((current) => ({ ...current, loading: true, error: null }));
-        const [featureResult, priceResult, recoveryResult] = await Promise.allSettled([
+        // Features first: it reports whether billing is disabled for this environment, in which
+        // case the provider-backed endpoints (all 503 billing_disabled) are not requested at all.
+        const [earlyFeatureResult] = await Promise.allSettled([
             fetchJsonWithSession<unknown>('/billing/features'),
+        ]);
+        if (requestId !== billingRequestRef.current) return;
+        if (earlyFeatureResult.status === 'fulfilled') {
+            const earlyMatrix = normalizeBillingFeatureMatrix(earlyFeatureResult.value);
+            if (isBillingDisabled(earlyMatrix)) {
+                billingDisabledRef.current = true;
+                setBillingState({ loading: false, error: null, matrix: earlyMatrix, priceOptions: [] });
+                return;
+            }
+        }
+        billingDisabledRef.current = false;
+        const [priceResult, recoveryResult] = await Promise.allSettled([
             fetchJsonWithSession<unknown>('/billing/price-options'),
             fetchJsonWithSession<unknown>('/billing/subscription-recovery-action'),
         ]);
         if (requestId !== billingRequestRef.current) return;
+        const featureResult = earlyFeatureResult;
 
         const errors: string[] = [];
         if (featureResult.status === 'rejected') {
@@ -183,7 +200,7 @@ export function useBillingSettings({
 
     const loadCreditPacks = useCallback(async () => {
         const requestId = ++creditPackRequestRef.current;
-        if (!canReadBilling) {
+        if (!canReadBilling || billingDisabledRef.current) {
             setCreditPackState(EMPTY_CREDIT_PACK_STATE);
             return;
         }
@@ -208,7 +225,9 @@ export function useBillingSettings({
     }, [canReadBilling]);
 
     const loadBilling = useCallback(async () => {
-        await Promise.all([loadSubscriptionBilling(), loadCreditPacks()]);
+        // Sequential: the subscription load learns whether billing is disabled before packs are requested.
+        await loadSubscriptionBilling();
+        await loadCreditPacks();
     }, [loadCreditPacks, loadSubscriptionBilling]);
 
     useEffect(() => {

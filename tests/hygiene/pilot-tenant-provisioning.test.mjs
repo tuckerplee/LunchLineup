@@ -145,3 +145,58 @@ test('the script never prints PINs and is self-contained for the api-v2 image', 
   assert.doesNotMatch(dockerfile, /COPY[^\n]*scripts/, 'scripts/ is not in the image; the runbook must mount it');
   assert.match(read('docs/runbooks/pilot-tenant-provisioning.md'), /docker compose run --rm --no-deps/);
 });
+
+test('existing-tenant PIN mode: CLI parsing, defaults and refusals', () => {
+  const parsed = script.parseCli(['--existing-tenant', 'substance', '--issue-pins-for', 'staff, admin,STAFF']);
+  assert.equal(parsed.mode, 'issue-pins');
+  assert.equal(parsed.apply, false, 'dry run is the default');
+  assert.equal(parsed.all, false, 'only users without credentials is the default');
+  assert.deepEqual(parsed.roles, ['STAFF', 'ADMIN']);
+  assert.equal(parsed.tenantRef, 'substance');
+  assert.equal(script.parseCli(['--existing-tenant', 'Substance Co', '--issue-pins-for', 'MANAGER', '--only-without-credentials', '--apply']).apply, true);
+  assert.equal(script.parseCli(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--all']).all, true);
+  const bad = (args, pattern) => assert.throws(() => script.parseCli(args), pattern);
+  bad(['--existing-tenant', 'substance'], /--issue-pins-for is required/);
+  bad(['--issue-pins-for', 'STAFF'], /--existing-tenant is required/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'SUPER_ADMIN'], /accepts only STAFF, MANAGER, ADMIN/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', ' , '], /at least one role/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--all', '--only-without-credentials'], /either/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--apply', '--dry-run'], /either/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--org-slug', 'x-y-z'], /never creates anything; remove --org-slug/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--employees-csv', 'a.csv', '--plan', 'GROWTH'], /--employees-csv, --plan|--plan, --employees-csv/);
+  bad(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--location', 'A|UTC'], /--location/);
+  bad(['--all'], /--existing-tenant is required/);
+});
+
+test('existing-tenant PIN mode keeps the staging-only guards but does not need the grant flag', () => {
+  const { INTERNAL_BETA_ENTITLEMENTS_ENABLED: _flag, ...withoutFlag } = SAFE_ENV;
+  assert.doesNotThrow(() => script.assertSafeTarget(withoutFlag, { requireInternalBetaFlag: false }));
+  assert.throws(() => script.assertSafeTarget(withoutFlag), /INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
+  const refuse = (patch, pattern) => assert.throws(() => script.assertSafeTarget({ ...withoutFlag, ...patch }, { requireInternalBetaFlag: false }), pattern);
+  refuse({ DATA_TARGET_ENV: 'production' }, /DATA_TARGET_ENV/);
+  refuse({ DATA_TARGET_ENV: undefined }, /DATA_TARGET_ENV/);
+  refuse({ APP_ENV: 'production' }, /APP_ENV/);
+  refuse({ APP_ORIGIN: 'https://lunchlineup.com' }, /APP_ORIGIN/);
+  refuse({ DATABASE_URL: 'postgresql://app:pw@postgres:5432/lunchlineup_prod' }, /production database/);
+  refuse({ PLATFORM_ADMIN_DB_CONTEXT_SECRET: '' }, /PLATFORM_ADMIN_DB_CONTEXT_SECRET/);
+});
+
+test('existing-tenant PIN mode writes only PIN credentials: no tenant, entitlement, location or user is created', () => {
+  const source = read('scripts/pilot/provision-pilot-tenant.mjs');
+  const start = source.indexOf('export async function issuePins');
+  const end = source.indexOf('/** Runs reconcile in one platform-admin transaction');
+  assert.ok(start > 0 && end > start);
+  const body = source.slice(start, end);
+  assert.doesNotMatch(body, /\.(createMany|upsert|delete|deleteMany)\(/, 'no bulk create, upsert or delete');
+  assert.deepEqual([...body.matchAll(/tx\.(\w+)\.(create|updateMany|update)\(/g)].map((m) => `${m[1]}.${m[2]}`).sort(), ['auditLog.create', 'user.updateMany']);
+  assert.match(body, /pinResetRequired: true/);
+  assert.match(body, /hashPin\(pin\)/);
+  assert.match(body, /passwordHash: null, pinHash: null/, 'the default filter is re-applied in the UPDATE itself (race-safe)');
+  assert.doesNotMatch(body, /io\.(out|err)|console\./);
+  // The entitlement report mirrors the gate's decision inputs.
+  const gate = read('apps/api-v2/src/platform/feature-entitlement.ts');
+  for (const fragment of ["tenant.status === 'ACTIVE'", 'stripeSubscriptionCurrentPeriodEnd > now', "tenant.status !== 'TRIAL'", "key: 'feature_access'"]) {
+    assert.ok(gate.includes(fragment) || gate.includes(fragment.replace('tenant.', 'tenant.')), `gate no longer contains ${fragment}`);
+  }
+  assert.match(read('docs/runbooks/pilot-tenant-provisioning.md'), /--existing-tenant/);
+});

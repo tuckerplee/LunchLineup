@@ -28,11 +28,17 @@ const STATUS_LABELS: Record<number, string> = {
     [HttpStatus.NOT_FOUND]: 'Not Found',
     [HttpStatus.CONFLICT]: 'Conflict',
     [HttpStatus.PAYLOAD_TOO_LARGE]: 'Payload Too Large',
+    [HttpStatus.SERVICE_UNAVAILABLE]: 'Service Unavailable',
     [HttpStatus.TOO_MANY_REQUESTS]: 'Too Many Requests',
     [HttpStatus.INTERNAL_SERVER_ERROR]: 'Internal Server Error',
 };
 
 const PUBLIC_ERROR_DETAILS = {
+    billing_disabled: {
+        status: HttpStatus.SERVICE_UNAVAILABLE,
+        message: 'Billing is disabled for this environment.',
+        remediation: 'No action is needed; this environment is not billed.',
+    },
     CREDIT_WALLET_CAPACITY_EXCEEDED: {
         status: HttpStatus.BAD_REQUEST,
         message: 'Credit amount exceeds the available wallet capacity. Refresh balances and enter a smaller amount.',
@@ -77,7 +83,7 @@ export class ProductionExceptionFilter implements ExceptionFilter {
         const requestPath = redactUrlForLog(req.originalUrl ?? req.url ?? '');
         const requestMethod = /^[A-Z]{1,16}$/.test(req.method) ? req.method : 'UNKNOWN';
 
-        if (status >= 500) {
+        if (status >= 500 && !publicError) {
             this.logger.error(
                 `Unhandled request failure method=${requestMethod} ${runtimeErrorText(exception)}`,
             );
