@@ -11,9 +11,8 @@
 #
 #   http://10.1.50.10:9180/metrics/<service>
 #
-# NOTE (renumbering): VM107 moves to 10.1.50.10 (p1-lunchlineup-dev01.int.tuckerl.ee).
-# The app publishes on PILOT_BIND_IP (default 10.231.10.108). Updating the targets
-# below to 10.1.50.10:9180 (and the rules/fixtures) is the estate owner's change.
+# VM107 is p1-lunchlineup-dev01.int.tuckerl.ee, 10.1.50.10 (renumbered 2026-10-17).
+# The app publishes on PILOT_BIND_IP, set to 10.1.50.10 in the VM runtime env.
 #
 # <service> is one of api, api-v2, worker, engine, webhook-replay, control. The
 # gateway forwards each path to the service's own /metrics endpoint inside the
@@ -28,7 +27,7 @@
 #
 # Host metrics (job `node`, the VM's node_exporter plus its textfile collector for
 # the public web probe and retention timers) are scraped by the estate's normal
-# node_exporter job (target 10.231.10.108:9100, honor_labels true, labels site=p1,
+# node_exporter job (target 10.1.50.10:9100, honor_labels true, labels site=p1,
 # host=p1-lunchlineup-dev01, role=app, env=dev); lunchlineup-rules.yml selects
 # job="node" with host="p1-lunchlineup-dev01", not the instance. The textfile
 # collector directory is /var/lib/node_exporter/textfile_collector.
