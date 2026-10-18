@@ -92,6 +92,28 @@ test('private-pilot Caddyfile trusts only the CT940 proxy; production Caddyfile 
   assert.doesNotMatch(readFileSync(join(root, 'infrastructure/caddy/Caddyfile'), 'utf8'), /10\.231\.10\.30/);
 });
 
+function hostRefs(lines) {
+  const dir = mkdtempSync(join(tmpdir(), 'pilot-env-'));
+  const env = join(dir, 'runtime.env');
+  writeFileSync(env, lines.join('\n') + '\n');
+  const cmd = `source "${toPosix(script)}"; RUNTIME_ENV="${toPosix(env)}"; check_host_references`;
+  return spawnSync(bash, ['-c', cmd], { encoding: 'utf8' });
+}
+
+test('host guard allows a beta.lunchlineup.com sender but no beta/production host elsewhere', { skip: !bash }, () => {
+  const base = ['APP_ORIGIN=https://dev.lunchlineup.com'];
+  assert.equal(hostRefs([...base, 'EMAIL_FROM=LunchLineup Beta <no-reply@beta.lunchlineup.com>']).status, 0);
+  assert.equal(hostRefs([...base, 'EMAIL_FROM=LunchLineup Dev <no-reply@dev.lunchlineup.com>']).status, 0);
+  let r = hostRefs([...base, 'EMAIL_FROM=LunchLineup <no-reply@lunchlineup.com>']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /EMAIL_FROM must send from/);
+  r = hostRefs([...base, 'EMAIL_FROM=x <no-reply@beta.lunchlineup.com>', 'ALLOWED_HOSTS=beta.lunchlineup.com']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /references a production\/beta/);
+  r = hostRefs(['APP_ORIGIN=https://lunchlineup.com']);
+  assert.notEqual(r.status, 0);
+});
+
 test('runtime env check accepts only stripe or disabled for BILLING_PROVIDER, after the data-target check', () => {
   assert.match(source, /value="\$\(env_optional BILLING_PROVIDER\)"\n\s*\[\[ -z "\$value" \|\| "\$value" == stripe \|\| "\$value" == disabled \]\] \|\| fail "BILLING_PROVIDER must be stripe or disabled"/);
   assert.ok(source.indexOf('DATA_TARGET_ENV must be disposable, development or staging') < source.indexOf('BILLING_PROVIDER must be stripe or disabled'));
