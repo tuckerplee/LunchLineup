@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { runtimeErrorText, safeCorrelationId } from './runtime-error-diagnostic';
-import { redactUrlForLog } from './sensitive-redaction';
+import { redactSensitiveText, redactUrlForLog } from './sensitive-redaction';
 
 const SAFE_MESSAGES: Record<number, string> = {
     [HttpStatus.BAD_REQUEST]: 'Bad request',
@@ -82,6 +82,8 @@ export class ProductionExceptionFilter implements ExceptionFilter {
         const publicError = publicErrorDetail(exception, status);
         const requestPath = redactUrlForLog(req.originalUrl ?? req.url ?? '');
         const requestMethod = /^[A-Z]{1,16}$/.test(req.method) ? req.method : 'UNKNOWN';
+        const correlationId = safeCorrelationId(req.correlationId);
+        const reason = publicError ? null : clientSafeReason(exception, status);
 
         if (status >= 500 && !publicError) {
             this.logger.error(
@@ -89,13 +91,22 @@ export class ProductionExceptionFilter implements ExceptionFilter {
             );
         }
 
+        if (status >= 400 && status < 500) {
+            const logged = publicError?.message ?? reason?.message ?? SAFE_MESSAGES[status] ?? 'Request failed';
+            const fields = reason?.fields?.length ? ` fields=${reason.fields.join(',')}` : '';
+            this.logger.warn(
+                `request_rejected method=${requestMethod} path=${requestPath} status=${status} correlationId=${correlationId} reason=${JSON.stringify(logged)}${fields}`,
+            );
+        }
+
         res.status(status).json({
             statusCode: status,
             error: statusLabel(status),
-            message: publicError?.message ?? SAFE_MESSAGES[status] ?? 'Request failed',
+            message: publicError?.message ?? reason?.message ?? SAFE_MESSAGES[status] ?? 'Request failed',
+            ...(reason?.fields?.length ? { fields: reason.fields } : {}),
             ...(publicError ? { code: publicError.code, remediation: publicError.remediation } : {}),
             path: requestPath,
-            correlationId: safeCorrelationId(req.correlationId),
+            correlationId,
             timestamp: new Date().toISOString(),
         });
     }
@@ -114,4 +125,69 @@ function publicErrorDetail(exception: unknown, status: number) {
     const detail = PUBLIC_ERROR_DETAILS[code as PublicErrorCode];
     if (detail.status !== status) return null;
     return { code: code as PublicErrorCode, ...detail };
+}
+
+const REASON_PASSTHROUGH_STATUSES: ReadonlySet<number> = new Set([
+    HttpStatus.BAD_REQUEST,
+    HttpStatus.CONFLICT,
+    HttpStatus.UNPROCESSABLE_ENTITY,
+]);
+const MAX_REASON_LENGTH = 300;
+const MAX_REASON_FIELDS = 20;
+const VALIDATION_FAILED_MESSAGE = 'Request validation failed';
+
+/**
+ * Normalizes a developer-authored message: strips control characters, collapses
+ * whitespace, trims and caps the length. Returns null when nothing is left.
+ */
+export function normalizeReasonText(value: string): string | null {
+    const cleaned = redactSensitiveText(value)
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+    if (!cleaned) return null;
+    return cleaned.length > MAX_REASON_LENGTH
+        ? `${cleaned.slice(0, MAX_REASON_LENGTH - 1).trimEnd()}\u2026`
+        : cleaned;
+}
+
+/**
+ * Only HttpExceptions with status 400/409/422 carry a developer-authored string
+ * (`new BadRequestException('...')` or `{ message: '...' }`). class-validator
+ * array messages are never echoed; only the offending field names are.
+ * Non-HttpExceptions (Prisma, DB, third-party) and every other status keep the
+ * generic message.
+ */
+function clientSafeReason(exception: unknown, status: number): { message: string; fields?: string[] } | null {
+    if (!(exception instanceof HttpException) || !REASON_PASSTHROUGH_STATUSES.has(status)) return null;
+    const response = exception.getResponse();
+    const raw = typeof response === 'string'
+        ? response
+        : response && typeof response === 'object' && !Array.isArray(response)
+            ? (response as Record<string, unknown>).message
+            : undefined;
+    if (typeof raw === 'string') {
+        const message = normalizeReasonText(raw);
+        return message ? { message } : null;
+    }
+    if (Array.isArray(raw)) {
+        const fields = validationFieldNames(raw);
+        return { message: VALIDATION_FAILED_MESSAGE, ...(fields.length ? { fields } : {}) };
+    }
+    return null;
+}
+
+function validationFieldNames(messages: unknown[]): string[] {
+    const names = new Set<string>();
+    for (const entry of messages) {
+        if (typeof entry !== 'string') continue;
+        // class-validator messages start with the property path ("email must be an email",
+        // "items.0.name should not be empty"); keep only a plain identifier-like path.
+        const text = entry.replace(/^each value in\s+/i, '');
+        const match = /^([A-Za-z_][A-Za-z0-9_]*(?:(?:\.|\[)[A-Za-z0-9_\]]+)*)\s/.exec(text);
+        if (match && match[1].length <= 80) names.add(match[1]);
+        if (names.size >= MAX_REASON_FIELDS) break;
+    }
+    return [...names];
 }

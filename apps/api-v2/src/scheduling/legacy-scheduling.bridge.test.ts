@@ -174,4 +174,61 @@ describe('retained scheduling anti-corruption bridge', () => {
     expect(JSON.stringify(result)).not.toContain('legacy-shift-1');
     expect(JSON.stringify(result)).not.toContain('legacy-user-1');
   });
+
+  describe('retained rejection detail forwarding', () => {
+    async function rejectWith(status: number, body: unknown) {
+      const transaction = {
+        schedule: {
+          findFirst: vi.fn(async () => ({
+            id: 'legacy-schedule-1',
+            publicId: '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e',
+            locationId: 'legacy-location-1',
+            location: { publicId: '34aa4812-63f5-4e5c-8b3a-06b564987a1f' },
+          })),
+        },
+      };
+      const database = {
+        withTenant: vi.fn(async (_tenantId, operation) => operation(transaction)),
+      } as never;
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(body), {
+        status,
+        headers: { 'content-type': 'application/json' },
+      })));
+      const bridge = new LegacySchedulingBridge(config, database);
+      return bridge
+        .publishPlan(identity, '88d8d86a-7e8d-4246-8ad3-eb7eedb44c1e', request, reply)
+        .then(() => null, (error: unknown) => error as { status: number; code: string; message: string });
+    }
+
+    it('forwards the retained 400 reason as the 422 detail', async () => {
+      const message = 'Shift 6d7b0f4e-1111-4222-8333-944455556666 is assigned to staff with no applicable configured availability.';
+      const error = await rejectWith(400, { statusCode: 400, message });
+      expect(error).toMatchObject({ status: 422, code: 'retained_scheduling_rejected', message });
+    });
+
+    it('normalizes whitespace and control characters and caps the length', async () => {
+      const error = await rejectWith(400, { message: `  Shift   is\n\tinvalid\u0007. ${'x'.repeat(400)}` });
+      expect(error?.message.startsWith('Shift is invalid . x')).toBe(true);
+      expect(error?.message).not.toMatch(/[\u0000-\u001f]/);
+      expect(error?.message.length).toBeLessThanOrEqual(300);
+    });
+
+    it('forwards 409 reasons and keeps the generic fallback for unsafe or missing text', async () => {
+      expect(await rejectWith(409, { message: 'The schedule changed. Refresh and retry.' }))
+        .toMatchObject({ status: 409, message: 'The schedule changed. Refresh and retry.' });
+      for (const message of ['see http://api.internal/x', 'password=hunter2', '<script>alert(1)</script>', 'Bearer abc', undefined]) {
+        expect(await rejectWith(400, { message })).toMatchObject({
+          status: 422,
+          message: 'The scheduling operation was rejected.',
+        });
+      }
+    });
+
+    it('never forwards a retained 5xx message', async () => {
+      expect(await rejectWith(500, { message: 'Shift 1 exploded in the database' })).toMatchObject({
+        status: 503,
+        message: 'This scheduling operation is temporarily unavailable.',
+      });
+    });
+  });
 });

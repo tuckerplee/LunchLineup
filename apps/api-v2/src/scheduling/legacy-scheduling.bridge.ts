@@ -40,17 +40,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+const LEGACY_DETAIL_MAX_LENGTH = 300;
+
+/**
+ * The retained API now only emits developer-authored 400/409 reasons (its filter
+ * strips everything else), so ordinary sentences are forwarded after the same
+ * normalization the retained filter applies: control characters removed,
+ * whitespace collapsed, length capped. Anything that looks like markup, a URL,
+ * a credential or an internal host falls back to the generic message.
+ */
 function safeLegacyDetail(value: unknown, fallback: string): string {
-  const candidate = typeof value === 'string' ? value : '';
+  // eslint-disable-next-line no-control-regex
+  const candidate = (typeof value === 'string' ? value : '').replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ').replace(/\s+/g, ' ').trim();
   if (
     !candidate
-    || candidate.length > 240
-    || /[\r\n\0<>]/.test(candidate)
+    || /[<>]/.test(candidate)
     || /(?:https?:\/\/|file:\/\/|\\\\|\b(?:bearer|authorization|cookie|set-cookie|stack|sqlstate)\b|(?:token|password|secret)\s*[:=]|localhost|127\.0\.0\.1|\.internal\b)/i.test(candidate)
   ) {
     return fallback;
   }
-  return candidate;
+  return candidate.length > LEGACY_DETAIL_MAX_LENGTH
+    ? `${candidate.slice(0, LEGACY_DETAIL_MAX_LENGTH - 1).trimEnd()}\u2026`
+    : candidate;
 }
 
 function forwardedSetCookies(headers: Headers): string[] {
@@ -211,7 +222,9 @@ export class LegacySchedulingBridge {
       const fallback = status >= 500
         ? 'This scheduling operation is temporarily unavailable.'
         : 'The scheduling operation was rejected.';
-      const detail = safeLegacyDetail(isRecord(payload) ? payload.message : undefined, fallback);
+      const detail = status >= 500
+        ? fallback
+        : safeLegacyDetail(isRecord(payload) ? payload.message : undefined, fallback);
       throw new ProblemError(
         status,
         status === 402 ? 'payment_required' : 'retained_scheduling_rejected',

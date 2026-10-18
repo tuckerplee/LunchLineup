@@ -175,7 +175,7 @@ export function installProblemHandler(app: FastifyInstance): void {
     if (problem.status >= 500) {
       request.log.error({ err: error, requestId: request.id }, 'api_v2_request_failed');
     } else {
-      request.log.info({ code: problem.code, status: problem.status, requestId: request.id }, 'api_v2_request_rejected');
+      request.log.info({ code: problem.code, status: problem.status, detail: problem.detail, requestId: request.id }, 'api_v2_request_rejected');
     }
     sendProblem(reply, problem);
   });
