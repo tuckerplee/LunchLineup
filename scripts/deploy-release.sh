@@ -14,7 +14,7 @@
 # `pgbackrest stanza-create` and `check` once postgres is healthy. It takes no backup
 # and installs no timer; the estate schedules `pgbackrest backup` (docs/estate/README.md).
 #
-# pilot       dev.lunchlineup.com on VM107 (same behaviour as deploy-private-pilot.sh)
+# pilot       beta.lunchlineup.com on VM107 (same behaviour as deploy-private-pilot.sh)
 # production  https://lunchlineup.com; deploy receipt kept
 #
 # Public routing is Cloudflare Tunnel -> nginx CT940 (10.231.10.30; 10.1.20.20 after the
@@ -48,7 +48,7 @@ configure_target() {
     pilot)
       RUNTIME_ENV="${PILOT_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
       EXPECTED_HOSTNAME=lunchlineup-dev
-      APP_HOST=dev.lunchlineup.com
+      APP_HOST=beta.lunchlineup.com
       BIND_IP=10.231.10.108   # default; runtime env PILOT_BIND_IP overrides (check_runtime_env)
       OVERLAY=infrastructure/development-admission/compose.private-proxy.yml
       HOLD_FILES=(/etc/lunchlineup/vm107-launch.hold /etc/lunchlineup/private-launch.hold)
@@ -197,8 +197,8 @@ check_runtime_env() {
   esac
   case "$TARGET" in
     pilot)
-      if grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com' "$RUNTIME_ENV"; then
-        fail "runtime env references a production/beta lunchlineup.com host"
+      if grep -Eiq '(^|[/.=@])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com' "$RUNTIME_ENV"; then
+        fail "runtime env references a production or retired dev lunchlineup.com host"
       fi
       ;;
     production)

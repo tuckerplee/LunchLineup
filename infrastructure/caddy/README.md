@@ -5,7 +5,7 @@
 - `README.md`: this Caddy folder guide.
 - `Caddyfile`: active Caddy reverse proxy config mounted by `docker-compose.yml`.
 - `Caddyfile.template`: template Caddy config retained for environment-specific rendering.
-- `Caddyfile.private-pilot`: dev.lunchlineup.com on VM107 (trusts only CT940), selected by `infrastructure/development-admission/compose.private-proxy.yml`.
+- `Caddyfile.private-pilot`: beta.lunchlineup.com on VM107 (trusts only CT940), selected by `infrastructure/development-admission/compose.private-proxy.yml`.
 - `Caddyfile.production`: lunchlineup.com Caddy behind Cloudflare Tunnel and nginx CT940; trusts only the CT940 address in `CADDY_TRUSTED_PROXIES` (default 10.231.10.30/32; 10.1.20.20/32 after the renumbering); selected by `infrastructure/production/compose.production-proxy.yml`.
 
 ## Trusted proxy and bind address (renumbering)

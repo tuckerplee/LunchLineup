@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Deploy prebuilt images to the private pilot (VM107, https://dev.lunchlineup.com).
+# Deploy prebuilt images to the private pilot (VM107, https://beta.lunchlineup.com).
 #
 #   sudo scripts/deploy-private-pilot.sh <image-dir>
 #
 # <image-dir> holds <name>.tar.gz + <name>.image.json pairs written by
 # scripts/export-internal-ci-release-images.sh on the VM218 builder.
 # This script never builds, never prunes, never deletes volumes, and only
-# targets dev.lunchlineup.com. Integrity = sha256 of each archive plus the
+# targets beta.lunchlineup.com (dev.lunchlineup.com is retired). Integrity = sha256 of each archive plus the
 # loaded image ID, both taken from the exporter metadata. When PGBACKREST_ENABLED=true
 # the postgres container's pgBackRest is verified (host files) and set up
 # (`stanza-create`, `check`) after postgres is healthy; the script takes no backup and
@@ -17,7 +17,7 @@ APP_DIR="${APP_DIR:-/opt/lunchlineup}"
 RUNTIME_ENV="${PILOT_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
 PROJECT=lunchlineup
 EXPECTED_HOSTNAME=lunchlineup-dev
-PILOT_HOST=dev.lunchlineup.com
+PILOT_HOST=beta.lunchlineup.com
 PILOT_ORIGIN="https://$PILOT_HOST"
 # Private bind address of the pilot VM. Default is the current address; the runtime env
 # may set PILOT_BIND_IP (e.g. 10.1.50.10 after renumbering), resolved in check_runtime_env.
@@ -108,19 +108,20 @@ pgbackrest_setup() {
   echo "pgBackRest ready. First/manual full backup: docker compose exec -T -u postgres postgres pgbackrest --stanza=$PGBACKREST_STANZA_VALUE --type=full backup"
 }
 
-# No production/beta lunchlineup.com host may appear in the runtime env, except the
-# EMAIL_FROM sender domain: the Resend key may be verified for beta.lunchlineup.com.
-# That address only identifies the mail sender; it routes nothing to beta.
+# The pilot is beta.lunchlineup.com. The runtime env must not reference the production
+# hosts (www.lunchlineup.com, the apex lunchlineup.com) or the retired
+# dev.lunchlineup.com. EMAIL_FROM, when set, must send from @beta.lunchlineup.com
+# (checked separately and excluded from the host scan).
 check_host_references() {
-  local from sender_re='@(dev|beta)\.lunchlineup\.com>?$'
+  local from sender_re='@beta\.lunchlineup\.com>?$'
   from="$(env_optional EMAIL_FROM)"
   if [[ -n "$from" ]]; then
     [[ "$from" =~ $sender_re ]] \
-      || fail "EMAIL_FROM must send from @dev.lunchlineup.com or @beta.lunchlineup.com"
+      || fail "EMAIL_FROM must send from @beta.lunchlineup.com"
   fi
   if grep -v '^EMAIL_FROM=' "$RUNTIME_ENV" \
-      | grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com'; then
-    fail "runtime env references a production/beta lunchlineup.com host"
+      | grep -Eiq '(^|[/.=@])(www|dev)\.lunchlineup\.com|(https?://|[=,])lunchlineup\.com'; then
+    fail "runtime env references a production or retired dev lunchlineup.com host"
   fi
 }
 

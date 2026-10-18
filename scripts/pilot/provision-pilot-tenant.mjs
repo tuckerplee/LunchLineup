@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Idempotent internal-pilot tenant provisioning for the private staging stack
- * (VM107, https://dev.lunchlineup.com, DATA_TARGET_ENV=staging).
+ * (VM107, https://beta.lunchlineup.com, DATA_TARGET_ENV=staging).
  *
  * Creates or reconciles, keyed on natural keys, in ONE database transaction:
  *   - the pilot Tenant (slug) on a paid plan in TRIAL with a bounded trialEndsAt;
