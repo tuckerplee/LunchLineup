@@ -10,6 +10,10 @@ vi.mock('react', async original => ({ ...await original<typeof import('react')>(
   useCallback: (...args: any[]) => m.hooks.useCallback(...args),
 }));
 vi.mock('@/components/ui/button', () => ({ Button: 'button' }));
+vi.mock('@/components/messages/AppMessages', () => ({
+  useAppMessages: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn(), dismissCode: vi.fn(), confirmAction: vi.fn(async () => true), promptAction: vi.fn(async () => null) }),
+  useStatusMessage: () => undefined,
+}));
 vi.mock('@/lib/client-api', async original => ({ ...await original<typeof import('../../lib/client-api')>(), fetchWithSession: m.fetch }));
 vi.mock('../../app/dashboard/staff/use-invitation-delivery', () => ({ useInvitationDelivery: () => ({
   states: {}, retryingUserIds: new Set<string>(), recordResponse: m.noop, refreshStatus: m.noop, refreshStatuses: m.refresh, retry: m.noop,

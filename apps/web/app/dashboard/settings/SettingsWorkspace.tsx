@@ -2,6 +2,7 @@
 
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAppMessages } from '@/components/messages/AppMessages';
 import { ApiRequestError, fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import { generalSettingsRequest, teamSettingsRequest } from './settings-request';
 import { reconcileSettingsSave, saveSettingsWithReadback, type SettingsSection, type SettingsSaveResult } from './settings-save-state';
@@ -199,6 +200,7 @@ export function SettingsWorkspace({
     canManageAccountLifecycle,
 }: SettingsWorkspaceProps) {
     const [activeTab, setActiveTab] = useState<SettingsTab>('General');
+    const { confirmAction } = useAppMessages();
     const [isLoading, setIsLoading] = useState(true);
     const [isSettingsHydrated, setIsSettingsHydrated] = useState(false);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -333,6 +335,12 @@ export function SettingsWorkspace({
         }
     }, [activeTab, loadBilling, visibleTabs]);
     useEffect(() => {
+        // Deep link from inline messages, for example a payment-required block.
+        if (canReadBilling && new URLSearchParams(window.location.search).get('tab') === 'billing') {
+            setActiveTab('Billing');
+        }
+    }, [canReadBilling]);
+    useEffect(() => {
         if (billingReturnDetected && canReadBilling) {
             setActiveTab('Billing');
         }
@@ -389,7 +397,13 @@ export function SettingsWorkspace({
 
     const discardUnconfirmedDraft = async () => {
         if (!pendingSave || settingsWriteRef.current) return;
-        if (!window.confirm('Discard your unconfirmed draft and load the current saved settings? The earlier request may have committed. Review the loaded values before making another change.')) return;
+        if (!await confirmAction({
+            code: 'settings.discard_draft.confirm',
+            title: 'Discard your unconfirmed draft?',
+            body: 'Current saved settings will be loaded. The earlier request may have committed. Review the loaded values before making another change.',
+            confirmLabel: 'Discard and reload',
+            tone: 'danger',
+        })) return;
         settingsWriteRef.current = true;
         setCheckingSave(true);
         try {

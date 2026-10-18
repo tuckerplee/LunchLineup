@@ -8,6 +8,10 @@ vi.mock('react', async original => ({ ...await original<typeof import('react')>(
   useCallback: (...args: any[]) => mocks.hooks.useCallback(...args),
 }));
 vi.mock('@/lib/client-api', async original => ({ ...await original<typeof import('@/lib/client-api')>(), fetchJsonWithSession: mocks.read, fetchWithSession: mocks.write }));
+vi.mock('@/components/messages/AppMessages', () => ({
+  useAppMessages: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn(), dismissCode: vi.fn(), confirmAction: vi.fn(async () => true), promptAction: vi.fn(async () => null) }),
+  useStatusMessage: () => undefined,
+}));
 vi.mock('../../app/dashboard/settings/use-billing-settings', () => ({ useBillingSettings: () => ({ loadBilling: () => {}, billingReturnDetected: false }) }));
 import { SettingsWorkspace } from '../../app/dashboard/settings/SettingsWorkspace';
 let h: ReturnType<typeof clientComponentHarness>;

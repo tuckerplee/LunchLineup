@@ -4,6 +4,7 @@ import Link from 'next/link';
 import styles from './tenants.module.css';
 import type { FormEvent } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
     EMPTY_ADMIN_LIST_PAGINATION,
@@ -159,18 +160,50 @@ function normalizeCreateForm(): TenantCreateFormState {
     };
 }
 
-function confirmLifecycleAction(action: TenantLifecycleAction, tenant: TenantRecord): boolean {
-    if (typeof window === 'undefined') return true;
-    const confirmation = buildTenantLifecycleConfirmation(action, tenant);
-    const entered = window.prompt(confirmation.prompt);
+type PromptAction = ReturnType<typeof useAppMessages>['promptAction'];
+
+/** Typed-confirmation prompt: the in-page dialog accepts only the exact expected text. */
+async function typedConfirmation(
+    promptAction: PromptAction,
+    code: string,
+    confirmation: { prompt: string; expectedInput: string },
+    confirmLabel: string,
+): Promise<boolean> {
+    const parts = confirmation.prompt.split('\n\n');
+    const entered = await promptAction({
+        code,
+        title: parts[0] ?? 'Confirm',
+        body: parts.slice(1, -1).join(' '),
+        label: parts[parts.length - 1] ?? 'Type to confirm.',
+        confirmLabel,
+        tone: 'danger',
+        validate: (value) => lifecycleConfirmationMatches(value, confirmation.expectedInput)
+            ? null
+            : `Enter ${confirmation.expectedInput} exactly to continue.`,
+    });
     return lifecycleConfirmationMatches(entered, confirmation.expectedInput);
 }
 
-function confirmBulkArchivedTenantDelete(count: number): boolean {
-    if (typeof window === 'undefined') return true;
-    const confirmation = buildBulkTenantDeleteConfirmation(count);
-    const entered = window.prompt(confirmation.prompt);
-    return lifecycleConfirmationMatches(entered, confirmation.expectedInput);
+function confirmLifecycleAction(
+    promptAction: PromptAction,
+    action: TenantLifecycleAction,
+    tenant: TenantRecord,
+): Promise<boolean> {
+    return typedConfirmation(
+        promptAction,
+        `admin.tenants.${action}.confirm`,
+        buildTenantLifecycleConfirmation(action, tenant),
+        action === 'delete' ? 'Permanently delete' : action === 'archive' ? 'Archive' : 'Suspend',
+    );
+}
+
+function confirmBulkArchivedTenantDelete(promptAction: PromptAction, count: number): Promise<boolean> {
+    return typedConfirmation(
+        promptAction,
+        'admin.tenants.bulk_delete.confirm',
+        buildBulkTenantDeleteConfirmation(count),
+        'Permanently delete',
+    );
 }
 
 function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): RequestInit {
@@ -205,6 +238,12 @@ export function TenantsClient() {
     const [notice, setNotice] = useState<string | null>(null);
     // Kept separately so list refreshes cannot erase unresolved mutation guidance.
     const [lifecycleFeedback, setLifecycleFeedback] = useState<{ message: string; detail?: string } | null>(null);
+    const { promptAction } = useAppMessages();
+    useStatusMessage('error', 'admin.tenants.failed', error);
+    useStatusMessage('success', 'admin.tenants.notice', notice);
+    useStatusMessage('warning', 'admin.tenants.lifecycle.attention', lifecycleFeedback
+        ? [lifecycleFeedback.detail, lifecycleFeedback.message].filter(Boolean).join(' ')
+        : null, { detail: 'lifecycle_feedback' });
     const [mobileSummaryExpanded, setMobileSummaryExpanded] = useState(false);
     const [query, setQuery] = useState('');
     const [appliedQuery, setAppliedQuery] = useState('');
@@ -402,7 +441,7 @@ export function TenantsClient() {
         } as const;
 
         const confirmNeeded = action === 'suspend' || action === 'archive';
-        if (confirmNeeded && !confirmLifecycleAction(action, tenant)) {
+        if (confirmNeeded && !(await confirmLifecycleAction(promptAction, action, tenant))) {
             setNotice(`${labelMap[action]} canceled.`);
             return;
         }
@@ -443,7 +482,7 @@ export function TenantsClient() {
             setError('Tenant must be archived before permanent deletion.');
             return;
         }
-        if (!confirmLifecycleAction('delete', tenant)) {
+        if (!(await confirmLifecycleAction(promptAction, 'delete', tenant))) {
             setNotice('Permanent delete canceled.');
             return;
         }
@@ -468,7 +507,7 @@ export function TenantsClient() {
             return;
         }
 
-        if (!confirmBulkArchivedTenantDelete(archivedTenants.length)) {
+        if (!(await confirmBulkArchivedTenantDelete(promptAction, archivedTenants.length))) {
             setNotice('Bulk delete canceled.');
             return;
         }
@@ -574,47 +613,6 @@ export function TenantsClient() {
                     );
                 })}
             </section>
-
-            {lifecycleFeedback ? (
-                <div role="alert" style={{ padding: '0.8rem 0.95rem', borderRadius: 12,
-                    border: '1px solid #f2d39b', background: '#fff8eb', color: '#7c4a03',
-                    fontWeight: 600, fontSize: '0.86rem' }}>
-                    {lifecycleFeedback.detail ? <p style={{ margin: '0 0 0.35rem' }}>{lifecycleFeedback.detail}</p> : null}
-                    <p style={{ margin: 0 }}>{lifecycleFeedback.message}</p>
-                </div>
-            ) : null}
-
-            {error ? (
-                <div
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #ffd0da',
-                        background: '#fff1f4',
-                        color: '#b4233f',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {error}
-                </div>
-            ) : null}
-
-            {notice ? (
-                <div
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #c9d9ff',
-                        background: '#edf3ff',
-                        color: '#1d4ed8',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {notice}
-                </div>
-            ) : null}
 
             <section className={styles.directoryGrid} style={{ display: 'grid', gap: '0.85rem', alignItems: 'start' }}>
                 <article
