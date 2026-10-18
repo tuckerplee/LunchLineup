@@ -168,7 +168,7 @@ const OPTION_SPEC = {
   'employees-csv': { type: 'string' }, 'pin-out': { type: 'string' },
   operator: { type: 'string' }, apply: { type: 'boolean' }, 'dry-run': { type: 'boolean' }, help: { type: 'boolean' },
   'existing-tenant': { type: 'string' }, 'issue-pins-for': { type: 'string' },
-  'only-without-credentials': { type: 'boolean' }, all: { type: 'boolean' },
+  'only-without-credentials': { type: 'boolean' }, all: { type: 'boolean' }, 'grant-internal-beta': { type: 'boolean' },
 };
 // Options that only make sense when creating/reconciling a tenant; refused in --existing-tenant mode.
 const CREATION_ONLY_OPTIONS = [
@@ -193,6 +193,11 @@ Issue temporary PINs to existing users of an existing tenant (creates nothing el
   --only-without-credentials  Default: only users with no passwordHash and no pinHash
   --all                     Instead: every active user with those roles gets a NEW PIN (replaces existing PINs)
   --pin-out PATH            Required with --apply when any PIN is issued (new file, mode 0600)
+  --grant-internal-beta     Opt in: convert the tenant to TRIAL (now + --trial-days, default 30) and write the same
+                            internal-beta grant as the creation mode (--grant-label, --grant-credits, --grant-days,
+                            --grant-reason, optional --plan). Refused if the tenant has any Stripe customer or
+                            subscription id. Needs INTERNAL_BETA_ENTITLEMENTS_ENABLED=true. Combinable with
+                            --issue-pins-for (one transaction); --issue-pins-for is then optional.
   --operator NAME, --apply  As below. Users without a username are reported, never issued.
 
 Options
@@ -219,7 +224,7 @@ export function parseCli(argv) {
   if (values.help) return { help: true };
   if (values.apply && values['dry-run']) throw new ProvisioningError('Choose either --apply or --dry-run, not both.');
   if (values['existing-tenant'] !== undefined || values['issue-pins-for'] !== undefined
-    || values['only-without-credentials'] || values.all) {
+    || values['only-without-credentials'] || values.all || values['grant-internal-beta']) {
     return parsePinIssueCli(values);
   }
   const required = (key) => {
@@ -278,24 +283,61 @@ export function parsePinIssueCli(values) {
   const tenantRef = String(values['existing-tenant'] ?? '').trim();
   if (!tenantRef) throw new ProvisioningError('--existing-tenant is required (slug or exact tenant name).');
   if (tenantRef.length > 120 || /[\u0000-\u001f\u007f]/.test(tenantRef)) throw new ProvisioningError('--existing-tenant must be 1-120 printable characters.');
-  if (values['issue-pins-for'] === undefined) throw new ProvisioningError('--issue-pins-for is required with --existing-tenant (for example STAFF,ADMIN).');
-  const conflicting = CREATION_ONLY_OPTIONS.filter((key) => values[key] !== undefined && values[key] !== false);
+  const grantInternalBeta = Boolean(values['grant-internal-beta']);
+  if (values['issue-pins-for'] === undefined && !grantInternalBeta) {
+    throw new ProvisioningError('--issue-pins-for and/or --grant-internal-beta is required with --existing-tenant (for example --issue-pins-for STAFF,ADMIN).');
+  }
+  // The grant options are legal only together with --grant-internal-beta.
+  const GRANT_OPTIONS = ['plan', 'trial-days', 'grant-credits', 'grant-days', 'grant-label', 'grant-reason'];
+  const conflicting = CREATION_ONLY_OPTIONS.filter((key) => (
+    values[key] !== undefined && values[key] !== false && !(grantInternalBeta && GRANT_OPTIONS.includes(key))
+  ));
   if (conflicting.length) {
     throw new ProvisioningError(`--existing-tenant never creates anything; remove ${conflicting.map((k) => `--${k}`).join(', ')}.`);
   }
   if (values['only-without-credentials'] && values.all) {
     throw new ProvisioningError('Choose either --only-without-credentials (default) or --all, not both.');
   }
-  const roles = [...new Set(String(values['issue-pins-for']).split(',').map((r) => r.trim().toUpperCase()).filter(Boolean))];
-  if (!roles.length) throw new ProvisioningError('--issue-pins-for needs at least one role.');
-  const unknown = roles.filter((r) => !PIN_ISSUE_ROLES.includes(r));
-  if (unknown.length) throw new ProvisioningError(`--issue-pins-for accepts only ${PIN_ISSUE_ROLES.join(', ')} (got ${unknown.join(', ')}).`);
+  let roles = [];
+  if (values['issue-pins-for'] !== undefined) {
+    roles = [...new Set(String(values['issue-pins-for']).split(',').map((r) => r.trim().toUpperCase()).filter(Boolean))];
+    if (!roles.length) throw new ProvisioningError('--issue-pins-for needs at least one role.');
+    const unknown = roles.filter((r) => !PIN_ISSUE_ROLES.includes(r));
+    if (unknown.length) throw new ProvisioningError(`--issue-pins-for accepts only ${PIN_ISSUE_ROLES.join(', ')} (got ${unknown.join(', ')}).`);
+  } else if (values['only-without-credentials'] || values.all) {
+    throw new ProvisioningError('--only-without-credentials and --all need --issue-pins-for.');
+  }
+  const integer = (key, fallback, min, max) => {
+    if (values[key] === undefined) return fallback;
+    if (!/^\d+$/.test(values[key])) throw new ProvisioningError(`--${key} must be a whole number.`);
+    const n = Number(values[key]);
+    if (n < min || n > max) throw new ProvisioningError(`--${key} must be between ${min} and ${max}.`);
+    return n;
+  };
   const apply = Boolean(values.apply);
-  return {
-    mode: 'issue-pins', apply, tenantRef, roles, all: Boolean(values.all),
+  const result = {
+    mode: 'issue-pins', apply, tenantRef, roles, all: Boolean(values.all), grantInternalBeta,
     pinOut: values['pin-out'] ?? null,
     operator: String(values.operator ?? process.env.USER ?? 'operator').trim().slice(0, 64) || 'operator',
   };
+  if (grantInternalBeta) {
+    const plan = values.plan === undefined ? null : String(values.plan).trim().toUpperCase();
+    if (plan !== null && !PAID_PLANS.includes(plan)) throw new ProvisioningError(`--plan must be one of ${PAID_PLANS.join(', ')} (a paid plan).`);
+    const trialDays = integer('trial-days', 30, 1, INTERNAL_BETA_MAX_DAYS);
+    const grantDays = integer('grant-days', trialDays, 1, INTERNAL_BETA_MAX_DAYS);
+    if (grantDays > trialDays) throw new ProvisioningError('--grant-days cannot exceed --trial-days (the grant may not outlive the trial).');
+    const grantLabel = String(values['grant-label'] ?? 'v1').trim();
+    if (!/^[A-Za-z0-9._-]{1,32}$/.test(grantLabel)) throw new ProvisioningError('--grant-label must be 1-32 of A-Z a-z 0-9 . _ -');
+    const grantReason = String(values['grant-reason'] ?? 'Internal pilot').trim();
+    if (!grantReason || grantReason.length > 200 || /[\u0000-\u001f\u007f]/.test(grantReason)) {
+      throw new ProvisioningError('--grant-reason must be 1-200 printable characters.');
+    }
+    Object.assign(result, {
+      plan, trialDays, grantDays, grantLabel, grantReason,
+      credits: integer('grant-credits', 100, 1, INTERNAL_BETA_MAX_CREDITS),
+    });
+  }
+  return result;
 }
 
 export function parseLocation(spec) {
@@ -799,7 +841,7 @@ export async function entitlementReport(tx, tenant, now, env) {
   const activeSubscription = tenant.status === 'ACTIVE' && Boolean(String(tenant.stripeSubscriptionId ?? '').trim())
     && tenant.stripeSubscriptionCurrentPeriodEnd instanceof Date && tenant.stripeSubscriptionCurrentPeriodEnd > now;
   const betaGrant = activeSubscription ? false : await internalBetaGrantActive(tx, tenant, now, env);
-  const basis = activeSubscription ? 'stripe_subscription' : betaGrant ? 'internal_beta_grant' : 'none';
+  const basis = activeSubscription ? 'stripe_subscription' : betaGrant ? 'internal_beta' : 'none';
   const report = { basis, usageCredits: tenant.usageCredits, creditDebt: tenant.creditDebt };
   for (const feature of INTERNAL_BETA_COVERED_FEATURES) {
     const override = setting?.value?.features?.[feature];
@@ -821,19 +863,77 @@ export async function entitlementReport(tx, tenant, now, env) {
   return report;
 }
 
+/**
+ * Opt-in: put an existing tenant on the TRIAL + internal-beta grant path (the same rows the creation
+ * mode writes). Refuses tenants that have any Stripe ids. Idempotent per --grant-label.
+ */
+async function grantInternalBetaToExisting(tx, tenant, options, now) {
+  if (String(tenant.stripeCustomerId ?? '').trim() || String(tenant.stripeSubscriptionId ?? '').trim()) {
+    throw new ProvisioningError(`Tenant "${tenant.slug}" has a Stripe customer or subscription id; refusing to convert it to an internal-beta trial.`);
+  }
+  if (!internalBetaRuntimeEnabled(options.env)) {
+    throw new ProvisioningError('Refusing: --grant-internal-beta needs INTERNAL_BETA_ENTITLEMENTS_ENABLED=true and an internal-beta APP_ORIGIN.');
+  }
+  const planCode = options.plan ?? String(tenant.planTier).trim().toUpperCase();
+  if (!PAID_PLANS.includes(planCode)) throw new ProvisioningError(`Tenant plan ${tenant.planTier} is not a paid plan; pass --plan GROWTH or ENTERPRISE.`);
+  const plan = await tx.planDefinition.findUnique({ where: { code: planCode } });
+  if (plan && plan.active === false) throw new ProvisioningError(`Plan ${planCode} is inactive.`);
+  const features = planFeatures(plan, planCode);
+  for (const feature of INTERNAL_BETA_COVERED_FEATURES) {
+    if (!features.includes(feature)) {
+      throw new ProvisioningError(`Plan ${planCode} does not include "${feature}"; the entitlement would be unusable.`);
+    }
+  }
+  const data = {};
+  if (tenant.planTier !== planCode) data.planTier = planCode;
+  const trialOpen = tenant.status === 'TRIAL' && tenant.trialEndsAt instanceof Date && tenant.trialEndsAt > now;
+  if (!trialOpen) {
+    data.status = 'TRIAL';
+    data.trialEndsAt = new Date(now.getTime() + options.trialDays * DAY_MS);
+  }
+  let conversion = null;
+  let current = tenant;
+  if (Object.keys(data).length) {
+    current = await tx.tenant.update({ where: { id: tenant.id }, data });
+    conversion = {
+      action: 'convert',
+      from: { status: tenant.status, planTier: tenant.planTier, trialEndsAt: tenant.trialEndsAt instanceof Date ? tenant.trialEndsAt.toISOString() : null },
+      to: { status: current.status, planTier: current.planTier, trialEndsAt: current.trialEndsAt.toISOString() },
+    };
+    await tx.auditLog.create({
+      data: {
+        tenantId: tenant.id, userId: null, actorUserId: null, actorTenantId: null,
+        action: 'PILOT_TENANT_CONVERTED_TO_TRIAL', resource: 'Tenant', resourceId: tenant.id,
+        oldValue: conversion.from, newValue: { source: 'pilot-provisioning-script', operator: options.operator, ...conversion.to },
+      },
+    });
+  }
+  // Same lock order as the grant service and feature-entitlement debit path.
+  await tx.$executeRaw`LOCK TABLE "Tenant", "CreditTransaction" IN ROW EXCLUSIVE MODE`;
+  await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenant.id} FOR UPDATE`;
+  const grant = await reconcileGrant(tx, current, { ...options, slug: tenant.slug }, now);
+  return { tenant: await tx.tenant.findUniqueOrThrow({ where: { id: tenant.id } }), grant, conversion };
+}
+
 /** Issues temporary PINs to existing users of an existing tenant. Creates nothing else. */
 export async function issuePins(tx, options, { now, env }) {
   const [{ name: databaseName } = {}] = await tx.$queryRaw`SELECT current_database() AS name`;
   if (PRODUCTION_MARKER.test(String(databaseName ?? ''))) {
     throw new ProvisioningError(`Refusing: connected database "${databaseName}" looks like production.`);
   }
-  const tenant = await resolveExistingTenant(tx, options.tenantRef);
+  let tenant = await resolveExistingTenant(tx, options.tenantRef);
   if (NON_ISSUABLE_TENANT_STATUSES.has(tenant.status)) {
     throw new ProvisioningError(`Tenant "${tenant.slug}" has status ${tenant.status}; refusing to issue PINs.`);
   }
   await tx.$queryRaw`SELECT "id" FROM "Tenant" WHERE "id" = ${tenant.id} FOR UPDATE`;
+  let grant = null;
+  let conversion = null;
+  if (options.grantInternalBeta) {
+    ({ tenant, grant, conversion } = await grantInternalBetaToExisting(tx, tenant, options, now));
+  }
   const report = {
-    operation: 'issue-pins', changed: false,
+    operation: 'issue-pins', changed: Boolean(conversion) || grant?.action === 'create',
+    ...(options.grantInternalBeta ? { conversion: conversion ?? { action: 'none', note: 'already TRIAL with an unexpired trial; plan and trial kept' }, grant } : {}),
     tenant: {
       id: tenant.id, slug: tenant.slug, name: tenant.name, planTier: tenant.planTier, status: tenant.status,
       trialEndsAt: tenant.trialEndsAt instanceof Date ? tenant.trialEndsAt.toISOString() : null,
@@ -842,7 +942,7 @@ export async function issuePins(tx, options, { now, env }) {
     },
     entitlement: await entitlementReport(tx, tenant, now, env),
   };
-  const users = await tx.user.findMany({
+  const users = options.roles.length === 0 ? [] : await tx.user.findMany({
     where: { tenantId: tenant.id, deletedAt: null, role: { in: options.roles } },
     select: { id: true, name: true, username: true, role: true, suspendedAt: true, passwordHash: true, pinHash: true },
     orderBy: [{ username: 'asc' }, { name: 'asc' }, { id: 'asc' }],
@@ -895,7 +995,7 @@ export async function provision({ prisma, env = process.env, options, employees 
     const result = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT set_current_platform_admin(true, ${String(env.PLATFORM_ADMIN_DB_CONTEXT_SECRET).trim()})`;
       const outcome = options.mode === 'issue-pins'
-        ? await issuePins(tx, options, { now, env })
+        ? await issuePins(tx, { ...options, env }, { now, env })
         : await reconcile(tx, options, employees, { now, outbox });
       if (options.apply && outcome.newPins.length) {
         if (!options.pinOut) throw new ProvisioningError('--pin-out is required to receive temporary PINs.');
@@ -939,7 +1039,7 @@ export async function main(argv = process.argv.slice(2), env = process.env, io =
   try {
     const options = parseCli(argv);
     if (options.help) { io.out(USAGE); return 0; }
-    assertSafeTarget(env, { requireInternalBetaFlag: options.mode !== 'issue-pins' });
+    assertSafeTarget(env, { requireInternalBetaFlag: options.mode !== 'issue-pins' || options.grantInternalBeta === true });
     const employees = options.employeesCsv ? parseEmployees(fs.readFileSync(options.employeesCsv, 'utf8')) : [];
     const appRoot = resolveAppRoot(env);
     const { PrismaClient } = createRequire(pathToFileURL(path.join(appRoot, 'package.json')))('@prisma/client');
