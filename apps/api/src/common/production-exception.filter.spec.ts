@@ -85,16 +85,17 @@ describe('ProductionExceptionFilter', () => {
         expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('private');
     });
 
-    it('does not reflect unknown public error codes', () => {
+    it('does not reflect unknown public error codes, only the developer message', () => {
         const response = mockResponse();
         const filter = new ProductionExceptionFilter();
 
-        filter.catch(new ConflictException({ code: 'DATABASE_CONSTRAINT_NAME', message: 'private detail' }), mockHost(response));
+        filter.catch(new ConflictException({ code: 'DATABASE_CONSTRAINT_NAME', message: 'Plan limit reached.' }), mockHost(response));
 
         expect(response.json).toHaveBeenCalledWith(expect.objectContaining({
             statusCode: 409,
-            message: 'Conflict',
+            message: 'Plan limit reached.',
         }));
+        expect(JSON.stringify(response.json.mock.calls[0][0])).not.toContain('DATABASE_CONSTRAINT_NAME');
         expect(response.json.mock.calls[0][0]).not.toHaveProperty('code');
         expect(response.json.mock.calls[0][0]).not.toHaveProperty('remediation');
     });

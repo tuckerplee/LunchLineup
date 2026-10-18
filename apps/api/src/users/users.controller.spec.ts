@@ -2055,10 +2055,10 @@ describe('UsersController', () => {
     });
 
     it.each([
-        ['unique constraint', { code: 'P2002' }],
-        ['serialization conflict', { code: 'P2034' }],
-        ['domain conflict', new ConflictException('Role changed concurrently')],
-    ])('classifies only recognized %s failures as a safe 409', async (_label, failure) => {
+        ['unique constraint', { code: 'P2002' }, 'Unable to create role'],
+        ['serialization conflict', { code: 'P2034' }, 'Unable to create role'],
+        ['domain conflict', new ConflictException('Role changed concurrently'), 'Role changed concurrently'],
+    ])('classifies only recognized %s failures as a safe 409', async (_label, failure, expectedMessage) => {
         mockRbacService.createRole.mockRejectedValue(failure);
 
         let rejected: unknown;
@@ -2074,7 +2074,7 @@ describe('UsersController', () => {
         expect(rejected).toBeInstanceOf(ConflictException);
         expect(productionFilterResponse(rejected)).toMatchObject({
             status: 409,
-            body: { statusCode: 409, message: 'Conflict' },
+            body: { statusCode: 409, message: expectedMessage },
         });
     });
 

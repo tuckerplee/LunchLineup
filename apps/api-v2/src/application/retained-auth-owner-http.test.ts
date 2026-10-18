@@ -245,7 +245,7 @@ async function login(h: OwnerHarness, path: LoginPath, redirect: boolean, payloa
 }
 function assertRejected(h: OwnerHarness, response: InjectResponse, status: number) {
   expect(response.statusCode).toBe(status);
-  expect(response.json()).toMatchObject({ status, message: status === 422 ? 'Bad request' : 'Authentication required' });
+  expect(response.json()).toMatchObject({ status, message: status === 422 ? 'Invalid authentication request' : 'Authentication required' });
   expect(response.headers['content-type']).toContain('application/problem+json');
   expect(response.headers['cache-control']).toBe('no-store');
   expect(cookies(response.headers['set-cookie'])).toEqual([]);

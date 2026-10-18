@@ -91,7 +91,8 @@ async function harness(initial?: { wallet: number; debt: number }) {
 describe('Registered credit grant HTTP input boundary', () => {
   it.each(rejectedGrantInputs)('maps native refusal for $label to422 with zero settlement work', async ({ body }) => {
     const h = await harness(); const response = await h.request(body);
-    expect(response.statusCode).toBe(422); expect(response.json()).toMatchObject({ status: 422, message: 'Bad request', detail: 'Bad request' });
+    expect(response.statusCode).toBe(422); expect(response.json()).toMatchObject({ status: 422, message: response.json().detail });
+    expect(response.json().message).toMatch(/^[A-Za-z]/); expect(response.json().message.length).toBeLessThanOrEqual(300);
     expect(response.json()).not.toHaveProperty('success'); expect(response.json()).not.toHaveProperty('newBalance');
     expect(h.nativeReceipts).toHaveLength(1); expect(h.nativeReceipts[0].status).toBe(400);
     expect(h.forwarded).toHaveBeenCalledOnce(); expect(h.authenticate).toHaveBeenCalledOnce();
@@ -120,13 +121,13 @@ describe('Registered credit grant HTTP input boundary', () => {
     expect(h.model.prisma.tenant.update).not.toHaveBeenCalled(); expect(h.model.ledger.size).toBe(0); expect(h.model.audits.size).toBe(0);
   });
   it.each([
-    { label: 'unknown code', failure: new BadRequestException({ code: 'PRIVATE_STORAGE_FAILURE', message: 'private capacity detail' }), status: 422, message: 'Bad request' },
-    { label: 'mismatched status', failure: new ConflictException({ code: 'CREDIT_WALLET_CAPACITY_EXCEEDED', message: 'private capacity detail' }), status: 409, message: 'Conflict' },
-  ])('redacts $label in the native HTTP filter before forwarding', async ({ failure, status, message }) => {
+    { label: 'unknown code', failure: new BadRequestException({ code: 'PRIVATE_STORAGE_FAILURE', message: 'Credit amount is not acceptable.' }), status: 422, message: 'Credit amount is not acceptable.' },
+    { label: 'mismatched status', failure: new ConflictException({ code: 'CREDIT_WALLET_CAPACITY_EXCEEDED', message: 'Credit grant conflicts with the wallet.' }), status: 409, message: 'Credit grant conflicts with the wallet.' },
+  ])('forwards only the developer message, never the code, for $label', async ({ failure, status, message }) => {
     const h = await harness(); h.model.settle.mockRejectedValueOnce(failure);
     const response = await h.request(validGrantInput); expect(response.statusCode).toBe(status); expect(response.json().message).toBe(message);
     expect(response.json()).not.toHaveProperty('legacyCode'); expect(response.json()).not.toHaveProperty('remediation');
-    expect(response.body).not.toContain('private'); expect(h.nativeReceipts[0].body).not.toContain('private');
+    expect(response.body).not.toContain('PRIVATE_STORAGE_FAILURE'); expect(h.nativeReceipts[0].body).not.toContain('PRIVATE_STORAGE_FAILURE');
     expect(h.model.prisma.tenant.update).not.toHaveBeenCalled(); expect(h.model.ledger.size).toBe(0); expect(h.model.audits.size).toBe(0);
   });
   it('uses fixed capacity text instead of a private message attached to the allowlisted code', async () => {
@@ -136,7 +137,7 @@ describe('Registered credit grant HTTP input boundary', () => {
     const response = await h.request(validGrantInput); expect(response.statusCode).toBe(422);
     expect(response.json()).toMatchObject({ message: capacityMessage, detail: capacityMessage,
       legacyCode: 'CREDIT_WALLET_CAPACITY_EXCEEDED', remediation: capacityRemediation });
-    expect(response.body).not.toContain('private'); expect(h.nativeReceipts[0].body).not.toContain('private');
+    expect(response.body).not.toContain('PRIVATE_STORAGE_FAILURE'); expect(h.nativeReceipts[0].body).not.toContain('PRIVATE_STORAGE_FAILURE');
     expect(h.model.prisma.tenant.update).not.toHaveBeenCalled(); expect(h.model.ledger.size).toBe(0); expect(h.model.audits.size).toBe(0);
   });
   it('keeps CSRF refusal before native dispatch', async () => {
