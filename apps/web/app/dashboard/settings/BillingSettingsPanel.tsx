@@ -115,6 +115,24 @@ export function BillingSettingsPanel({
             ? 'An active paid subscription is required to purchase credits.'
             : null;
 
+    if (billingState.matrix?.billingProvider === 'disabled') {
+        return (
+            <div style={{ display: 'grid', gap: '1rem' }}>
+                <div style={{ display: 'grid', gap: '0.2rem' }}>
+                    <h2 style={{ fontWeight: 750, fontSize: '1.02rem', color: 'var(--text-primary)' }}>Billing</h2>
+                </div>
+                <div className="surface-muted" role="status" data-testid="billing-disabled-notice" style={{ padding: '0.9rem', display: 'grid', gap: 4 }}>
+                    <div style={{ fontSize: '0.9rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                        Billing is disabled for this environment
+                    </div>
+                    <div style={{ color: 'var(--text-muted)', fontSize: '0.82rem' }}>
+                        This workspace is not billed. Subscriptions, credit packs and the billing portal are unavailable here.
+                    </div>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div style={{ display: 'grid', gap: '1rem' }}>
             <div style={{ display: 'grid', gap: '0.2rem' }}>

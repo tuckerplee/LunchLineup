@@ -1,5 +1,6 @@
 import { hasCurrentSelfServiceLegalApproval, isInternalBetaHostname, resolveCookieSecure } from '@lunchlineup/config';
 import crypto from 'node:crypto';
+import { billingProviderErrors, isBillingDisabled } from '../billing/billing-provider';
 import type { Request, Response } from 'express';
 
 type CorsOriginCallback = (err: Error | null, allow?: boolean) => void;
@@ -227,9 +228,15 @@ export function validatePublicSignupConfiguration(
 }
 
 export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.env): void {
+    // Checked in every NODE_ENV: disabling billing against a production data target must never start.
+    const billingErrors = billingProviderErrors(env);
+    if (billingErrors.length > 0) {
+        throw new Error(`Refusing to start with unsafe billing configuration: ${billingErrors.join(' ')}`);
+    }
     if (!isProduction(env)) return;
 
     const errors: string[] = [];
+    const billingDisabled = isBillingDisabled(env.BILLING_PROVIDER);
 
     try {
         resolvePublicAppOrigin(env);
@@ -350,13 +357,17 @@ export function validateProductionEnvironment(env: NodeJS.ProcessEnv = process.e
         errors.push('EMAIL_FROM must be configured with a valid sender address in production.');
     }
 
-    for (const key of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET']) {
-        const value = env[key];
-        if (!value || value.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(value)) {
-            errors.push(`${key} must be a non-placeholder Stripe value with at least ${MIN_SECRET_LENGTH} characters.`);
+    if (!billingDisabled) {
+        for (const key of ['STRIPE_SECRET_KEY', 'STRIPE_WEBHOOK_SECRET']) {
+            const value = env[key];
+            if (!value || value.length < MIN_SECRET_LENGTH || PLACEHOLDER_RE.test(value)) {
+                errors.push(`${key} must be a non-placeholder Stripe value with at least ${MIN_SECRET_LENGTH} characters.`);
+            }
         }
+        validateCreditPackPriceConfiguration(env, errors);
+    } else if (['open', 'invite_only'].includes((env.PUBLIC_SIGNUP_MODE ?? '').trim().toLowerCase())) {
+        errors.push('PUBLIC_SIGNUP_MODE other than closed_beta requires BILLING_PROVIDER=stripe.');
     }
-    validateCreditPackPriceConfiguration(env, errors);
     validatePublicSignupConfiguration(env, errors);
 
     const metricsToken = env.METRICS_TOKEN?.trim();

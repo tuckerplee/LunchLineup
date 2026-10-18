@@ -12,6 +12,7 @@ import { createHash } from 'crypto';
 import { CREDIT_PACK_PURCHASE_TYPE } from './credit-packs.config';
 import { StripeCreditPurchaseService } from './stripe-credit-purchase.service';
 import { stripeErrorLog } from './stripe-error-diagnostic';
+import { BillingDisabledException, isBillingDisabled } from './billing-provider';
 
 type StripeWebhookObject = Record<string, any>;
 // Module-private, one-use evidence minted only after constructEvent verifies the raw body.
@@ -180,6 +181,7 @@ const MAX_STRIPE_PURGE_REQUEST_TIMEOUT_MS = 30_000;
 @Injectable()
 export class StripeService {
     private stripe: Stripe | null;
+    private readonly billingDisabled: boolean;
     private safeBillingPortalConfigurationPromise: Promise<string> | null = null;
     private readonly logger = new Logger(StripeService.name);
     private readonly prisma: PrismaClient;
@@ -196,8 +198,13 @@ export class StripeService {
         this.tenantDb = tenantDb ?? new TenantPrismaService(this.prisma);
         this.creditPurchases = creditPurchases
             ?? new StripeCreditPurchaseService(this.configService, this.tenantDb);
-        const apiKey = this.configService.get<string>('STRIPE_SECRET_KEY');
-        if (!apiKey && process.env.NODE_ENV !== 'development') {
+        this.billingDisabled = isBillingDisabled(
+            this.configService.get<string>('BILLING_PROVIDER') ?? process.env.BILLING_PROVIDER,
+        );
+        // BILLING_PROVIDER=disabled (non-production data targets only, enforced at bootstrap)
+        // never constructs a Stripe client, even if a key happens to be present.
+        const apiKey = this.billingDisabled ? undefined : this.configService.get<string>('STRIPE_SECRET_KEY');
+        if (!apiKey && !this.billingDisabled && process.env.NODE_ENV !== 'development') {
             throw new Error('STRIPE_SECRET_KEY must be configured outside local development.');
         }
         this.stripe = apiKey
@@ -3621,6 +3628,7 @@ export class StripeService {
     }
 
     private getStripe(): Stripe {
+        if (this.billingDisabled) throw new BillingDisabledException();
         if (!this.stripe) {
             throw new ServiceUnavailableException('Stripe billing is not configured');
         }

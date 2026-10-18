@@ -189,6 +189,12 @@ check_runtime_env() {
     || fail "PROXY_HTTP_BIND/PORT must be $BIND_IP:80"
   value="$(env_value DATA_TARGET_ENV)"
   [[ "$value" =~ $DATA_TARGETS_RE ]] || fail "DATA_TARGET_ENV is not allowed for target $TARGET"
+  # BILLING_PROVIDER=disabled is accepted only for the pilot target; production is always stripe.
+  value="$(env_optional BILLING_PROVIDER)"
+  case "$TARGET" in
+    pilot) [[ -z "$value" || "$value" == stripe || "$value" == disabled ]] || fail "BILLING_PROVIDER must be stripe or disabled" ;;
+    *) [[ -z "$value" || "$value" == stripe ]] || fail "BILLING_PROVIDER must be stripe (or unset) for target $TARGET" ;;
+  esac
   case "$TARGET" in
     pilot)
       if grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com' "$RUNTIME_ENV"; then

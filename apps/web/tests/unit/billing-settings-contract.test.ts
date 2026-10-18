@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canAttemptPausedSubscriptionRecovery,
   hasActivePaidSubscription,
+  isBillingDisabled,
   isTerminallyCancelled,
   normalizeBillingFeatureMatrix,
   normalizeCreditPackOptions,
@@ -194,5 +195,25 @@ describe('billing settings contract', () => {
     expect(hookSource).toContain("postBilling('/billing/resume'");
     expect(hookSource).toContain("readBillingRedirectUrl(payload, 'portalUrl')");
     expect(hookSource).toContain("readBillingRedirectUrl(payload, 'paymentUrl')");
+  });
+});
+
+describe('billing disabled environments', () => {
+  it('reads billingProvider from the feature matrix and defaults to stripe', () => {
+    expect(normalizeBillingFeatureMatrix({ status: 'ACTIVE', billingProvider: 'disabled' }).billingProvider).toBe('disabled');
+    expect(normalizeBillingFeatureMatrix({ status: 'ACTIVE' }).billingProvider).toBe('stripe');
+    expect(normalizeBillingFeatureMatrix({ billingProvider: 'anything-else' }).billingProvider).toBe('stripe');
+    expect(isBillingDisabled(normalizeBillingFeatureMatrix({ billingProvider: 'disabled' }))).toBe(true);
+    expect(isBillingDisabled(normalizeBillingFeatureMatrix({}))).toBe(false);
+    expect(isBillingDisabled(null)).toBe(false);
+  });
+
+  it('renders the disabled notice instead of Stripe controls, and the hook skips provider endpoints', () => {
+    const panel = readFileSync(resolve(__dirname, '../../app/dashboard/settings/BillingSettingsPanel.tsx'), 'utf8');
+    expect(panel).toContain("billingState.matrix?.billingProvider === 'disabled'");
+    expect(panel).toContain('Billing is disabled for this environment');
+    const hook = readFileSync(resolve(__dirname, '../../app/dashboard/settings/use-billing-settings.ts'), 'utf8');
+    expect(hook).toContain('isBillingDisabled(earlyMatrix)');
+    expect(hook).toContain('billingDisabledRef.current');
   });
 });

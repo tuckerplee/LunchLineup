@@ -495,3 +495,16 @@ class BillingUsageTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotEqual(payload["identifier"], [original.identifier])
         self.assertEqual(payload["timestamp"], [str(int(original.timestamp.timestamp()))])
         self.assertEqual(result.request_id, "req_123")
+
+    async def test_billing_disabled_never_dispatches_or_sweeps(self):
+        store = FakeStore([usage_event()])
+        client = FakeClient([])
+        env = {"BILLING_PROVIDER": "disabled", "STRIPE_METERED_USAGE_ENABLED": "true"}
+        with patch.dict(os.environ, env):
+            self.assertFalse(billing_usage.metered_usage_enabled())
+            result = await billing_usage.dispatch_usage({"tenant_id": "tenant-1"}, store=store, client=client)
+            cycle = await billing_usage.run_billing_usage_cycle(store=store, client=client)
+        self.assertEqual(result, {"skipped": True, "reason": "billing_disabled"})
+        self.assertEqual(cycle, {"processed": 0, "failed": 0, "requeued": 0})
+        self.assertEqual(store.claim_calls, [])
+        self.assertEqual(store.sent, [])

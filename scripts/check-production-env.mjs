@@ -114,6 +114,10 @@ export function checkProductionEnv(env, { legalConfig = readLegalLaunchConfig() 
   if (value('NEXT_PUBLIC_API_URL') && value('NEXT_PUBLIC_API_URL') !== '/api/v2') {
     fail('NEXT_PUBLIC_API_URL must be exactly /api/v2.');
   }
+  // BILLING_PROVIDER=disabled is only for non-production data targets (the private pilot).
+  if (value('BILLING_PROVIDER') && value('BILLING_PROVIDER') !== 'stripe') {
+    fail('BILLING_PROVIDER must be exactly stripe (or unset) in production; disabled is only allowed on non-production data targets.');
+  }
   for (const key of ['BETA_DEMO_MFA_BYPASS_ENABLED', 'INTERNAL_BETA_ENTITLEMENTS_ENABLED', 'AUTH_DEBUG']) {
     if (['1', 'true', 'yes', 'on'].includes(value(key).toLowerCase())) fail(`${key} must not be enabled in production.`);
   }

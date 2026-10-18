@@ -11,6 +11,7 @@ import Stripe from "stripe";
 import { TenantPrismaService } from "../database/tenant-prisma.service";
 import { secureHttpRequest } from "../common/secure-http-client";
 import { stripeErrorLog } from "./stripe-error-diagnostic";
+import { isBillingDisabled } from "./billing-provider";
 
 const METER_ERROR_EVENT_TYPES = new Set([
   "v1.billing.meter.error_report_triggered",
@@ -83,7 +84,12 @@ export class StripeMeterErrorService {
     private readonly tenantDb: TenantPrismaService,
     @Optional() stripe?: Stripe,
   ) {
-    const apiKey = this.configService.get<string>("STRIPE_SECRET_KEY")?.trim();
+    const billingDisabled = isBillingDisabled(
+      this.configService.get<string>("BILLING_PROVIDER") ?? process.env.BILLING_PROVIDER,
+    );
+    const apiKey = billingDisabled
+      ? undefined
+      : this.configService.get<string>("STRIPE_SECRET_KEY")?.trim();
     this.stripe =
       stripe ??
       (apiKey ? new Stripe(apiKey, { apiVersion: "2024-04-10" as any }) : null);

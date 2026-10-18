@@ -349,6 +349,70 @@ describe('bootstrap security policy', () => {
         });
     });
 
+    describe('explicit billing provider (BILLING_PROVIDER)', () => {
+        const mfa = { MFA_SECRET_ENCRYPTION_KEY_CURRENT: Buffer.alloc(32, 0x73).toString('base64') };
+        const pilot = {
+            ...mfa,
+            DOMAIN: 'dev.lunchlineup.com',
+            APP_ORIGIN: 'https://dev.lunchlineup.com',
+            ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
+            INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+            DATA_TARGET_ENV: 'staging',
+        };
+        const withoutStripe = (overrides: NodeJS.ProcessEnv = {}) => {
+            const env = productionEnv({ ...pilot, ...overrides });
+            delete env.STRIPE_SECRET_KEY;
+            delete env.STRIPE_WEBHOOK_SECRET;
+            return env;
+        };
+
+        it('defaults to stripe: production without Stripe credentials still refuses to start', () => {
+            expect(() => validateProductionEnvironment(withoutStripe())).toThrow(/STRIPE_SECRET_KEY/);
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'stripe' })))
+                .toThrow(/STRIPE_WEBHOOK_SECRET/);
+        });
+
+        it.each(['staging', 'development', 'disposable'])('allows disabled billing without Stripe values on DATA_TARGET_ENV=%s', (target) => {
+            expect(() => validateProductionEnvironment(withoutStripe({
+                BILLING_PROVIDER: 'disabled',
+                DATA_TARGET_ENV: target,
+            }))).not.toThrow();
+        });
+
+        it('refuses disabled billing for a production data target, in production and everywhere else', () => {
+            expect(() => validateProductionEnvironment(productionEnv({ ...pilot, BILLING_PROVIDER: 'disabled', DATA_TARGET_ENV: 'production' })))
+                .toThrow(/BILLING_PROVIDER=disabled is only allowed/);
+            expect(() => validateProductionEnvironment({ NODE_ENV: 'development', DATA_TARGET_ENV: 'production', BILLING_PROVIDER: 'disabled' }))
+                .toThrow(/BILLING_PROVIDER=disabled is only allowed/);
+            // Unset or unknown targets fail closed too.
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', DATA_TARGET_ENV: undefined })))
+                .toThrow(/BILLING_PROVIDER=disabled is only allowed/);
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', DATA_TARGET_ENV: 'production-cutover' })))
+                .toThrow(/BILLING_PROVIDER=disabled is only allowed/);
+        });
+
+        it('rejects unknown provider values instead of silently treating them as stripe or disabled', () => {
+            for (const value of ['none', 'Disabled', 'off', 'true']) {
+                expect(() => validateProductionEnvironment(productionEnv({ ...pilot, BILLING_PROVIDER: value })))
+                    .toThrow(/BILLING_PROVIDER must be exactly stripe or disabled/);
+            }
+        });
+
+        it('keeps every other production requirement while billing is disabled', () => {
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', RESEND_API_KEY: '' })))
+                .toThrow(/RESEND_API_KEY/);
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', JWT_SECRET: 'short' })))
+                .toThrow(/JWT_SECRET/);
+        });
+
+        it('does not allow open or invite-only public signup without a billing provider', () => {
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', PUBLIC_SIGNUP_MODE: 'open' })))
+                .toThrow(/requires BILLING_PROVIDER=stripe/);
+            expect(() => validateProductionEnvironment(withoutStripe({ BILLING_PROVIDER: 'disabled', PUBLIC_SIGNUP_MODE: 'closed_beta' })))
+                .not.toThrow();
+        });
+    });
+
     it('rejects invalid production host and OIDC settings', () => {
         expect(() => normalizeAllowedHost('https://app.example.com')).toThrow('Invalid host entry');
         expect(() => validateProductionEnvironment({

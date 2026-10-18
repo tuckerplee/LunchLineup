@@ -10,6 +10,7 @@ export type BillingFeatureMatrix = {
     effectivePlanTier?: string;
     status?: string;
     trialEndsAt?: string | null;
+    billingProvider?: 'stripe' | 'disabled';
     stripeSubscriptionActive?: boolean;
     stripeSubscriptionPresent?: boolean;
     subscriptionRecoveryAction?: 'resume' | 'portal' | null;
@@ -142,6 +143,7 @@ export function normalizeBillingFeatureMatrix(payload: unknown): BillingFeatureM
         effectivePlanTier: readString(root, 'effectivePlanTier', 'FREE'),
         status: readString(root, 'status', 'Unknown'),
         trialEndsAt: readOptionalString(root, 'trialEndsAt'),
+        billingProvider: root.billingProvider === 'disabled' ? 'disabled' : 'stripe',
         stripeSubscriptionActive: readBoolean(root, 'stripeSubscriptionActive'),
         stripeSubscriptionPresent: readBoolean(root, 'stripeSubscriptionPresent'),
         subscriptionRecoveryAction: readSubscriptionRecoveryAction(root),
@@ -181,6 +183,10 @@ export function normalizeCreditPackOptions(payload: unknown): CreditPackOption[]
             currency: configured ? currency : null,
         };
     });
+}
+
+export function isBillingDisabled(matrix: BillingFeatureMatrix | null): boolean {
+    return matrix?.billingProvider === 'disabled';
 }
 
 export function hasActivePaidSubscription(matrix: BillingFeatureMatrix | null): boolean {

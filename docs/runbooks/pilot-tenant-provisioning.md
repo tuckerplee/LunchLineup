@@ -182,6 +182,73 @@ create a draft schedule at the new location: a `403 scheduling_not_entitled` mea
 grant, trial, `APP_ORIGIN` or `INTERNAL_BETA_ENTITLEMENTS_ENABLED` is wrong in the
 running api-v2 container.
 
+## Issue PINs to existing users of an existing tenant
+
+For a tenant that already exists (for example `substance`, created through the app or
+the platform admin), the same script can give temporary PINs to its **existing** users
+who cannot sign in yet. It never creates a tenant, entitlement, location, role or user.
+
+```bash
+pilot_pins() {
+  docker compose run --rm --no-deps \
+    -e DATA_TARGET_ENV=staging \
+    -e PLATFORM_ADMIN_DB_CONTEXT_SECRET \
+    -v /var/lib/lunchlineup/pilot/provision-pilot-tenant.mjs:/pilot/provision-pilot-tenant.mjs:ro \
+    -v /var/lib/lunchlineup/pilot/out:/pilot/out \
+    api-v2 node /pilot/provision-pilot-tenant.mjs \
+    --existing-tenant substance --issue-pins-for STAFF,ADMIN \
+    --only-without-credentials --operator "$USER" "$@"
+}
+
+pilot_pins                                                # 1. dry run: who would get a PIN, entitlement report
+pilot_pins --apply --pin-out /pilot/out/substance-pins-20261018.csv   # 2. commit
+```
+
+| Flag | Meaning |
+| --- | --- |
+| `--existing-tenant X` | Tenant slug (preferred) or exact name, case-insensitive. Must exist and not be deleted, suspended, cancelled or purged. |
+| `--issue-pins-for ROLES` | Comma list of `STAFF`, `MANAGER`, `ADMIN`. |
+| `--only-without-credentials` | Default. Only active users with **no** `passwordHash` and **no** `pinHash`. |
+| `--all` | Every active user of those roles gets a **new** PIN, replacing an existing PIN. Passwords are never removed. |
+| `--pin-out PATH` | Required with `--apply` when any PIN is issued. New file, mode 0600, `O_EXCL`. |
+
+Creation-only flags (`--org-name`, `--org-slug`, `--plan`, `--location`, `--manager-*`,
+`--employees-csv`, `--grant-*`, `--trial-days`, `--send-invite`) are refused in this mode.
+
+Guards are the same as above (dry run by default, staging/development/test/disposable only,
+no production database, internal-beta `APP_ORIGIN`). `INTERNAL_BETA_ENTITLEMENTS_ENABLED` is
+not required here because nothing is granted; the report still tells you whether the
+runtime would honour a grant.
+
+What it does per matching user: sets `pinHash` (scrypt, same scheme as api-v2), `pinSetAt`,
+`pinResetRequired=true`, clears the PIN lockout counters. The update repeats the credential
+filter in its `WHERE`, so a user who gained a credential between the read and the write is
+skipped. PINs are written only to the `--pin-out` file and never printed. One
+`PILOT_PINS_ISSUED` audit row records counts, never PINs.
+
+Users without a usable `username` (3 to 32 of `a-z 0-9 . _ -`) cannot sign in with a PIN. They
+are never issued one and are listed under `pinIssue.withoutUsableUsername` by name and role;
+fix them in the app (set a username), then rerun. Suspended users are skipped and counted.
+
+**Idempotent.** A rerun skips users that now have a `pinHash` (reported in
+`skippedHasCredentials`) and produces no PIN file. Use `--all` only when you deliberately want
+to replace PINs.
+
+### Entitlement report
+
+The report includes the tenant's `planTier`, `status`, `trialEndsAt`, whether a Stripe
+subscription id is present, and `entitlement.scheduling` / `entitlement.lunch_breaks` with a
+reason when a feature is refused. It follows the decision order of `assertFeatureEntitled`
+(`apps/api-v2/src/platform/feature-entitlement.ts`): a `feature_access` override, then
+`ACTIVE` with a Stripe subscription whose period end is in the future, or a valid
+internal-beta grant on a `TRIAL` tenant, then the plan's feature list. The integration test
+checks the report against the real gate for each case.
+
+> `BILLING_PROVIDER=disabled` does not entitle anyone. An `ACTIVE` tenant with no Stripe
+> subscription is refused `scheduling` and `lunch_breaks` by the gate (`basis: none`). Put such
+> a tenant on the `TRIAL` + internal-beta grant path, or add a deliberate billing-disabled
+> entitlement rule, before the pilot depends on it.
+
 ## Cleanup
 
 There is no delete mode. A mistaken pilot tenant is removed through the platform-admin
@@ -194,4 +261,5 @@ tenant lifecycle (`data-retention-delete-export.md`), not by SQL.
   definitions, internal-beta origins and the Dockerfile.
 - `tests/integration/pilot-tenant-provisioning.test.mjs`: real PostgreSQL with the
   restricted role and the real api-v2 entitlement gate: dry run, apply, rerun,
-  atomic PIN-file failure, and production refusals.
+  atomic PIN-file failure, and production refusals; and the `--existing-tenant` mode
+  (credential-less users only, nothing else created, report equals the real gate).

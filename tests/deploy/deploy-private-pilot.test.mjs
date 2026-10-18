@@ -91,3 +91,8 @@ test('private-pilot Caddyfile trusts only the CT940 proxy; production Caddyfile 
   assert.match(pilot, /trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:10\.231\.10\.30\/32\}/);
   assert.doesNotMatch(readFileSync(join(root, 'infrastructure/caddy/Caddyfile'), 'utf8'), /10\.231\.10\.30/);
 });
+
+test('runtime env check accepts only stripe or disabled for BILLING_PROVIDER, after the data-target check', () => {
+  assert.match(source, /value="\$\(env_optional BILLING_PROVIDER\)"\n\s*\[\[ -z "\$value" \|\| "\$value" == stripe \|\| "\$value" == disabled \]\] \|\| fail "BILLING_PROVIDER must be stripe or disabled"/);
+  assert.ok(source.indexOf('DATA_TARGET_ENV must be disposable, development or staging') < source.indexOf('BILLING_PROVIDER must be stripe or disabled'));
+});

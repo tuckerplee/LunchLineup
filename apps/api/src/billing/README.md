@@ -67,3 +67,26 @@ Operational Stripe failures are logged as bounded JSON diagnostics containing on
 - `stripe-exception.filter.spec.ts`: recovery and acceptance regression checks.
 
 - `stripe-exception.filter.ts`: scoped application repair or disposable qualification support.
+
+## Billing provider (`BILLING_PROVIDER`)
+
+`stripe` (default) is the only mode that talks to Stripe and, in production, still requires the
+Stripe secret, webhook secret and valid price IDs at startup.
+
+`disabled` is an explicit, non-production mode for the internal pilot (`DATA_TARGET_ENV` of
+`staging`, `development` or `disposable`). It is refused at startup for `DATA_TARGET_ENV=production`
+or an unset target, by `scripts/check-production-env.mjs`, and by `scripts/deploy-release.sh` for the
+production target. When disabled:
+
+- no Stripe client is constructed (`billing-provider.ts`, `StripeService`, credit purchase, meter error
+  and meter event services), even if a key is present;
+- subscription, checkout, portal, change-plan, resume, credit-pack, price-option, recovery-action and
+  both webhook endpoints answer `503` with `code: "billing_disabled"`;
+- `GET /billing/features` still works and reports `billingProvider: "disabled"`, which the web billing
+  page uses to show "Billing is disabled for this environment";
+- meter-event reporting is a no-op (`reportUsageToStripe` returns `{ skipped: true }`,
+  `StripeMeterEventsService.createMeterEvent` sends nothing, the worker's usage dispatch is skipped);
+- credit debits, tenant provisioning, signup and entitlement checks do not call Stripe.
+
+It does not grant entitlements: an `ACTIVE` tenant without a Stripe subscription is still refused paid
+features by `assertFeatureEntitled`. Open or invite-only public signup requires `BILLING_PROVIDER=stripe`.
