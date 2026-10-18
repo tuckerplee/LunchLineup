@@ -9,6 +9,7 @@ import { fetchPublicApi } from '@/lib/client-api';
 import { safeInternalNavigationPath } from '@/lib/safe-navigation';
 import { legalContacts } from '../legal-config';
 import { recoveryCodesAsText } from './recovery-codes';
+import { MFA_QR_HINT, MfaQrCode } from '../mfa-qr-code';
 import { requireMfaConfirmation, requireMfaEnrollmentState, requireMfaSetupChallenge } from '../dashboard/settings/mfa-enrollment-contract';
 
 type MfaMode = 'checking' | 'verify' | 'setup' | 'recovery-codes' | 'recovery';
@@ -329,7 +330,10 @@ function MfaContent() {
 
                         {setup?.qrCodeDataUrl ? (
                             <img className="mfa-qr" src={setup.qrCodeDataUrl} alt="MFA setup QR code" />
-                        ) : null}
+                        ) : (
+                            <MfaQrCode className="mfa-qr" otpauthUrl={setup?.otpauthUrl} />
+                        )}
+                        <p className="mfa-qr-hint">{MFA_QR_HINT}</p>
 
                         <label className="form-group">
                             <span className="form-label">Manual setup key</span>

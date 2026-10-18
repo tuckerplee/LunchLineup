@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { button, changeEvent, clientComponentHarness, deferred, input, text } from './client-component-harness';
+import { button, changeEvent, clientComponentHarness, deferred, input, nodes, text } from './client-component-harness';
 
 const mocks = vi.hoisted(() => ({ hooks: null as any, fetch: vi.fn() }));
 vi.mock('react', async original => ({ ...await original<typeof import('react')>(),
@@ -10,6 +10,8 @@ vi.mock('react', async original => ({ ...await original<typeof import('react')>(
 }));
 vi.mock('@/lib/client-api', () => ({ fetchWithSession: mocks.fetch }));
 import { MfaEnrollmentPanel } from '../../app/dashboard/settings/MfaEnrollmentPanel';
+import { MFA_QR_HINT, MFA_QR_LABEL, MfaQrCode, buildMfaQrSvg } from '../../app/mfa-qr-code';
+import QRCode from 'qrcode';
 
 import {
   normalizeMfaEnrollmentState,
@@ -182,5 +184,25 @@ describe('actual MFA settings panel action handlers', () => {
     expect(text(h.render())).not.toContain('MFA is enabled.');
     expect(input(h.render(), 'Authenticator code').props.value).toBe('123456');
     expect(text(h.render())).toContain('Unable to reach the service.');
+  });
+});
+
+describe('MFA settings setup QR code', () => {
+  it('renders an inline SVG QR code from otpauthUrl and keeps the manual key and hint', async () => {
+    await mount(); await start();
+    const node = nodes(h.render()).find(n => n.type === MfaQrCode);
+    expect(node?.props.otpauthUrl).toBe(setupPayload.otpauthUrl);
+    const svg = (node!.type as (props: any) => any)(node!.props);
+    expect(svg.type).toBe('svg');
+    expect(svg.props['aria-label']).toBe('MFA setup QR code');
+    expect(nodes(svg).find(n => n.type === 'path')!.props.d).toBe(buildMfaQrSvg(setupPayload.otpauthUrl)!.path);
+    expect(text(h.render())).toContain('In Google Authenticator: + → Scan a QR code, or Enter a setup key.');
+    expect(input(h.render(), 'Manual setup key').props.value).toBe('BASE32SECRET');
+  });
+  it('uses no external URL or image for the QR code', async () => {
+    await mount(); await start();
+    expect(mocks.fetch.mock.calls.every(call => String(call[0]).startsWith('/'))).toBe(true);
+    expect(nodes(h.render()).filter(n => n.type === 'img')).toHaveLength(0);
+    expect(readFileSync(fileURLToPath(new URL('../../app/mfa-qr-code.tsx', import.meta.url)), 'utf8')).not.toMatch(/https?:\/\/|fetch\(|<img|new Image/);
   });
 });
