@@ -217,8 +217,8 @@ Creation-only flags (`--org-name`, `--org-slug`, `--plan`, `--location`, `--mana
 
 Guards are the same as above (dry run by default, staging/development/test/disposable only,
 no production database, internal-beta `APP_ORIGIN`). `INTERNAL_BETA_ENTITLEMENTS_ENABLED` is
-not required here because nothing is granted; the report still tells you whether the
-runtime would honour a grant.
+not required for PIN issuance alone because nothing is granted (the report still tells you
+whether the runtime would honour a grant); it is required with `--grant-internal-beta`.
 
 What it does per matching user: sets `pinHash` (scrypt, same scheme as api-v2), `pinSetAt`,
 `pinResetRequired=true`, clears the PIN lockout counters. The update repeats the credential
@@ -246,8 +246,52 @@ checks the report against the real gate for each case.
 
 > `BILLING_PROVIDER=disabled` does not entitle anyone. An `ACTIVE` tenant with no Stripe
 > subscription is refused `scheduling` and `lunch_breaks` by the gate (`basis: none`). Put such
-> a tenant on the `TRIAL` + internal-beta grant path, or add a deliberate billing-disabled
-> entitlement rule, before the pilot depends on it.
+> a tenant on the `TRIAL` + internal-beta grant path with `--grant-internal-beta` (next section).
+
+### Convert an existing tenant to the internal-beta trial (`--grant-internal-beta`)
+
+Opt-in, same mode. In one transaction it:
+
+1. sets `status=TRIAL` and `trialEndsAt = now + --trial-days` (default 30, at most 90) when the
+   tenant is not already in an unexpired trial (an open trial is kept as is, never extended);
+2. keeps `planTier` unless `--plan` is given; the plan must include `scheduling` and `lunch_breaks`;
+3. writes the same `internal_beta_entitlement` setting, `CreditTransaction` and
+   `INTERNAL_BETA_ENTITLEMENT_GRANTED` audit row as the creation mode, keyed by `--grant-label`
+   (default `v1`) with the same caps (`--grant-credits` default 100, at most 1000; `--grant-days`
+   default = trial length, never beyond `trialEndsAt`). The conversion itself is audited as
+   `PILOT_TENANT_CONVERTED_TO_TRIAL` with the old and new status, plan and trial end.
+
+It refuses a tenant that has any Stripe customer or subscription id, and it requires
+`INTERNAL_BETA_ENTITLEMENTS_ENABLED=true` with an internal-beta `APP_ORIGIN` (this sub-mode only).
+It is idempotent: a rerun with the same label reports `grant.action: exists`,
+`conversion.action: none` and writes nothing. A different label while a grant is active is
+reported and not applied. It can be combined with `--issue-pins-for` (one transaction, one PIN
+file); alone, `--issue-pins-for` is optional. `--plan`, `--trial-days`, `--grant-*` are refused
+without `--grant-internal-beta`.
+
+After it, the report shows `entitlement.basis: internal_beta` with `scheduling` and
+`lunch_breaks` entitled. Time cards are not covered by an internal-beta grant.
+
+VM107 commands for Substance: one dry run, then apply (convert, grant and PINs together).
+
+```bash
+export PLATFORM_ADMIN_DB_CONTEXT_SECRET="$(sed -n 's/^PLATFORM_ADMIN_DB_CONTEXT_SECRET=//p' .env)"
+pilot_substance() {
+  docker compose run --rm --no-deps \
+    -e DATA_TARGET_ENV=staging -e PLATFORM_ADMIN_DB_CONTEXT_SECRET \
+    -v /var/lib/lunchlineup/pilot/provision-pilot-tenant.mjs:/pilot/provision-pilot-tenant.mjs:ro \
+    -v /var/lib/lunchlineup/pilot/out:/pilot/out \
+    api-v2 node /pilot/provision-pilot-tenant.mjs \
+    --existing-tenant substance --grant-internal-beta --issue-pins-for STAFF,ADMIN \
+    --only-without-credentials --operator "$USER" "$@"
+}
+pilot_substance                                                              # 1. dry run, read the report
+pilot_substance --apply --pin-out /pilot/out/substance-pins-20261018.csv     # 2. apply
+```
+
+The api-v2 container must have `INTERNAL_BETA_ENTITLEMENTS_ENABLED=true` and
+`APP_ORIGIN=https://dev.lunchlineup.com` (Compose passes both). Run the dry run first and check
+`conversion`, `grant`, `entitlement.basis` and `pinIssue`.
 
 ## Cleanup
 

@@ -338,7 +338,7 @@ test('existing-tenant PIN issuance: credential-less users only, nothing else cre
     assert.equal(await main(['--org-name', `Trial ${run}`, '--org-slug', trialSlug, '--manager-email', `t-${run}@example.test`, '--operator', 'integration-test', '--apply'], beta, created.io), 0, created.chunks.err);
     const trial = await owner.tenant.findUniqueOrThrow({ where: { slug: trialSlug } });
     const trialReport = await reported(trialSlug, { INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true' });
-    assert.equal(trialReport.entitlement.basis, 'internal_beta_grant');
+    assert.equal(trialReport.entitlement.basis, 'internal_beta');
     for (const feature of ['scheduling', 'lunch_breaks']) {
       assert.equal(await gate(trial.id, feature), true);
       assert.equal(trialReport.entitlement[feature].entitled, true);
@@ -437,6 +437,167 @@ test('existing-tenant PIN issuance: credential-less users only, nothing else cre
   } finally {
     await purgeTenant(owner, slug);
     await purgeTenant(owner, trialSlug);
+    fs.rmSync(dir, { recursive: true, force: true });
+    await app.$disconnect();
+    await owner.$disconnect();
+  }
+});
+
+test('existing-tenant --grant-internal-beta converts an ACTIVE tenant without Stripe ids to the TRIAL + grant path the real gate accepts', async () => {
+  assert.ok(process.env.PLATFORM_ADMIN_DB_CONTEXT_SECRET, 'PLATFORM_ADMIN_DB_CONTEXT_SECRET is required');
+  assert.ok(['test', 'disposable'].includes(process.env.DATA_TARGET_ENV), 'DATA_TARGET_ENV must be test or disposable');
+  const owner = createPrisma(requireServiceUrl('MIGRATION_DATABASE_URL').toString());
+  const app = createPrisma(requireServiceUrl('DATABASE_URL').toString());
+  const run = randomUUID().slice(0, 8);
+  const slugs = { main: `grant-main-${run}`, stripe: `grant-stripe-${run}`, sub: `grant-sub-${run}`, solo: `grant-solo-${run}` };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pilot-grant-'));
+  const env = {
+    ...process.env, DATA_TARGET_ENV: 'staging', NODE_ENV: 'production', APP_ORIGIN: DEV_ORIGIN,
+    INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true',
+  };
+  const database = new TenantDatabase(app);
+  const gate = async (tenantId, feature) => {
+    try {
+      await database.withTenant(tenantId, (tx) => assertFeatureEntitled(tx, tenantId, feature, true));
+      return true;
+    } catch (error) {
+      if (error.status === 403 || error.statusCode === 403 || /not_entitled/.test(String(error.code ?? error.message))) return false;
+      throw error;
+    }
+  };
+  const parse = (out) => JSON.parse(out.slice(0, out.lastIndexOf('}') + 1));
+  const go = async (argv, patchEnv = {}) => {
+    const { chunks, io } = capture();
+    const code = await main(argv, { ...env, ...patchEnv }, io);
+    return { code, out: chunks.out, err: chunks.err };
+  };
+  const mk = (slug, extra = {}) => owner.tenant.create({
+    data: { name: `Grant ${slug}`, slug, planTier: 'ENTERPRISE', status: 'ACTIVE', usageCredits: 5, ...extra },
+  });
+  const rows = async (tenantId) => ({
+    settings: await owner.tenantSetting.count({ where: { tenantId, key: 'internal_beta_entitlement' } }),
+    credits: await owner.creditTransaction.count({ where: { tenantId } }),
+    grantAudits: await owner.auditLog.count({ where: { tenantId, action: 'INTERNAL_BETA_ENTITLEMENT_GRANTED' } }),
+    conversions: await owner.auditLog.count({ where: { tenantId, action: 'PILOT_TENANT_CONVERTED_TO_TRIAL' } }),
+    tenant: JSON.stringify(await owner.tenant.findUnique({ where: { id: tenantId } })),
+  });
+  const mkUser = (tenant, fields) => owner.user.create({ data: { tenantId: tenant.id, mfaEnabled: false, mfaBackupCodes: [], ...fields } });
+
+  try {
+    const main_ = await mk(slugs.main);
+    const withCustomer = await mk(slugs.stripe, { stripeCustomerId: `cus_${run}` });
+    const withSub = await mk(slugs.sub, { stripeSubscriptionId: `sub_${run}` });
+    const solo = await mk(slugs.solo, { planTier: 'GROWTH' });
+    await mkUser(main_, { name: 'Sam Staff', username: 'sam.staff', role: 'STAFF' });
+    await mkUser(main_, { name: 'Ada Admin', username: 'ada.admin', role: 'ADMIN' });
+    const pinOut = path.join(dir, 'pins.csv');
+    const base = (slug, ...extra) => ['--existing-tenant', slug, '--grant-internal-beta', '--operator', 'integration-test', ...extra];
+    Object.assign(process.env, { APP_ORIGIN: DEV_ORIGIN, INTERNAL_BETA_ENTITLEMENTS_ENABLED: 'true' });
+
+    // Before: ACTIVE without Stripe ids is refused by the real gate.
+    for (const feature of ['scheduling', 'lunch_breaks']) assert.equal(await gate(main_.id, feature), false);
+
+    // ----------------------------------------------------------- refusals
+    const before = await rows(main_.id);
+    let r = await go(base(slugs.main, '--apply'), { INTERNAL_BETA_ENTITLEMENTS_ENABLED: '' });
+    assert.equal(r.code, 2);
+    assert.match(r.err, /INTERNAL_BETA_ENTITLEMENTS_ENABLED/);
+    r = await go(base(slugs.main, '--apply', '--plan', 'STARTER'));
+    assert.equal(r.code, 2);
+    assert.match(r.err, /lunch_breaks/);
+    r = await go(base(slugs.main, '--plan', 'FREE'));
+    assert.equal(r.code, 2);
+    r = await go(base(slugs.main, '--grant-days', '40', '--trial-days', '30'));
+    assert.equal(r.code, 2);
+    r = await go(['--existing-tenant', slugs.main, '--issue-pins-for', 'STAFF', '--trial-days', '10']);
+    assert.equal(r.code, 2, 'grant options without --grant-internal-beta are refused');
+    assert.match(r.err, /never creates anything/);
+    for (const slug of [slugs.stripe, slugs.sub]) {
+      const t = await owner.tenant.findUniqueOrThrow({ where: { slug } });
+      const snapshot = await rows(t.id);
+      r = await go(base(slug, '--apply'));
+      assert.equal(r.code, 2, slug);
+      assert.match(r.err, /Stripe customer or subscription id/);
+      assert.deepEqual(await rows(t.id), snapshot, 'a tenant with Stripe ids is left untouched');
+      assert.equal(await gate(t.id, 'scheduling'), false);
+    }
+    assert.deepEqual(await rows(main_.id), before, 'refusals change nothing');
+
+    // ------------------------------------------------------------ dry run
+    r = await go(base(slugs.main, '--issue-pins-for', 'STAFF,ADMIN'));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /DRY_RUN/);
+    let report = parse(r.out);
+    assert.equal(report.conversion.action, 'convert');
+    assert.equal(report.conversion.from.status, 'ACTIVE');
+    assert.equal(report.grant.action, 'create');
+    assert.equal(report.entitlement.basis, 'internal_beta');
+    assert.equal(report.entitlement.scheduling.entitled, true);
+    assert.equal(report.entitlement.lunch_breaks.entitled, true);
+    assert.equal(report.temporaryPinsGenerated, 2);
+    assert.deepEqual(await rows(main_.id), before, 'dry run rolls back the conversion, grant and PINs');
+    for (const feature of ['scheduling', 'lunch_breaks']) assert.equal(await gate(main_.id, feature), false);
+
+    // -------------------------------------------------------------- apply
+    r = await go(base(slugs.main, '--issue-pins-for', 'STAFF,ADMIN', '--apply', '--pin-out', pinOut));
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /APPLIED/);
+    const converted = await owner.tenant.findUniqueOrThrow({ where: { id: main_.id } });
+    assert.equal(converted.status, 'TRIAL');
+    assert.equal(converted.planTier, 'ENTERPRISE', 'plan kept without --plan');
+    assert.equal(converted.stripeSubscriptionId, null);
+    assert.ok(converted.trialEndsAt > new Date(Date.now() + 29 * 86_400_000) && converted.trialEndsAt < new Date(Date.now() + 31 * 86_400_000));
+    assert.equal(converted.usageCredits, 105);
+    const after = await rows(main_.id);
+    assert.equal(after.settings, 1);
+    assert.equal(after.credits, before.credits + 1);
+    assert.equal(after.grantAudits, 1);
+    assert.equal(after.conversions, 1);
+    const setting = await owner.tenantSetting.findUniqueOrThrow({ where: { tenantId_key: { tenantId: main_.id, key: 'internal_beta_entitlement' } } });
+    assert.equal(setting.value.source, 'internal_beta');
+    assert.deepEqual(setting.value.features, ['scheduling']);
+    assert.ok(new Date(setting.value.expiresAt) <= converted.trialEndsAt);
+    // The real gate now allows exactly the covered features.
+    assert.equal(await gate(main_.id, 'scheduling'), true);
+    assert.equal(await gate(main_.id, 'lunch_breaks'), true);
+    assert.equal(await gate(main_.id, 'time_cards'), false);
+    report = parse(r.out);
+    assert.equal(report.entitlement.basis, 'internal_beta');
+    assert.equal(report.entitlement.scheduling.entitled, true);
+    assert.equal(report.entitlement.lunch_breaks.entitled, true);
+    assert.equal(report.tenant.status, 'TRIAL');
+    assert.equal(fs.readFileSync(pinOut, 'utf8').trim().split('\n').length, 3, 'PINs for both users issued in the same transaction');
+
+    // -------------------------------------------------------------- rerun
+    const pinOut2 = path.join(dir, 'pins-2.csv');
+    r = await go(base(slugs.main, '--issue-pins-for', 'STAFF,ADMIN', '--apply', '--pin-out', pinOut2));
+    assert.equal(r.code, 0, r.err);
+    report = parse(r.out);
+    assert.equal(report.grant.action, 'exists');
+    assert.equal(report.conversion.action, 'none');
+    assert.equal(report.temporaryPinsGenerated, 0);
+    assert.deepEqual(await rows(main_.id), after, 'same label: nothing is written');
+    assert.equal(fs.existsSync(pinOut2), false);
+    assert.equal(await gate(main_.id, 'scheduling'), true);
+
+    // A new label while a grant is active is reported and not applied.
+    r = await go(base(slugs.main, '--grant-label', 'v2', '--apply'));
+    assert.equal(r.code, 0, r.err);
+    assert.match(parse(r.out).grant.note, /active grant from another label/);
+    assert.deepEqual(await rows(main_.id), after);
+
+    // ---------------------------------------- grant only, plan and sizes
+    r = await go(base(slugs.solo, '--plan', 'ENTERPRISE', '--trial-days', '10', '--grant-credits', '50', '--apply'));
+    assert.equal(r.code, 0, r.err);
+    const soloAfter = await owner.tenant.findUniqueOrThrow({ where: { id: solo.id } });
+    assert.equal(soloAfter.planTier, 'ENTERPRISE', '--plan changes the plan');
+    assert.equal(soloAfter.status, 'TRIAL');
+    assert.ok(soloAfter.trialEndsAt < new Date(Date.now() + 11 * 86_400_000));
+    assert.equal(soloAfter.usageCredits, 55);
+    assert.equal(parse(r.out).pinIssue.issue.length, 0);
+    assert.equal(await gate(solo.id, 'lunch_breaks'), true);
+  } finally {
+    for (const slug of Object.values(slugs)) await purgeTenant(owner, slug);
     fs.rmSync(dir, { recursive: true, force: true });
     await app.$disconnect();
     await owner.$disconnect();

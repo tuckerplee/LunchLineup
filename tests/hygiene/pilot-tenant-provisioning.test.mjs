@@ -156,7 +156,7 @@ test('existing-tenant PIN mode: CLI parsing, defaults and refusals', () => {
   assert.equal(script.parseCli(['--existing-tenant', 'Substance Co', '--issue-pins-for', 'MANAGER', '--only-without-credentials', '--apply']).apply, true);
   assert.equal(script.parseCli(['--existing-tenant', 'substance', '--issue-pins-for', 'STAFF', '--all']).all, true);
   const bad = (args, pattern) => assert.throws(() => script.parseCli(args), pattern);
-  bad(['--existing-tenant', 'substance'], /--issue-pins-for is required/);
+  bad(['--existing-tenant', 'substance'], /--issue-pins-for and/);
   bad(['--issue-pins-for', 'STAFF'], /--existing-tenant is required/);
   bad(['--existing-tenant', 'substance', '--issue-pins-for', 'SUPER_ADMIN'], /accepts only STAFF, MANAGER, ADMIN/);
   bad(['--existing-tenant', 'substance', '--issue-pins-for', ' , '], /at least one role/);
@@ -199,4 +199,40 @@ test('existing-tenant PIN mode writes only PIN credentials: no tenant, entitleme
     assert.ok(gate.includes(fragment) || gate.includes(fragment.replace('tenant.', 'tenant.')), `gate no longer contains ${fragment}`);
   }
   assert.match(read('docs/runbooks/pilot-tenant-provisioning.md'), /--existing-tenant/);
+});
+
+test('existing-tenant --grant-internal-beta: CLI parsing and scoping', () => {
+  const g = script.parseCli(['--existing-tenant', 'substance', '--grant-internal-beta']);
+  assert.equal(g.grantInternalBeta, true);
+  assert.deepEqual(g.roles, []);
+  assert.equal(g.trialDays, 30);
+  assert.equal(g.grantDays, 30);
+  assert.equal(g.credits, 100);
+  assert.equal(g.grantLabel, 'v1');
+  assert.equal(g.plan, null, 'plan is kept unless --plan is given');
+  const full = script.parseCli(['--existing-tenant', 'substance', '--grant-internal-beta', '--issue-pins-for', 'STAFF', '--plan', 'growth', '--trial-days', '10', '--grant-label', 'v2', '--grant-credits', '5']);
+  assert.equal(full.plan, 'GROWTH');
+  assert.equal(full.grantDays, 10);
+  assert.deepEqual(full.roles, ['STAFF']);
+  const bad = (args, pattern) => assert.throws(() => script.parseCli(['--existing-tenant', 'substance', ...args]), pattern);
+  bad(['--trial-days', '10', '--issue-pins-for', 'STAFF'], /never creates anything; remove --trial-days/);
+  bad(['--grant-internal-beta', '--plan', 'FREE'], /paid plan/);
+  bad(['--grant-internal-beta', '--trial-days', '91'], /between/);
+  bad(['--grant-internal-beta', '--trial-days', '10', '--grant-days', '11'], /outlive/);
+  bad(['--grant-internal-beta', '--grant-credits', '1001'], /between/);
+  bad(['--grant-internal-beta', '--org-slug', 'x-y-z'], /never creates anything; remove --org-slug/);
+  bad(['--grant-internal-beta', '--all'], /need --issue-pins-for/);
+  bad([], /--issue-pins-for and\/or --grant-internal-beta is required/);
+});
+
+test('--grant-internal-beta reuses the creation-mode grant writer and refuses Stripe-linked tenants', () => {
+  const source = read('scripts/pilot/provision-pilot-tenant.mjs');
+  const start = source.indexOf('async function grantInternalBetaToExisting');
+  const end = source.indexOf('/** Issues temporary PINs');
+  const body = source.slice(start, end);
+  assert.match(body, /reconcileGrant\(tx, current,/);
+  assert.match(body, /stripeCustomerId/);
+  assert.match(body, /stripeSubscriptionId/);
+  assert.match(body, /internalBetaRuntimeEnabled\(options\.env\)/);
+  assert.deepEqual([...body.matchAll(/tx\.(\w+)\.(create|update|updateMany|upsert)\(/g)].map((m) => `${m[1]}.${m[2]}`).sort(), ['auditLog.create', 'tenant.update']);
 });
