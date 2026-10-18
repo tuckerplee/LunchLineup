@@ -86,6 +86,12 @@ test('load_images refuses a loaded image ID mismatch and does not tag', { skip: 
   assert.doesNotMatch(readFileSync(ctx.log, 'utf8'), /^tag /m);
 });
 
+test('private-pilot Caddyfile matches the pilot host once (Caddy rejects repeated hosts)', () => {
+  const pilot = readFileSync(join(root, 'infrastructure/caddy/Caddyfile.private-pilot'), 'utf8');
+  assert.match(pilot, /@betaWeb \{\s+(#[^\n]*\n\s+)?host \{\$PRIVATE_APP_HOST:localhost\}\n/);
+  assert.doesNotMatch(pilot, /host beta\.lunchlineup\.com \{\$PRIVATE_APP_HOST/);
+});
+
 test('private-pilot Caddyfile trusts only the CT940 proxy; production Caddyfile untouched', () => {
   const pilot = readFileSync(join(root, 'infrastructure/caddy/Caddyfile.private-pilot'), 'utf8');
   assert.match(pilot, /trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:10\.231\.10\.30\/32\}/);
