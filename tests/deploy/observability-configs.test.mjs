@@ -173,7 +173,7 @@ test('observability verifier rejects estate rule regressions', () => {
 
 test('Grafana dashboards use stable panel and query references', () => {
   const dashboard = JSON.parse(read('docs/estate/dashboards/platform-overview.json'));
-  const datasourceUids = new Set(['prometheus', 'loki']);
+  const datasourceUids = new Set(['${datasource}', '${loki_datasource}']);
   const panelIds = dashboard.panels.map((panel) => panel.id);
 
   assert.ok(panelIds.every((id) => Number.isInteger(id) && id > 0));
@@ -187,6 +187,14 @@ test('Grafana dashboards use stable panel and query references', () => {
     assert.equal(new Set(refIds).size, refIds.length, `${panel.title} query refIds must be unique`);
   }
   assert.ok(!dashboard.panels.some((panel) => /backup/i.test(panel.title)), 'backup panels belong to the estate dashboards');
+  // Estate Grafana datasource UIDs are not fixed: dashboards select them through template variables.
+  const variables = Object.fromEntries((dashboard.templating?.list ?? []).map((v) => [v.name, v]));
+  assert.equal(variables.datasource?.type, 'datasource');
+  assert.equal(variables.datasource?.query, 'prometheus');
+  assert.equal(variables.loki_datasource?.query, 'loki');
+  const text = JSON.stringify(dashboard);
+  assert.doesNotMatch(text, /10\[?\.\]?231/, 'dashboards select hosts by estate host label, not addresses');
+  assert.match(text, /job=\\"docker\\", host=\\"p1-lunchlineup-dev01\\"/);
 });
 
 test('backup and PITR belong to the estate, not to alerts or scripts here', () => {

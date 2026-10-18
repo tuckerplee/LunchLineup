@@ -1773,7 +1773,7 @@ test('Grafana dashboard copy exposes host filesystem pressure and native availab
   assert.equal(nativeAvailability.length, 1);
   const [availability] = nativeAvailability;
   assert.equal(availability.title, 'Native API Availability (30d, provisional)');
-  assert.deepEqual(availability.datasource, { type: 'prometheus', uid: 'prometheus' });
+  assert.deepEqual(availability.datasource, { type: 'prometheus', uid: '${datasource}' });
   const failures = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="lunchlineup",service="api-v2",scope="application",status_class="5xx"}[30d]))';
   const eligible = 'sum(increase(lunchlineup_api_v2_http_requests_total{job="lunchlineup",service="api-v2",scope="application",status_class=~"2xx|3xx|5xx"}[30d]))';
   assert.deepEqual(availability.targets, [{ refId: 'A', expr: `(100 * (1 - ((${failures} or vector(0)) / ${eligible}))) and (${eligible} > 0)`, legendFormat: 'availability', instant: true }]);
