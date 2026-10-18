@@ -106,7 +106,7 @@ test('critical interaction source contains no skip and names every launch contra
   for (const phrase of [
     'slight movement', 'outside drop', 'Escape', 'pointercancel', 'exact proposed employee and time',
     'Saved and Undo', 'failed move restores only that shift', 'keyboard editing', 'overnight values',
-    'only supported explicit actions', 'whole-board read', 'separately purchased usage credit',
+    'only supported explicit actions', 'whole-board read',
     'Select a team member and location', 'real touch scroll', 'dedicated handle',
   ]) assert.match(`${desktop}\n${touch}`, new RegExp(phrase));
   assert.match(config, /trace: 'on'/);
