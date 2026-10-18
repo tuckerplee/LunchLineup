@@ -7,11 +7,11 @@
 # Label contract (see lunchlineup-targets.yml): every application series carries
 # job="lunchlineup" and service=<api|api-v2|worker|engine|webhook-replay|control>,
 # and the instance label of the application targets is the metrics gateway
-# 10.231.10.108:9180 (VM107). Host metrics (node_exporter, including the textfile
+# 10.1.50.10:9180 (VM107). Host metrics (node_exporter, including the textfile
 # collector /var/lib/node_exporter/textfile_collector probes written by the systemd
 # timers) use job="node" and are selected by the estate `host` label, not by instance:
 # host="p1-lunchlineup-dev01" (estate labels site=p1, host=p1-lunchlineup-dev01,
-# role=app, env=dev; target 10.231.10.108:9100; honor_labels true). When this is
+# role=app, env=dev; target 10.1.50.10:9100; honor_labels true). When this is
 # reused for another VM, change the gateway address and that host label.
 #
 # Dropped from the in-stack rule set: every rule about the removed in-stack
@@ -37,12 +37,12 @@ groups:
       # on the VM (docs/estate/README.md); node is the host node_exporter.
       - alert: ExpectedScrapeTargetMissing
         expr: |
-          absent(up{job="lunchlineup",service="api",instance="10.231.10.108:9180"})
-          or absent(up{job="lunchlineup",service="api-v2",instance="10.231.10.108:9180"})
-          or absent(up{job="lunchlineup",service="engine",instance="10.231.10.108:9180"})
-          or absent(up{job="lunchlineup",service="worker",instance="10.231.10.108:9180"})
-          or absent(up{job="lunchlineup",service="webhook-replay",instance="10.231.10.108:9180"})
-          or absent(up{job="lunchlineup",service="control",instance="10.231.10.108:9180"})
+          absent(up{job="lunchlineup",service="api",instance="10.1.50.10:9180"})
+          or absent(up{job="lunchlineup",service="api-v2",instance="10.1.50.10:9180"})
+          or absent(up{job="lunchlineup",service="engine",instance="10.1.50.10:9180"})
+          or absent(up{job="lunchlineup",service="worker",instance="10.1.50.10:9180"})
+          or absent(up{job="lunchlineup",service="webhook-replay",instance="10.1.50.10:9180"})
+          or absent(up{job="lunchlineup",service="control",instance="10.1.50.10:9180"})
           or absent(up{job="node",host="p1-lunchlineup-dev01"})
         for: 2m
         labels:

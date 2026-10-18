@@ -32,12 +32,12 @@ Copy these; estate-infra owns everything after the copy. Do not edit the estate-
 - `tests/*.test.yml`: `promtool test rules` fixtures for the rules (`promtool test rules docs/estate/tests/*.test.yml`).
 - `dashboards/platform-overview.json`, `dashboards/tenant-deletion-billing.json`: Grafana dashboards. They use datasource UIDs `prometheus` and `loki`; map them to the estate datasource UIDs on import. The "Application Logs" panel queries `{job="lunchlineup"}`; adjust the label to whatever the Alloy `log_shipper` role attaches.
 
-## Metrics scrape details (VM107, 10.231.10.108)
+## Metrics scrape details (VM107, 10.1.50.10)
 
 The application containers sit on internal Docker networks, so the VM publishes one token-protected gateway, served by the existing `proxy` container (Caddy) and bound to the VM private IP only:
 
 ```
-http://10.231.10.108:9180/metrics/<service>
+http://10.1.50.10:9180/metrics/<service>
 ```
 
 | Path | Service | Upstream endpoint inside the stack |
@@ -51,11 +51,11 @@ http://10.231.10.108:9180/metrics/<service>
 
 Authentication: every request must send `Authorization: Bearer <token>`, where `<token>` is the content of the app's `metrics_token` secret, the file named by `METRICS_TOKEN_FILE` in the VM's runtime env (`/opt/lunchlineup-secrets/secrets/metrics_token` on VM107). The gateway returns `401` without it and `404` for any other path. `api`, `api-v2` and `control` additionally verify the same token themselves; `worker`, `engine` and `webhook-replay` expose unauthenticated exporters on the internal network, so the gateway check is their only protection and they must never be published directly. Put a copy of the token bytes at `/etc/prometheus/secrets/lunchlineup_metrics_token` (mode 0640, readable by the prometheus user) so the scrape job's `authorization.credentials_file` resolves; rotate by changing the secret file on the VM, recreating `proxy`, `api`, `api-v2` and `control`, and updating the estate copy.
 
-Network: the gateway is published only by `infrastructure/development-admission/compose.private-proxy.yml` (bound to `10.231.10.108`) and `infrastructure/production/compose.production-proxy.yml` (bound to `PROXY_HTTP_BIND`, the production VM private IP). The base `docker-compose.yml` and the local Caddyfile publish nothing. CT940 nginx forwards only VM port 80, so port 9180 is not reachable from outside the private network; the estate Prometheus host needs a route/firewall allow to `10.231.10.108:9180`.
+Network: the gateway is published only by `infrastructure/development-admission/compose.private-proxy.yml` (bound to `10.1.50.10`) and `infrastructure/production/compose.production-proxy.yml` (bound to `PROXY_HTTP_BIND`, the production VM private IP). The base `docker-compose.yml` and the local Caddyfile publish nothing. CT940 nginx forwards only VM port 80, so port 9180 is not reachable from outside the private network; the estate Prometheus host needs a route/firewall allow to `10.1.50.10:9180`.
 
-Labels produced by `lunchlineup-targets.yml`: `job="lunchlineup"`, `service=<api|api-v2|worker|engine|webhook-replay|control>`, `instance="10.231.10.108:9180"`. Scrape interval 15s, timeout 10s, body limit 8 MB.
+Labels produced by `lunchlineup-targets.yml`: `job="lunchlineup"`, `service=<api|api-v2|worker|engine|webhook-replay|control>`, `instance="10.1.50.10:9180"`. Scrape interval 15s, timeout 10s, body limit 8 MB.
 
-Host metrics (disk space, the public web probe, retention-purge timers) are not part of this job. They come from the VM's own node_exporter textfile collector (`/var/lib/node_exporter/textfile_collector`, written by the systemd timers in `infrastructure/systemd/`), which the estate scrapes with its normal node job. The rules select `job="node"` and `host="p1-lunchlineup-dev01"`; they do not depend on `instance`. Estate labels for this host: `site=p1`, `host=p1-lunchlineup-dev01`, `role=app`, `env=dev`, target `10.231.10.108:9100`, `honor_labels: true` so the labels in the exporter output are kept. Any app script or unit that writes a `.prom` file must write it to `/var/lib/node_exporter/textfile_collector/` (the shipped units and `infrastructure/control/public-web-probe.sh` already do). For another VM change the `host` label in `lunchlineup-rules.yml`.
+Host metrics (disk space, the public web probe, retention-purge timers) are not part of this job. They come from the VM's own node_exporter textfile collector (`/var/lib/node_exporter/textfile_collector`, written by the systemd timers in `infrastructure/systemd/`), which the estate scrapes with its normal node job. The rules select `job="node"` and `host="p1-lunchlineup-dev01"`; they do not depend on `instance`. Estate labels for this host: `site=p1`, `host=p1-lunchlineup-dev01`, `role=app`, `env=dev`, target `10.1.50.10:9100`, `honor_labels: true` so the labels in the exporter output are kept. Any app script or unit that writes a `.prom` file must write it to `/var/lib/node_exporter/textfile_collector/` (the shipped units and `infrastructure/control/public-web-probe.sh` already do). For another VM change the `host` label in `lunchlineup-rules.yml`.
 
 ## Alert delivery
 

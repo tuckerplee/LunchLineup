@@ -137,19 +137,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 3m
@@ -166,19 +166,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -193,12 +193,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected api metrics target is missing"
-              description: "Prometheus has no current up series for the expected api target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected api target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -211,19 +211,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -238,12 +238,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api-v2
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected api-v2 metrics target is missing"
-              description: "Prometheus has no current up series for the expected api-v2 target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected api-v2 target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -256,19 +256,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -283,12 +283,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: engine
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected engine metrics target is missing"
-              description: "Prometheus has no current up series for the expected engine target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected engine target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -301,19 +301,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -328,12 +328,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: worker
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected worker metrics target is missing"
-              description: "Prometheus has no current up series for the expected worker target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected worker target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -346,19 +346,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -373,12 +373,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: webhook-replay
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected webhook-replay metrics target is missing"
-              description: "Prometheus has no current up series for the expected webhook-replay target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected webhook-replay target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -391,19 +391,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1 stale _ _ _ 1+0x3"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x8"
     alert_rule_test:
       - eval_time: 0m
@@ -418,12 +418,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: control
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected control metrics target is missing"
-              description: "Prometheus has no current up series for the expected control target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected control target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 5m
         alertname: ExpectedScrapeTargetMissing
@@ -436,19 +436,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x8"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1 stale _ _ _ 1+0x3"
     alert_rule_test:
       - eval_time: 0m
@@ -480,17 +480,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -504,12 +504,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected api metrics target is missing"
-              description: "Prometheus has no current up series for the expected api target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected api target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -519,17 +519,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -543,12 +543,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api-v2
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected api-v2 metrics target is missing"
-              description: "Prometheus has no current up series for the expected api-v2 target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected api-v2 target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -558,17 +558,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -582,12 +582,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: engine
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected engine metrics target is missing"
-              description: "Prometheus has no current up series for the expected engine target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected engine target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -597,17 +597,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -621,12 +621,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: worker
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected worker metrics target is missing"
-              description: "Prometheus has no current up series for the expected worker target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected worker target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -636,17 +636,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -660,12 +660,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: webhook-replay
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected webhook-replay metrics target is missing"
-              description: "Prometheus has no current up series for the expected webhook-replay target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected webhook-replay target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -675,17 +675,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x4"
       - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.109:9180\"}"
         values: "1+0x4"
@@ -699,12 +699,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: control
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "Expected control metrics target is missing"
-              description: "Prometheus has no current up series for the expected control target 10.231.10.108:9180; another instance cannot satisfy this check."
+              description: "Prometheus has no current up series for the expected control target 10.1.50.10:9180; another instance cannot satisfy this check."
               runbook: docs/runbooks/monitoring-target-missing.md
       - eval_time: 2m
         alertname: ServiceDown
@@ -714,17 +714,17 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x4"
       - series: "up{job=\"node\",host=\"p1-other-host\",instance=\"10.231.10.109:9100\"}"
         values: "1+0x4"
@@ -752,19 +752,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -779,12 +779,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "api metrics scrape is down"
-              description: "Prometheus cannot scrape api at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape api at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -797,19 +797,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -824,12 +824,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: api-v2
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "api-v2 metrics scrape is down"
-              description: "Prometheus cannot scrape api-v2 at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape api-v2 at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -842,19 +842,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -869,12 +869,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: engine
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "engine metrics scrape is down"
-              description: "Prometheus cannot scrape engine at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape engine at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -887,19 +887,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -914,12 +914,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: worker
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "worker metrics scrape is down"
-              description: "Prometheus cannot scrape worker at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape worker at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -932,19 +932,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -959,12 +959,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: webhook-replay
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "webhook-replay metrics scrape is down"
-              description: "Prometheus cannot scrape webhook-replay at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape webhook-replay at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -977,19 +977,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "0+0x3 1+0x3"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "1+0x7"
     alert_rule_test:
       - eval_time: 1m
@@ -1004,12 +1004,12 @@ tests:
           - exp_labels:
               job: lunchlineup
               service: control
-              instance: "10.231.10.108:9180"
+              instance: "10.1.50.10:9180"
               severity: critical
               team: ops
             exp_annotations:
               summary: "control metrics scrape is down"
-              description: "Prometheus cannot scrape control at 10.231.10.108:9180."
+              description: "Prometheus cannot scrape control at 10.1.50.10:9180."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -1022,19 +1022,19 @@ tests:
     input_series:
       - series: "up{job=\"prometheus\",instance=\"localhost:9090\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"api-v2\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"engine\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"worker\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"webhook-replay\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.231.10.108:9180\"}"
+      - series: "up{job=\"lunchlineup\",service=\"control\",instance=\"10.1.50.10:9180\"}"
         values: "1+0x7"
-      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.231.10.108:9100\"}"
+      - series: "up{job=\"node\",host=\"p1-lunchlineup-dev01\",instance=\"10.1.50.10:9100\"}"
         values: "0+0x3 1+0x3"
     alert_rule_test:
       - eval_time: 1m
@@ -1049,12 +1049,12 @@ tests:
           - exp_labels:
               job: "node"
               host: "p1-lunchlineup-dev01"
-              instance: "10.231.10.108:9100"
+              instance: "10.1.50.10:9100"
               severity: critical
               team: ops
             exp_annotations:
               summary: "node metrics scrape is down"
-              description: "Prometheus cannot scrape node at 10.231.10.108:9100."
+              description: "Prometheus cannot scrape node at 10.1.50.10:9100."
               runbook: docs/runbooks/production-readiness.md
       - eval_time: 4m
         alertname: ExpectedScrapeTargetMissing
@@ -1067,11 +1067,11 @@ tests:
   - name: Host rules select job node and host label only
     interval: 1m
     input_series:
-      - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01",instance="10.231.10.108:9100"}'
+      - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01",instance="10.1.50.10:9100"}'
         values: "0+0x6"
       - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-other-host",instance="10.231.10.109:9100"}'
         values: "0+0x6"
-      - series: 'lunchlineup_public_web_probe_success{job="textfile-other",host="p1-lunchlineup-dev01",instance="10.231.10.108:9100"}'
+      - series: 'lunchlineup_public_web_probe_success{job="textfile-other",host="p1-lunchlineup-dev01",instance="10.1.50.10:9100"}'
         values: "0+0x6"
       - series: 'lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01",instance="renamed-instance:9100"}'
         values: "0+0x6"
@@ -1082,7 +1082,7 @@ tests:
           - exp_labels:
               job: "node"
               host: "p1-lunchlineup-dev01"
-              instance: "10.231.10.108:9100"
+              instance: "10.1.50.10:9100"
               severity: critical
               team: ops
             exp_annotations:
