@@ -19,6 +19,7 @@ import { RetainedOperatorBridge } from './platform/retained-operator.bridge';
 import { LocationIdentifierTranslator } from './locations/identifier-translation';
 import { LocationService } from './locations/locations.service';
 import { registerLocationRoutes } from './locations/routes';
+import { registerClientEventRoutes } from './client-events/routes';
 import { NotificationService } from './notifications/notifications.service';
 import { registerNotificationRoutes, type NotificationRouteDependencies } from './notifications/routes';
 import { PayrollService } from './payroll/payroll.service';
@@ -297,6 +298,11 @@ export async function buildServer(
       config,
       identity,
       notifications,
+      quota,
+    });
+    await registerClientEventRoutes(app, {
+      config,
+      identity,
       quota,
     });
     await registerPayrollRoutes(app, {

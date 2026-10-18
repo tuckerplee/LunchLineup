@@ -10,6 +10,7 @@
 - `server.test.ts`: HTTP contract, OpenAPI, route-level security, machine-readable scheduling conflicts, and MFA-protected dated staff availability/time-off writes.
 - `application/`: explicit non-scheduling browser API routes and their API-02 compatibility ownership.
 - `locations/`: native API-02 tenant-location lifecycle and public-ID boundary.
+- `client-events/`: `POST /v2/client-events`, the bounded UI message tracking endpoint; validates, rate limits, and writes one `ui_message` log line per event (stdout is the sink; no storage).
 - `notifications/`: native tenant notification feed and read-state boundary with opaque public IDs.
 - `operations/`: native operational read models and lunch/break planning persistence.
 - `payroll/`: native payroll policy, period, immutable evidence, export, and reconciliation owner.

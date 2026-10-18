@@ -85,6 +85,7 @@ describe('API v2 application operation catalog', () => {
         'listNotifications',
         'markNotificationRead',
         'markAllNotificationsRead',
+        'recordClientEvents',
         'getWorkspaceSettings',
         'updateGeneralSettings',
         'updateTeamSettings',

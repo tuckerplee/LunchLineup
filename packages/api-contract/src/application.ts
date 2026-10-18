@@ -124,6 +124,7 @@ export const APPLICATION_API_OPERATIONS = [
   { operationId: 'listNotifications', method: 'GET', path: '/notifications', tag: 'Notifications', summary: 'List notifications', native: true },
   { operationId: 'markNotificationRead', method: 'POST', path: '/notifications/read', tag: 'Notifications', summary: 'Mark one notification read', native: true },
   { operationId: 'markAllNotificationsRead', method: 'POST', path: '/notifications/read-all', tag: 'Notifications', summary: 'Mark all notifications read', native: true },
+  { operationId: 'recordClientEvents', method: 'POST', path: '/client-events', tag: 'Notifications', summary: 'Record a bounded batch of UI message events', bodyLimitBytes: 8192, native: true },
 
   { operationId: 'getWorkspaceSettings', method: 'GET', path: '/settings', tag: 'Settings', summary: 'Read workspace settings', native: true },
   { operationId: 'updateGeneralSettings', method: 'PUT', path: '/settings/general', tag: 'Settings', summary: 'Replace general workspace settings', native: true },

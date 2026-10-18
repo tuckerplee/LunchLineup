@@ -6,6 +6,7 @@ export * from './people';
 export * from './operations';
 export * from './scheduling';
 export * from './notifications';
+export * from './client-events';
 export * from './payroll';
 export * from './settings';
 export * from './time-cards';
