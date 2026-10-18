@@ -61,7 +61,8 @@ export const REMOVED_NETWORKS = Object.freeze([
 export const REMOVED_SECRETS = Object.freeze(['alertmanager_webhook_url', 'backup_encryption_key']);
 export const METRICS_GATEWAY_PORT = 9180;
 export const METRICS_GATEWAY_SERVICES = Object.freeze({
-  api: { upstream: 'api:3000', path: '/metrics' },
+  // api checks the Host header (API_INTERNAL_HOSTS), so its route sends the upstream as Host.
+  api: { upstream: 'api:3000', path: '/metrics', upstreamHost: true },
   'api-v2': { upstream: 'api-v2:3002', path: '/metrics' },
   worker: { upstream: 'worker:3003', path: '/metrics' },
   engine: { upstream: 'engine:8000', path: '/metrics' },
@@ -957,8 +958,11 @@ function validateMetricsGateway(root, relativePath, errors, checked) {
   expect(errors, content.includes('respond "unauthorized" 401'), `${relativePath}: the metrics gateway must answer 401 without the token`);
   expect(errors, content.includes('respond "not found" 404'), `${relativePath}: the metrics gateway must answer 404 for unknown paths`);
   const escape = (value) => value.replace(/[.*+?^${}()|[\]\\\/-]/g, '\\$&');
-  for (const [service, { upstream, path }] of Object.entries(METRICS_GATEWAY_SERVICES)) {
-    const block = new RegExp(`handle /metrics/${escape(service)} \\{\\s+rewrite \\* ${escape(path)}\\s+reverse_proxy ${escape(upstream)}\\s+\\}`);
+  for (const [service, { upstream, path, upstreamHost }] of Object.entries(METRICS_GATEWAY_SERVICES)) {
+    const proxyBody = upstreamHost
+      ? '\\s+\\{(?:\\s+#[^\\n]*)*\\s+header_up Host \\{upstream_hostport\\}\\s+\\}'
+      : '';
+    const block = new RegExp(`handle /metrics/${escape(service)} \\{\\s+rewrite \\* ${escape(path)}\\s+reverse_proxy ${escape(upstream)}${proxyBody}\\s+\\}`);
     expect(errors, block.test(content), `${relativePath}: /metrics/${service} must rewrite to ${path} and proxy to ${upstream}`);
   }
 }
