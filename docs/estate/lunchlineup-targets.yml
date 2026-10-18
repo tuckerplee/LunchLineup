@@ -9,7 +9,7 @@
 # VM's proxy container publishes on the VM private IP (docker-compose.yml proxy
 # service, Caddyfile.private-pilot / Caddyfile.production listener :9180):
 #
-#   http://10.231.10.108:9180/metrics/<service>
+#   http://10.1.50.10:9180/metrics/<service>
 #
 # NOTE (renumbering): VM107 moves to 10.1.50.10 (p1-lunchlineup-dev01.int.tuckerl.ee).
 # The app publishes on PILOT_BIND_IP (default 10.231.10.108). Updating the targets
@@ -42,27 +42,27 @@ scrape_configs:
       type: Bearer
       credentials_file: /etc/prometheus/secrets/lunchlineup_metrics_token
     static_configs:
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: api
           __metrics_path__: /metrics/api
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: api-v2
           __metrics_path__: /metrics/api-v2
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: worker
           __metrics_path__: /metrics/worker
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: engine
           __metrics_path__: /metrics/engine
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: webhook-replay
           __metrics_path__: /metrics/webhook-replay
-      - targets: ['10.231.10.108:9180']
+      - targets: ['10.1.50.10:9180']
         labels:
           service: control
           __metrics_path__: /metrics/control

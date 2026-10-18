@@ -142,7 +142,7 @@ test('estate scrape target example is one lunchlineup job through the VM107 gate
   for (const service of Object.keys(METRICS_GATEWAY_SERVICES)) {
     assert.ok(targets.includes(`__metrics_path__: /metrics/${service}`), service);
   }
-  assert.equal(targets.match(/targets: \['10\.231\.10\.108:9180'\]/g).length, Object.keys(METRICS_GATEWAY_SERVICES).length);
+  assert.equal(targets.match(/targets: \['10\.1\.50\.10:9180'\]/g).length, Object.keys(METRICS_GATEWAY_SERVICES).length);
   assert.doesNotMatch(targets, /alertmanager|hooks\.slack|pagerduty|webhook_configs|url_file/i);
 });
 

@@ -1004,7 +1004,7 @@ function validateEstateTargets(root, errors, checked) {
   expect(errors, job.scheme === undefined || job.scheme === 'http', `${OBSERVABILITY_FILES.estateTargets}: the gateway speaks plain HTTP on the private network`);
   const seen = new Map();
   for (const config of asArray(job.static_configs)) {
-    expect(errors, JSON.stringify(config.targets) === JSON.stringify([`10.231.10.108:${METRICS_GATEWAY_PORT}`]), `${OBSERVABILITY_FILES.estateTargets}: every target must be the VM107 gateway 10.231.10.108:${METRICS_GATEWAY_PORT}`);
+    expect(errors, JSON.stringify(config.targets) === JSON.stringify([`10.1.50.10:${METRICS_GATEWAY_PORT}`]), `${OBSERVABILITY_FILES.estateTargets}: every target must be the VM107 gateway 10.1.50.10:${METRICS_GATEWAY_PORT}`);
     seen.set(config.labels?.service, config.labels?.__metrics_path__);
   }
   for (const service of Object.keys(METRICS_GATEWAY_SERVICES)) {
