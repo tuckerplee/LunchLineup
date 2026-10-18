@@ -30,7 +30,10 @@ http://:9180 {
 	handle @authorized {
 		handle /metrics/api {
 			rewrite * /metrics
-			reverse_proxy api:3000
+			reverse_proxy api:3000 {
+				# The API host allow-list accepts api:3000 (API_INTERNAL_HOSTS), not the gateway address.
+				header_up Host {upstream_hostport}
+			}
 		}
 		handle /metrics/api-v2 {
 			rewrite * /metrics
