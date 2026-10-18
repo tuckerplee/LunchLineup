@@ -17,7 +17,8 @@
 # pilot       dev.lunchlineup.com on VM107 (same behaviour as deploy-private-pilot.sh)
 # production  https://lunchlineup.com; deploy receipt kept
 #
-# Public routing is Cloudflare Tunnel -> nginx CT940 (10.231.10.30) -> VM port 80.
+# Public routing is Cloudflare Tunnel -> nginx CT940 (10.231.10.30; 10.1.20.20 after the
+# renumbering) -> VM port 80.
 # TLS ends at Cloudflare; nginx must send X-Forwarded-Proto https. The www host is
 # redirected to the apex at nginx and never reaches this stack.
 set -euo pipefail
@@ -48,7 +49,7 @@ configure_target() {
       RUNTIME_ENV="${PILOT_RUNTIME_ENV_FILE:-/opt/lunchlineup-secrets/runtime.env}"
       EXPECTED_HOSTNAME=lunchlineup-dev
       APP_HOST=dev.lunchlineup.com
-      BIND_IP=10.231.10.108
+      BIND_IP=10.231.10.108   # default; runtime env PILOT_BIND_IP overrides (check_runtime_env)
       OVERLAY=infrastructure/development-admission/compose.private-proxy.yml
       HOLD_FILES=(/etc/lunchlineup/vm107-launch.hold /etc/lunchlineup/private-launch.hold)
       DATA_TARGETS_RE='^(disposable|development)$'
@@ -173,6 +174,17 @@ check_runtime_env() {
   [[ "$(env_value COOKIE_SECURE)" == true ]] || fail "COOKIE_SECURE must be true (TLS ends at Cloudflare/CT940)"
   [[ "$(env_value TRUST_PROXY)" =~ ^(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)(,(loopback|linklocal|uniquelocal|([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?))*$ ]] \
     || fail "TRUST_PROXY must list named private ranges or explicit addresses/CIDRs (not true or a hop count)"
+  if [[ "$TARGET" == pilot ]]; then
+    value="$(env_optional PILOT_BIND_IP)"
+    if [[ -n "$value" ]]; then
+      [[ "$value" =~ ^(10(\.[0-9]{1,3}){3}|192\.168(\.[0-9]{1,3}){2}|172\.(1[6-9]|2[0-9]|3[01])(\.[0-9]{1,3}){2})$ ]] \
+    || fail "PILOT_BIND_IP must be a private IPv4 address"
+      BIND_IP="$value"
+    fi
+  fi
+  value="$(env_optional CADDY_TRUSTED_PROXIES)"
+  [[ -z "$value" || "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?( ([0-9]{1,3}\.){3}[0-9]{1,3}(/[0-9]{1,2})?)*$ ]] \
+    || fail "CADDY_TRUSTED_PROXIES must be space-separated IPv4 addresses/CIDRs"
   [[ "$(env_value PROXY_HTTP_BIND)" == "$BIND_IP" && "$(env_value PROXY_HTTP_PORT)" == 80 ]] \
     || fail "PROXY_HTTP_BIND/PORT must be $BIND_IP:80"
   value="$(env_value DATA_TARGET_ENV)"

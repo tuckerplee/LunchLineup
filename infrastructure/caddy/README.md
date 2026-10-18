@@ -6,7 +6,11 @@
 - `Caddyfile`: active Caddy reverse proxy config mounted by `docker-compose.yml`.
 - `Caddyfile.template`: template Caddy config retained for environment-specific rendering.
 - `Caddyfile.private-pilot`: dev.lunchlineup.com on VM107 (trusts only CT940), selected by `infrastructure/development-admission/compose.private-proxy.yml`.
-- `Caddyfile.production`: lunchlineup.com Caddy behind Cloudflare Tunnel and nginx CT940; trusts only 10.231.10.30/32; selected by `infrastructure/production/compose.production-proxy.yml`.
+- `Caddyfile.production`: lunchlineup.com Caddy behind Cloudflare Tunnel and nginx CT940; trusts only the CT940 address in `CADDY_TRUSTED_PROXIES` (default 10.231.10.30/32; 10.1.20.20/32 after the renumbering); selected by `infrastructure/production/compose.production-proxy.yml`.
+
+## Trusted proxy and bind address (renumbering)
+
+`Caddyfile.private-pilot` and `Caddyfile.production` read `{$CADDY_TRUSTED_PROXIES:10.231.10.30/32}` at parse time (space-separated IPv4/CIDR list). The two overlays pass `CADDY_TRUSTED_PROXIES` from the runtime env into the proxy container (unset keeps `10.231.10.30/32`). After CT940 moves to `10.1.20.20` (DNS `p1-proxy01.int.tuckerl.ee`) set `CADDY_TRUSTED_PROXIES=10.1.20.20/32`; trust the old and new address together during a cutover with `"10.231.10.30/32 10.1.20.20/32"`. The pilot overlay publishes 80 and 9180 on `${PILOT_BIND_IP:-10.231.10.108}`; VM107 moves to `10.1.50.10` (DNS `p1-lunchlineup-dev01.int.tuckerl.ee`), so set `PILOT_BIND_IP=10.1.50.10` together with `PROXY_HTTP_BIND=10.1.50.10`. The production overlay keeps using `PROXY_HTTP_BIND`.
 
 ## Route Contract
 

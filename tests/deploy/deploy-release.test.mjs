@@ -166,6 +166,31 @@ test('pilot runtime env still refuses production hosts and accepts its own', { s
   assert.notEqual(run(bad).status, 0);
 });
 
+test('pilot bind IP and trusted proxies are configurable via the runtime env', { skip: !bash }, () => {
+  const pilot = {
+    APP_ORIGIN: 'https://dev.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://dev.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://dev.lunchlineup.com', ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
+    PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
+    DATA_TARGET_ENV: 'development',
+  };
+  const run = (f) => runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo "OK $BIND_IP"`, { env: { APP_DIR: toPosix(root) } });
+  // Renumbered address: PILOT_BIND_IP and PROXY_HTTP_BIND agree.
+  const moved = run(runtimeEnv({ ...pilot, PROXY_HTTP_BIND: '10.1.50.10', PILOT_BIND_IP: '10.1.50.10', CADDY_TRUSTED_PROXIES: '10.1.20.20/32 10.231.10.30/32' }));
+  assert.equal(moved.status, 0, moved.stderr);
+  assert.match(moved.stdout, /OK 10\.1\.50\.10/);
+  // PILOT_BIND_IP set but PROXY_HTTP_BIND still the old address is refused.
+  const mismatch = run(runtimeEnv({ ...pilot, PROXY_HTTP_BIND: '10.231.10.108', PILOT_BIND_IP: '10.1.50.10' }));
+  assert.notEqual(mismatch.status, 0);
+  assert.match(mismatch.stderr, /PROXY_HTTP_BIND\/PORT must be 10\.1\.50\.10:80/);
+  // Public addresses and malformed proxy lists are refused.
+  assert.match(run(runtimeEnv({ ...pilot, PROXY_HTTP_BIND: '8.8.8.8', PILOT_BIND_IP: '8.8.8.8' })).stderr, /PILOT_BIND_IP/);
+  assert.match(run(runtimeEnv({ ...pilot, PROXY_HTTP_BIND: '10.231.10.108', CADDY_TRUSTED_PROXIES: '0.0.0.0/0,x' })).stderr, /CADDY_TRUSTED_PROXIES/);
+  // Without the new keys the old address is kept.
+  const legacy = run(runtimeEnv({ ...pilot, PROXY_HTTP_BIND: '10.231.10.108' }));
+  assert.equal(legacy.status, 0, legacy.stderr);
+  assert.match(legacy.stdout, /OK 10\.231\.10\.108/);
+});
+
 test('production host check refuses a launch hold', { skip: !bash }, () => {
   const holdDir = tmp('rel-hold-');
   const hold = join(holdDir, 'production-launch.hold');
@@ -279,7 +304,7 @@ test('production overlay and Caddyfile: private bind, trusted CT940 only, no dev
   assert.match(overlay, /target: 9180\s+published: "9180"/);
   assert.doesNotMatch(overlay, /backup|OFFSITE|dev\.lunchlineup|beta\.lunchlineup|0\.0\.0\.0/);
   const caddy = readFileSync(join(root, 'infrastructure/caddy/Caddyfile.production'), 'utf8');
-  assert.match(caddy, /trusted_proxies static 10\.231\.10\.30\/32/);
+  assert.match(caddy, /trusted_proxies static \{\$CADDY_TRUSTED_PROXIES:10\.231\.10\.30\/32\}/);
   assert.match(caddy, /trusted_proxies_strict/);
   assert.doesNotMatch(caddy, /dev\.lunchlineup|beta\.lunchlineup|www\.lunchlineup/);
   assert.match(caddy, /Strict-Transport-Security/);
