@@ -1398,7 +1398,11 @@ describe('API v2 request-object log privacy', () => {
     for (const sentinel of ['sentinel-code', 'sentinel-state', 'sentinel-path', 'sentinel-auth', 'sentinel-cookie']) {
       expect(lines.join('')).not.toContain(sentinel);
     }
-    if (status === 401) expect(records.some((record) => record.msg === 'api_v2_request_rejected')).toBe(true);
+    if (status === 401) {
+      const rejected = records.find((record) => record.msg === 'api_v2_request_rejected');
+      expect(rejected).toBeDefined();
+      expect(rejected?.detail).toEqual(expect.any(String));
+    }
     if (status === 500) expect(records.some((record) => record.msg === 'api_v2_request_failed')).toBe(true);
   });
 });

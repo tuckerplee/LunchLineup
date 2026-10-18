@@ -1046,7 +1046,7 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
         const constraints = value as AutoScheduleConstraints;
         for (const key of Object.keys(constraints)) {
             if (!AUTO_SCHEDULE_CONSTRAINTS.has(key)) {
-                throw new BadRequestException(`Unsupported auto-schedule constraint: ${key}`);
+                throw new BadRequestException("Unsupported auto-schedule constraint.");
             }
         }
         if (JSON.stringify(constraints).length > 16_384) {

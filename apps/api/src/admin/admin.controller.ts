@@ -307,7 +307,7 @@ export class AdminController implements OnModuleDestroy {
         if (raw === null || raw.trim() === '') return null;
         const parsed = new Date(raw);
         if (Number.isNaN(parsed.getTime())) {
-            throw new BadRequestException(`Invalid date: ${raw}`);
+            throw new BadRequestException("Invalid date. Use an ISO 8601 date.");
         }
         return parsed;
     }
@@ -363,7 +363,7 @@ export class AdminController implements OnModuleDestroy {
 
         const parsed = new Date(raw);
         if (Number.isNaN(parsed.getTime())) {
-            throw new BadRequestException(`Invalid asOf date: ${raw}`);
+            throw new BadRequestException("Invalid asOf date. Use an ISO 8601 date.");
         }
         return parsed;
     }
@@ -611,8 +611,8 @@ export class AdminController implements OnModuleDestroy {
         if (!slug) throw new BadRequestException('Tenant slug is required');
         const planTier = body.planTier?.trim() || PlanTier.FREE;
         const status = body.status?.trim() || (planTier === PlanTier.FREE ? TenantStatus.ACTIVE : TenantStatus.TRIAL);
-        if (!this.isPlanTier(planTier)) throw new BadRequestException(`Invalid planTier: ${planTier}`);
-        if (!this.isTenantStatus(status)) throw new BadRequestException(`Invalid status: ${status}`);
+        if (!this.isPlanTier(planTier)) throw new BadRequestException("Invalid planTier.");
+        if (!this.isTenantStatus(status)) throw new BadRequestException("Invalid status.");
         if (planTier !== PlanTier.FREE && status === TenantStatus.ACTIVE) {
             throw new BadRequestException(
                 'Paid tenants cannot be created ACTIVE without verified Stripe or manual entitlement proof. Create a bounded TRIAL instead.',
@@ -1315,7 +1315,7 @@ export class AdminController implements OnModuleDestroy {
         }
         let requestedRole: UserRole | undefined;
         if (body.role !== undefined) {
-            if (!this.isUserRole(body.role)) throw new BadRequestException(`Invalid role: ${body.role}`);
+            if (!this.isUserRole(body.role)) throw new BadRequestException("Invalid role.");
             requestedRole = body.role;
         }
         let requestedTenantId: string | undefined;
