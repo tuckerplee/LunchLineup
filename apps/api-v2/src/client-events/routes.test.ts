@@ -43,7 +43,7 @@ const apps: Array<ReturnType<typeof Fastify>> = [];
 async function harness(options: { authenticated?: boolean; consume?: () => Promise<void> } = {}) {
   const lines: Array<Record<string, unknown>> = [];
   const stream = { write: (chunk: string) => { lines.push(JSON.parse(chunk)); } };
-  const app = Fastify({ logger: { level: 'info', stream } }).withTypeProvider<TypeBoxTypeProvider>();
+  const app = Fastify({ logger: { level: 'info', stream }, ajv: { customOptions: { removeAdditional: false } } }).withTypeProvider<TypeBoxTypeProvider>();
   apps.push(app as never);
   await app.register(cookie);
   installProblemHandler(app);
@@ -102,20 +102,20 @@ describe('POST /v2/client-events', () => {
       { detail: 'Jane Doe was removed' },
     ]) {
       const response = await post({ events: [{ ...base, ...extra }] });
-      expect(response.statusCode).toBe(400);
+      expect(response.statusCode).toBe(422);
     }
-    expect((await post({ events: [{ ...base, code: 'Has Spaces And Caps' }] })).statusCode).toBe(400);
-    expect((await post({ events: [{ ...base, route: 'https://evil.example/' }] })).statusCode).toBe(400);
-    expect((await post({ events: [{ ...base, level: 'fatal' }] })).statusCode).toBe(400);
-    expect((await post({ events: [{ ...base, outcome: 'maybe' }] })).statusCode).toBe(400);
+    expect((await post({ events: [{ ...base, code: 'Has Spaces And Caps' }] })).statusCode).toBe(422);
+    expect((await post({ events: [{ ...base, route: 'https://evil.example/' }] })).statusCode).toBe(422);
+    expect((await post({ events: [{ ...base, level: 'fatal' }] })).statusCode).toBe(422);
+    expect((await post({ events: [{ ...base, outcome: 'maybe' }] })).statusCode).toBe(422);
     expect(events()).toHaveLength(0);
   });
 
   it('bounds the batch to 20 events and the body size', async () => {
     const { post, events } = await harness();
     const event = { code: 'a.b', level: 'info', kind: 'message', route: '/dashboard' };
-    expect((await post({ events: [] })).statusCode).toBe(400);
-    expect((await post({ events: Array.from({ length: 21 }, () => event) })).statusCode).toBe(400);
+    expect((await post({ events: [] })).statusCode).toBe(422);
+    expect((await post({ events: Array.from({ length: 21 }, () => event) })).statusCode).toBe(422);
     expect((await post({ events: Array.from({ length: 20 }, () => event) })).statusCode).toBe(202);
     expect(events()).toHaveLength(20);
     const large = await post({ events: [event], padding: 'x'.repeat(9000) });
