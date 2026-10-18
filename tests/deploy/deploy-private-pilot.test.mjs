@@ -24,7 +24,7 @@ test('safety rules are present and forbidden operations are absent', () => {
   assert.match(source, /\/run\/lock\/lunchlineup-deploy\.lock/);
   assert.match(source, /flock -n 9/);
   assert.match(source, /vm107-launch\.hold/);
-  assert.match(source, /PILOT_HOST=dev\.lunchlineup\.com/);
+  assert.match(source, /PILOT_HOST=beta\.lunchlineup\.com/);
   assert.match(source, /up -d --no-build --pull never/);
   assert.match(source, /compose\.private-proxy\.yml/);
   assert.doesNotMatch(source, /--build\b|docker system prune|volume rm|volume prune|compose down|git clean|git reset/);
