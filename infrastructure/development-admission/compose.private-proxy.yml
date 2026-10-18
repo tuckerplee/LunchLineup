@@ -20,8 +20,8 @@ services:
         host_ip: "${PILOT_BIND_IP:-10.231.10.108}"
         protocol: tcp
     environment:
-      PRIVATE_APP_HOST: dev.lunchlineup.com
-      CADDY_SITE_ADDRESSES: http://dev.lunchlineup.com
+      PRIVATE_APP_HOST: beta.lunchlineup.com
+      CADDY_SITE_ADDRESSES: http://beta.lunchlineup.com
       CADDY_TRUSTED_PROXIES: "${CADDY_TRUSTED_PROXIES:-10.231.10.30/32}"
     volumes: !override
       - type: bind

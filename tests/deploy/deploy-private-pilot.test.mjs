@@ -24,7 +24,7 @@ test('safety rules are present and forbidden operations are absent', () => {
   assert.match(source, /\/run\/lock\/lunchlineup-deploy\.lock/);
   assert.match(source, /flock -n 9/);
   assert.match(source, /vm107-launch\.hold/);
-  assert.match(source, /PILOT_HOST=dev\.lunchlineup\.com/);
+  assert.match(source, /PILOT_HOST=beta\.lunchlineup\.com/);
   assert.match(source, /up -d --no-build --pull never/);
   assert.match(source, /compose\.private-proxy\.yml/);
   assert.doesNotMatch(source, /--build\b|docker system prune|volume rm|volume prune|compose down|git clean|git reset/);
@@ -100,18 +100,30 @@ function hostRefs(lines) {
   return spawnSync(bash, ['-c', cmd], { encoding: 'utf8' });
 }
 
-test('host guard allows a beta.lunchlineup.com sender but no beta/production host elsewhere', { skip: !bash }, () => {
-  const base = ['APP_ORIGIN=https://dev.lunchlineup.com'];
+test('host guard: beta pilot passes; dev, www and apex are refused', { skip: !bash }, () => {
+  const base = ['APP_ORIGIN=https://beta.lunchlineup.com', 'ALLOWED_HOSTS=beta.lunchlineup.com'];
+  assert.equal(hostRefs(base).status, 0);
   assert.equal(hostRefs([...base, 'EMAIL_FROM=LunchLineup Beta <no-reply@beta.lunchlineup.com>']).status, 0);
-  assert.equal(hostRefs([...base, 'EMAIL_FROM=LunchLineup Dev <no-reply@dev.lunchlineup.com>']).status, 0);
-  let r = hostRefs([...base, 'EMAIL_FROM=LunchLineup <no-reply@lunchlineup.com>']);
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /EMAIL_FROM must send from/);
-  r = hostRefs([...base, 'EMAIL_FROM=x <no-reply@beta.lunchlineup.com>', 'ALLOWED_HOSTS=beta.lunchlineup.com']);
-  assert.notEqual(r.status, 0);
-  assert.match(r.stderr, /references a production\/beta/);
-  r = hostRefs(['APP_ORIGIN=https://lunchlineup.com']);
-  assert.notEqual(r.status, 0);
+  assert.equal(hostRefs([...base, 'EMAIL_FROM=no-reply@beta.lunchlineup.com']).status, 0);
+  // Sender must be beta: dev, apex and www senders fail.
+  for (const sender of ['LunchLineup Dev <no-reply@dev.lunchlineup.com>', 'LunchLineup <no-reply@lunchlineup.com>', 'x <no-reply@www.lunchlineup.com>']) {
+    const r = hostRefs([...base, 'EMAIL_FROM=' + sender]);
+    assert.notEqual(r.status, 0, sender);
+    assert.match(r.stderr, /EMAIL_FROM must send from @beta\.lunchlineup\.com/);
+  }
+  // Retired dev host and production hosts fail anywhere else in the env.
+  for (const line of ['APP_ORIGIN=https://dev.lunchlineup.com', 'ALLOWED_HOSTS=dev.lunchlineup.com', 'SOME_URL=https://www.lunchlineup.com/x',
+    'APP_ORIGIN=https://lunchlineup.com', 'ALLOWED_HOSTS=beta.lunchlineup.com,lunchlineup.com', 'ALLOWED_HOSTS=beta.lunchlineup.com,www.lunchlineup.com']) {
+    const r = hostRefs([...base, line]);
+    assert.notEqual(r.status, 0, line);
+    assert.match(r.stderr, /production or retired dev/, line);
+  }
+  assert.notEqual(hostRefs(['APP_ORIGIN=https://lunchlineup.com']).status, 0);
+  assert.notEqual(hostRefs(['APP_ORIGIN=https://dev.lunchlineup.com']).status, 0);
+});
+
+test('pilot host constant is beta.lunchlineup.com', () => {
+  assert.match(source, /^PILOT_HOST=beta\.lunchlineup\.com$/m);
 });
 
 test('runtime env check accepts only stripe or disabled for BILLING_PROVIDER, after the data-target check', () => {

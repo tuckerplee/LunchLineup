@@ -112,7 +112,7 @@ test('safety rules present; forbidden operations and signing machinery absent', 
 test('pilot target keeps the pilot constants', { skip: !bash }, () => {
   const r = runBash('configure_target pilot; echo "$APP_HOST $BIND_IP $EXPECTED_HOSTNAME $OVERLAY"');
   assert.equal(r.status, 0, r.stderr);
-  assert.equal(r.stdout.trim(), 'dev.lunchlineup.com 10.231.10.108 lunchlineup-dev infrastructure/development-admission/compose.private-proxy.yml');
+  assert.equal(r.stdout.trim(), 'beta.lunchlineup.com 10.231.10.108 lunchlineup-dev infrastructure/development-admission/compose.private-proxy.yml');
 });
 
 test('unknown target and missing/public production bind IP are refused', { skip: !bash }, () => {
@@ -155,22 +155,40 @@ test('production runtime env needs no backup or offsite keys (backups are an est
 
 test('pilot runtime env still refuses production hosts and accepts its own', { skip: !bash }, () => {
   const good = runtimeEnv({
-    APP_ORIGIN: 'https://dev.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://dev.lunchlineup.com',
-    NEXT_PUBLIC_APP_URL: 'https://dev.lunchlineup.com', ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
-    PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
+    APP_ORIGIN: 'https://beta.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://beta.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com', ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
+    PRIVATE_APP_HOST: 'beta.lunchlineup.com', DOMAIN: 'beta.lunchlineup.com', ALLOWED_HOSTS: 'beta.lunchlineup.com',
     PROXY_HTTP_BIND: '10.231.10.108', DATA_TARGET_ENV: 'development',
   });
   const run = (f) => runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo OK`, { env: { APP_DIR: toPosix(root) } });
   assert.equal(run(good).status, 0, run(good).stderr);
   const bad = runtimeEnv({ DATA_TARGET_ENV: 'production' });
   assert.notEqual(run(bad).status, 0);
+  // Production hosts and the retired dev host are refused for the pilot; beta is allowed.
+  const betaEnv = {
+    APP_ORIGIN: 'https://beta.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://beta.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com', ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
+    PRIVATE_APP_HOST: 'beta.lunchlineup.com', DOMAIN: 'beta.lunchlineup.com', ALLOWED_HOSTS: 'beta.lunchlineup.com',
+    PROXY_HTTP_BIND: '10.231.10.108', DATA_TARGET_ENV: 'development',
+  };
+  for (const ref of ['https://dev.lunchlineup.com', 'https://www.lunchlineup.com', 'https://lunchlineup.com', 'beta.lunchlineup.com,lunchlineup.com']) {
+    const r = run(runtimeEnv({ ...betaEnv, SOME_URL: ref }));
+    assert.notEqual(r.status, 0, ref);
+    assert.match(r.stderr, /production or retired dev/, ref);
+  }
+  // A pilot env still pointing at the retired dev host is refused.
+  const devEnv = Object.fromEntries(Object.entries(betaEnv).map(([k, v]) => [k, v.replace('beta.', 'dev.')]));
+  devEnv.PROXY_HTTP_BIND = '10.231.10.108'; devEnv.DATA_TARGET_ENV = 'development';
+  const d = run(runtimeEnv(devEnv));
+  assert.notEqual(d.status, 0);
+  assert.match(d.stderr, /must be exactly https:\/\/beta\.lunchlineup\.com/);
 });
 
 test('pilot bind IP and trusted proxies are configurable via the runtime env', { skip: !bash }, () => {
   const pilot = {
-    APP_ORIGIN: 'https://dev.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://dev.lunchlineup.com',
-    NEXT_PUBLIC_APP_URL: 'https://dev.lunchlineup.com', ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
-    PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
+    APP_ORIGIN: 'https://beta.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://beta.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com', ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
+    PRIVATE_APP_HOST: 'beta.lunchlineup.com', DOMAIN: 'beta.lunchlineup.com', ALLOWED_HOSTS: 'beta.lunchlineup.com',
     DATA_TARGET_ENV: 'development',
   };
   const run = (f) => runBash(`configure_target pilot; RUNTIME_ENV="${toPosix(f)}"; check_runtime_env; echo "OK $BIND_IP"`, { env: { APP_DIR: toPosix(root) } });
@@ -312,9 +330,9 @@ test('production overlay and Caddyfile: private bind, trusted CT940 only, no dev
 
 test('BILLING_PROVIDER=disabled is accepted for the pilot target only; production is always stripe', { skip: !bash }, () => {
   const pilotBase = {
-    APP_ORIGIN: 'https://dev.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://dev.lunchlineup.com',
-    NEXT_PUBLIC_APP_URL: 'https://dev.lunchlineup.com', ALLOWED_ORIGINS: 'https://dev.lunchlineup.com',
-    PRIVATE_APP_HOST: 'dev.lunchlineup.com', DOMAIN: 'dev.lunchlineup.com', ALLOWED_HOSTS: 'dev.lunchlineup.com',
+    APP_ORIGIN: 'https://beta.lunchlineup.com', NEXT_PUBLIC_APP_ORIGIN: 'https://beta.lunchlineup.com',
+    NEXT_PUBLIC_APP_URL: 'https://beta.lunchlineup.com', ALLOWED_ORIGINS: 'https://beta.lunchlineup.com',
+    PRIVATE_APP_HOST: 'beta.lunchlineup.com', DOMAIN: 'beta.lunchlineup.com', ALLOWED_HOSTS: 'beta.lunchlineup.com',
     PROXY_HTTP_BIND: '10.231.10.108', DATA_TARGET_ENV: 'development',
   };
   const pilot = (extra) => {
