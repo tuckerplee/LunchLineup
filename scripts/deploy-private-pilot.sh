@@ -108,6 +108,22 @@ pgbackrest_setup() {
   echo "pgBackRest ready. First/manual full backup: docker compose exec -T -u postgres postgres pgbackrest --stanza=$PGBACKREST_STANZA_VALUE --type=full backup"
 }
 
+# No production/beta lunchlineup.com host may appear in the runtime env, except the
+# EMAIL_FROM sender domain: the Resend key may be verified for beta.lunchlineup.com.
+# That address only identifies the mail sender; it routes nothing to beta.
+check_host_references() {
+  local from sender_re='@(dev|beta)\.lunchlineup\.com>?$'
+  from="$(env_optional EMAIL_FROM)"
+  if [[ -n "$from" ]]; then
+    [[ "$from" =~ $sender_re ]] \
+      || fail "EMAIL_FROM must send from @dev.lunchlineup.com or @beta.lunchlineup.com"
+  fi
+  if grep -v '^EMAIL_FROM=' "$RUNTIME_ENV" \
+      | grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com'; then
+    fail "runtime env references a production/beta lunchlineup.com host"
+  fi
+}
+
 # --- 2. target check ---------------------------------------------------------
 check_target() {
   step "target check"
@@ -149,9 +165,7 @@ check_target() {
   # data target was just verified as non-production; the Stripe values are then simply not required.
   value="$(env_optional BILLING_PROVIDER)"
   [[ -z "$value" || "$value" == stripe || "$value" == disabled ]] || fail "BILLING_PROVIDER must be stripe or disabled"
-  if grep -Eiq '(^|[/.=@])(www|beta)\.lunchlineup\.com|(https?://|=)lunchlineup\.com' "$RUNTIME_ENV"; then
-    fail "runtime env references a production/beta lunchlineup.com host"
-  fi
+  check_host_references
   IMAGE_TAG_VALUE="$(env_value IMAGE_TAG)"
   [[ "$IMAGE_TAG_VALUE" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ && "$IMAGE_TAG_VALUE" != local ]] \
     || fail "IMAGE_TAG must be a release tag (not empty or 'local')"
