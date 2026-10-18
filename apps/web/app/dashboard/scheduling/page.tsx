@@ -4,6 +4,8 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type FormE
 import dynamic from 'next/dynamic';
 import { useSearchParams } from 'next/navigation';
 import { Button } from '@/components/ui/button';
+import { useAppMessages } from '@/components/messages/AppMessages';
+import { BILLING_ACTION, isBillingBlock } from '@/lib/messages/billing';
 import { CalendarDays, CheckCircle2, Copy, LockKeyhole, MapPin, Plus, Printer, RefreshCw, RotateCcw, Send, Settings2, WandSparkles, X } from 'lucide-react';
 import {
   ApiV2ClientError,
@@ -27,7 +29,6 @@ import type { SchedulerViewMode, StaffScheduleEvent, StaffScheduleSlotSelection 
 import { publishNotificationOutcome } from './publish-result';
 import { readSchedulePublishAttempt, schedulePublishAttempt, type SchedulePublishAttempt } from './publish-attempt';
 import {
-  creditCount,
   parseSchedulePublishPreflight,
   parseSchedulePublishResponse,
   publishPreflightSummary,
@@ -354,6 +355,11 @@ function SchedulingContent() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [scheduleStatus, setScheduleStatus] = useState<ScheduleStatus>({ tone: 'loading', message: 'Loading saved schedule data.' });
+  const appMessages = useAppMessages();
+  /** A REAL block (out of credits / payment required) shows inline with a Billing link. */
+  const reportPublishBlocked = (text: string) => {
+    appMessages.error('scheduling.publish.payment_required', text, { action: BILLING_ACTION, detail: 'payment_required' });
+  };
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [showTimeline, setShowTimeline] = useState(true);
   const [viewMode, setViewMode] = useState<SchedulerViewMode>('threeDay');
@@ -1160,7 +1166,7 @@ function SchedulingContent() {
     } catch (err) {
       setError((err as Error).message);
       setScheduleStatus(breakGenerationAttemptRef.current?.postConfirmed
-        ? { tone: 'warning', message: 'Breaks were saved, but the calendar could not reconcile them. Retry to refresh without another generation charge.' }
+        ? { tone: 'warning', message: 'Breaks were saved, but the calendar could not reconcile them. Retry to refresh the calendar.' }
         : { tone: 'error', message: 'Break generation could not be confirmed. Retry will reuse the original request.' });
     } finally {
       setIsGenerating(false);
@@ -1203,7 +1209,7 @@ function SchedulingContent() {
       tone: 'saving',
       message: replayingOriginalAttempt
         ? 'Replaying the original publish attempt...'
-        : 'Reviewing schedule readiness and configured credit cost...',
+        : 'Reviewing schedule readiness...',
     });
     try {
       const reviewIsConfirmed = confirmPublishScheduleId === scheduleId
@@ -1221,16 +1227,17 @@ function SchedulingContent() {
         setPublishReview(preflight);
         if (!preflight.sufficientCredits) {
           setConfirmPublishScheduleId(null);
+          reportPublishBlocked(publishPreflightSummary(preflight));
           setScheduleStatus({
             tone: 'warning',
-            message: `${publishPreflightSummary(preflight)} Publishing remains blocked until the wallet has enough credits.`,
+            message: publishPreflightSummary(preflight),
           });
           return;
         }
         setConfirmPublishScheduleId(scheduleId);
         setScheduleStatus({
           tone: 'warning',
-          message: `${publishPreflightSummary(preflight)} Confirm publish for ${scheduleWindowLabel(schedule, locationTimeZone(schedule.locationId))}.`,
+          message: `Confirm publish for ${scheduleWindowLabel(schedule, locationTimeZone(schedule.locationId))}.`,
         });
         return;
       }
@@ -1247,16 +1254,17 @@ function SchedulingContent() {
         setPublishReview(latestPreflight);
         if (!latestPreflight.sufficientCredits) {
           setConfirmPublishScheduleId(null);
+          reportPublishBlocked(publishPreflightSummary(latestPreflight));
           setScheduleStatus({
             tone: 'warning',
-            message: `${publishPreflightSummary(latestPreflight)} Publishing remains blocked until the wallet has enough credits.`,
+            message: publishPreflightSummary(latestPreflight),
           });
           return;
         }
         if (!schedulePublishCostMatches(publishReview, latestPreflight)) {
           setScheduleStatus({
             tone: 'warning',
-            message: `${publishPreflightSummary(latestPreflight)} The configured total changed; confirm the updated cost.`,
+            message: 'The publish details changed while you were reviewing. Confirm publish again.',
           });
           return;
         }
@@ -1323,6 +1331,7 @@ function SchedulingContent() {
           ? err.status
           : null;
       const failure = schedulePublishFailure(status, error.message);
+      if (isBillingBlock(status, error.message)) reportPublishBlocked(failure.message);
       if (!publishRequestStarted) {
         setConfirmPublishScheduleId(null);
         setScheduleStatus({
@@ -1853,7 +1862,6 @@ function SchedulingContent() {
                           variant={isConfirming ? 'default' : 'secondary'}
                           onClick={() => void publishSchedule(schedule.id)}
                           disabled={isPublishing || Boolean(solvingScheduleId)}
-                          aria-describedby={preflight ? `publish-cost-${schedule.id}` : undefined}
                         >
                           <Send size={14} />
                           {isPublishing && publishingScheduleIdRef.current === schedule.id
@@ -1861,9 +1869,9 @@ function SchedulingContent() {
                             : isRetryingPublish
                               ? 'Retry publish'
                               : isConfirming && preflight
-                                ? `Confirm - ${creditCount(preflight.totalConfiguredCost)}`
+                                ? 'Confirm publish'
                                 : preflight && !preflight.sufficientCredits
-                                  ? 'Recheck credits'
+                                  ? 'Check again'
                                   : 'Publish'}
                         </Button>
                       ) : null}
@@ -1885,31 +1893,8 @@ function SchedulingContent() {
                       </p>
                     ) : null}
                     {blocker && !isPublished ? <p className="scheduler-publish-row__blocker">{blocker}</p> : null}
-                    {preflight && !isPublished ? (
-                      <div
-                        id={`publish-cost-${schedule.id}`}
-                        className={`scheduler-publish-row__cost${preflight.sufficientCredits ? '' : ' scheduler-publish-row__cost--blocked'}`}
-                        role="status"
-                        aria-live="polite"
-                      >
-                        <strong>Configured total: {creditCount(preflight.totalConfiguredCost)}</strong>
-                        <span>
-                          Schedule {creditCount(preflight.scheduleCost)}; matching webhooks{' '}
-                          {preflight.matchingWebhookDeliveryCount === 0
-                            ? 'none'
-                            : `${preflight.matchingWebhookDeliveryCount} x ${creditCount(preflight.matchingWebhookDeliveryUnitCost)} = ${creditCount(preflight.matchingWebhookDeliveryCost)}`}.
-                        </span>
-                        <span>
-                          Wallet balance: {creditCount(preflight.availableCredits)}.{' '}
-                          {preflight.sufficientCredits
-                            ? `${creditCount(preflight.availableCredits - preflight.totalConfiguredCost)} will remain.`
-                            : `${creditCount(preflight.totalConfiguredCost - preflight.availableCredits)} more required.`}
-                        </span>
-                        <span>Requires an active paid subscription and credits purchased separately or granted by an administrator.</span>
-                      </div>
-                    ) : null}
                     {isRetryingPublish && !isPublished ? (
-                      <p className="scheduler-publish-row__retry">Retry uses the original Idempotency-Key and settlement attempt.</p>
+                      <p className="scheduler-publish-row__retry">Retry replays the original publish attempt.</p>
                     ) : null}
                     {publishSettlement && isPublished ? (
                       <p className="scheduler-publish-row__settlement" role="status">{publishSettlement}</p>

@@ -74,7 +74,7 @@ describe('payroll responsive and accessibility contracts', () => {
 
   it('fails export closed without a positive confirmed cost', () => {
     expect(detail).toContain('disabled={isBusy || creditCost === null}');
-    expect(detail).toContain('Creating this export uses <strong>{creditCost}');
+    expect(detail).not.toContain('Creating this export uses');
     expect(detail).toContain("if (confirmation === 'export' && creditCost !== null && hasExportableEntries) await onExport(creditCost);");
   });
 

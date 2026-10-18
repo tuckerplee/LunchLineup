@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ChangeEvent } from 'react';
 import { AlertCircle, CheckCircle2, Clock3, FileUp, RefreshCw } from 'lucide-react';
 
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { Button } from '@/components/ui/button';
 import { fetchJsonWithSession, withIdempotencyKey } from '@/lib/client-api';
 
@@ -70,6 +71,9 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
     const [creditCost, setCreditCost] = useState<number | null>(null);
     const [costError, setCostError] = useState<string | null>(null);
     const [isCostLoading, setIsCostLoading] = useState(true);
+    const { confirmAction } = useAppMessages();
+    useStatusMessage('error', 'staff.availability_import.failed', error);
+    useStatusMessage('error', 'staff.availability_import.unavailable', costError);
     const [isChecking, setIsChecking] = useState(false);
     const [isApplying, setIsApplying] = useState(false);
     const [isCancelling, setIsCancelling] = useState(false);
@@ -107,7 +111,7 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
         } catch {
             if (controller.signal.aborted) return null;
             setCreditCost(null);
-            setCostError('The availability import credit cost is unavailable. Upload is disabled.');
+            setCostError('Availability import is temporarily unavailable. Upload is disabled until it can be checked again.');
             return null;
         } finally {
             if (!controller.signal.aborted) setIsCostLoading(false);
@@ -184,7 +188,14 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
     const activeJob = Boolean(jobStatus && !isAvailabilityImportTerminal(jobStatus));
     const cancelImport = async () => {
         if (!job || disabled || isCancelling || !activeJob) return;
-        if (!window.confirm('Cancel this availability import? Any reserved usage credit will be refunded. A completed import cannot be cancelled.')) return;
+        if (!await confirmAction({
+            code: 'staff.availability_import.cancel.confirm',
+            title: 'Cancel this availability import?',
+            body: 'A completed import cannot be cancelled.',
+            confirmLabel: 'Cancel import',
+            cancelLabel: 'Keep importing',
+            tone: 'danger',
+        })) return;
         clearPollTimer();
         requestAbortRef.current?.abort();
         const generation = ++lifecycleRef.current;
@@ -317,22 +328,21 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
         }
     }, [disabled, onApply, parsedAvailability]);
 
-    const statusView = job ? availabilityImportStatusView(job.status, job.settlement) : null;
+    const statusView = job ? availabilityImportStatusView(job.status) : null;
 
     return (
         <section aria-labelledby="availability-pdf-import-title" style={{ borderTop: '1px solid var(--border)', paddingTop: '1rem', display: 'grid', gap: '0.8rem' }}>
             <div style={{ display: 'grid', gap: '0.25rem' }}>
                 <h3 id="availability-pdf-import-title" style={{ fontSize: '0.84rem', margin: 0 }}>Import availability PDF</h3>
                 <p id="availability-pdf-import-cost" style={{ margin: 0, color: 'var(--text-muted)', fontSize: '0.78rem', lineHeight: 1.45 }}>
-                    PDF only, up to 5 MiB. {creditCost === null ? 'Checking paid credit cost...' : <>This import costs {creditCost} paid {creditCost === 1 ? 'credit' : 'credits'}.</>}
+                    PDF only, up to 5 MiB.
                 </p>
             </div>
 
             {costError ? (
-                <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', color: '#b42318', fontSize: '0.78rem' }}>
-                    <span>{costError}</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                     <Button type="button" size="sm" variant="outline" onClick={() => void loadCreditCost()} disabled={isCostLoading}>
-                        <RefreshCw aria-hidden="true" size={14} /> Check cost
+                        <RefreshCw aria-hidden="true" size={14} /> Check again
                     </Button>
                 </div>
             ) : null}
@@ -392,8 +402,6 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
                 </div>
             ) : null}
 
-            {error ? <div role="alert" style={{ color: '#b42318', fontSize: '0.78rem' }}>{error}</div> : null}
-
             {job && statusView ? (
                 <div
                     role="status"
@@ -407,7 +415,6 @@ export function AvailabilityPdfImport({ userId, suggestedStaffIdentity, disabled
                         {isChecking ? <span style={{ fontSize: '0.74rem' }}>Checking status...</span> : null}
                     </div>
                     <div style={{ fontSize: '0.77rem', lineHeight: 1.4 }}>{statusView.detail}</div>
-                    <strong style={{ fontSize: '0.77rem', lineHeight: 1.4 }}>{statusView.creditDetail}</strong>
                     {activeJob ? <Button type="button" size="sm" variant="outline" onClick={() => void cancelImport()} disabled={disabled || isCancelling}>
                         {isCancelling ? 'Cancelling...' : 'Cancel import'}
                     </Button> : null}

@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchWithSession } from '@/lib/client-api';
 import { jsonWriteInit } from '../time-cards/time-card-api';
 
@@ -26,6 +27,16 @@ export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: stri
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const { confirmAction } = useAppMessages();
+  useStatusMessage('error', 'staff.identity.failed', error);
+  useStatusMessage('success', 'staff.identity.saved', notice);
+  const confirmDiscard = (body: string) => confirmAction({
+    code: 'staff.identity.discard.confirm',
+    title: 'Discard your edits?',
+    body,
+    confirmLabel: 'Discard',
+    tone: 'danger',
+  });
 
   async function load() {
     setBusy(true);
@@ -48,8 +59,6 @@ export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: stri
     <label style={{ display: 'grid', gap: 6 }}>Full name<input style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }} value={name} onChange={(e) => setName(e.target.value)} disabled={busy || !saved} maxLength={200} /></label>
     {saved?.username ? <label style={{ display: 'grid', gap: 6 }}>Username<input style={{ padding: 8, border: '1px solid var(--border)', borderRadius: 8 }} value={username} onChange={(e) => setUsername(e.target.value)} disabled={busy} maxLength={32} /></label> : null}
     {saved?.email ? <p>Email sign-in: {saved.email}. Email changes require a verified account recovery flow.</p> : null}
-    {error ? <div role="alert">{error}</div> : null}
-    {notice ? <div role="status">{notice}</div> : null}
     <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
       <button className="btn btn-primary" disabled={busy || !saved || !name.trim() || Boolean(saved.username && !username.trim())} onClick={async () => {
         if (!saved) return;
@@ -66,10 +75,10 @@ export function StaffIdentityEditor({ userId, onClose, onSaved }: { userId: stri
         } catch (err) { setError(err instanceof Error ? err.message : 'Identity save could not be confirmed.'); }
         finally { setBusy(false); }
       }}>Save identity</button>
-      <button className="btn btn-secondary" disabled={busy} onClick={() => {
-        if (!saved || (name === saved.name && username === saved.username) || window.confirm('Discard your edits and reload the saved identity?')) void load();
+      <button className="btn btn-secondary" disabled={busy} onClick={async () => {
+        if (!saved || (name === saved.name && username === saved.username) || await confirmDiscard('Your edits will be discarded and the saved identity reloaded.')) void load();
       }}>Reload saved identity</button>
-      <button className="btn btn-secondary" disabled={busy} onClick={() => { if (!saved || (name === saved.name && username === saved.username) || window.confirm('Discard your unsaved identity edits?')) onClose(); }}>Close identity editor</button>
+      <button className="btn btn-secondary" disabled={busy} onClick={async () => { if (!saved || (name === saved.name && username === saved.username) || await confirmDiscard('Your unsaved identity edits will be discarded.')) onClose(); }}>Close identity editor</button>
     </div>
   </section>;
 }

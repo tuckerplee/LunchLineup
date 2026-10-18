@@ -118,15 +118,9 @@ export function parseSchedulePublishResponse(
 }
 
 export function publishPreflightSummary(preflight: SchedulePublishPreflight): string {
-  const total = creditCount(preflight.totalConfiguredCost);
-  const balance = creditCount(preflight.availableCredits);
-  if (!preflight.sufficientCredits) {
-    const shortfall = preflight.totalConfiguredCost - preflight.availableCredits;
-    return `Configured total: ${total}. Balance: ${balance}. ${creditCount(shortfall)} more required.`;
-  }
-  return `Configured total: ${total}. Balance after publish: ${creditCount(
-    preflight.availableCredits - preflight.totalConfiguredCost,
-  )}.`;
+  return preflight.sufficientCredits
+    ? 'Ready to publish.'
+    : 'Publishing is blocked: this workspace is out of credits.';
 }
 
 export function schedulePublishCostMatches(
@@ -136,10 +130,8 @@ export function schedulePublishCostMatches(
   return schedulePublishContractMatches(left.acceptedContract, right.acceptedContract);
 }
 
-export function publishSettlementSummary(settlement: SchedulePublishSettlement): string {
-  return `Schedule published. ${creditCount(settlement.creditsConsumed)} ${
-    settlement.creditsConsumed === 1 ? 'was' : 'were'
-  } debited exactly once; ${creditCount(settlement.newBalance)} remain.`;
+export function publishSettlementSummary(_settlement: SchedulePublishSettlement): string {
+  return 'Schedule published.';
 }
 
 export function schedulePublishFailure(
@@ -152,7 +144,7 @@ export function schedulePublishFailure(
     return {
       retryMode: 'review',
       resetAttempt: false,
-      message: 'Publishing requires an active paid subscription and enough separately purchased or administrator-granted credits. No settlement was confirmed. Recheck the configured total before retrying.',
+      message: 'Publishing is blocked: this workspace needs an active subscription or has run out of credits. Nothing was published.',
     };
   }
   if (status === 409) {
@@ -169,7 +161,7 @@ export function schedulePublishFailure(
     return {
       retryMode: 'replay',
       resetAttempt: false,
-      message: 'The publish outcome is not yet confirmed. Retry replays the same publish attempt so the configured credits cannot be debited twice.',
+      message: 'The publish outcome is not yet confirmed. Retry replays the same publish attempt so it cannot be applied twice.',
     };
   }
   return {
@@ -177,10 +169,6 @@ export function schedulePublishFailure(
     resetAttempt: false,
     message: 'Schedule publication was rejected before a settlement was confirmed. Review the schedule and preflight before retrying with the same publish attempt.',
   };
-}
-
-export function creditCount(count: number): string {
-  return `${count} ${count === 1 ? 'credit' : 'credits'}`;
 }
 
 function parseSettlement(value: Record<string, unknown>, invalid: string): SchedulePublishSettlement {

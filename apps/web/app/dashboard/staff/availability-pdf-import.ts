@@ -53,7 +53,6 @@ export type AvailabilityImportJob = {
 export type AvailabilityImportStatusView = {
     label: string;
     detail: string;
-    creditDetail: string;
     tone: 'neutral' | 'progress' | 'success' | 'danger';
 };
 
@@ -76,7 +75,7 @@ const TERMINAL_IMPORT_STATUSES = new Set<AvailabilityImportStatus>([
 ]);
 
 
-const STATUS_VIEWS: Record<AvailabilityImportStatus, Omit<AvailabilityImportStatusView, 'creditDetail'>> = {
+const STATUS_VIEWS: Record<AvailabilityImportStatus, AvailabilityImportStatusView> = {
     PENDING: {
         label: 'Pending',
         detail: 'The upload was accepted and is waiting for processing.',
@@ -183,12 +182,8 @@ export function isAvailabilityImportTerminal(status: AvailabilityImportStatus): 
 
 export function availabilityImportStatusView(
     status: AvailabilityImportStatus,
-    settlement: AvailabilityImportSettlement,
 ): AvailabilityImportStatusView {
-    return {
-        ...STATUS_VIEWS[status],
-        creditDetail: availabilityImportCreditDetail(status, settlement),
-    };
+    return STATUS_VIEWS[status];
 }
 
 export function parseSchedulingCreditCost(payload: unknown): number {
@@ -247,37 +242,6 @@ export function parseAvailabilityImportJob(payload: unknown): AvailabilityImport
         parsedAvailability,
         settlement,
     };
-}
-
-function availabilityImportCreditDetail(
-    status: AvailabilityImportStatus,
-    settlement: AvailabilityImportSettlement,
-): string {
-    const { chargedCredits, refundedCredits } = settlement;
-    const refundTerminal = status === 'FAILED' || status === 'DEAD_LETTERED' || status === 'CANCELLED';
-    if (refundTerminal) {
-        if (chargedCredits > 0 && refundedCredits === chargedCredits) {
-            const credits = paidCredits(chargedCredits);
-            return `${credits} ${chargedCredits === 1 ? 'was' : 'were'} refunded for this import.`;
-        }
-        return 'Refund settlement is pending or could not be verified.';
-    }
-    if (status === 'SUCCEEDED') {
-        if (chargedCredits > 0 && refundedCredits === 0) {
-            const credits = paidCredits(chargedCredits);
-            return `${credits} ${chargedCredits === 1 ? 'was' : 'were'} charged for this completed import.`;
-        }
-        return 'Credit settlement could not be verified.';
-    }
-    if (chargedCredits > 0) {
-        const credits = paidCredits(chargedCredits);
-        return `${credits} ${chargedCredits === 1 ? 'was' : 'were'} charged. Final settlement is pending.`;
-    }
-    return 'Credit settlement is pending or could not be verified.';
-}
-
-function paidCredits(count: number): string {
-    return `${count} paid ${count === 1 ? 'credit' : 'credits'}`;
 }
 
 function parseSettlement(value: unknown): AvailabilityImportSettlement {

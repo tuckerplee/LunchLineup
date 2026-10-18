@@ -6,6 +6,7 @@ import { creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue } fr
 import { createCreditReadOwner, type CreditReadLane, type CreditReadPending } from './credit-read-owner';
 import { parseCreditGrantAcknowledgement, type CreditGrantAcknowledgement } from './credit-grant-acknowledgement';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchJsonWithSession, fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
 import {
     EMPTY_ADMIN_LIST_PAGINATION,
@@ -173,6 +174,9 @@ export function CreditsClient() {
     const readOwner = useRef(createCreditReadOwner());
     const loading = readPending.replacement;
     const visibleError = error ?? readErrors.replacement ?? readErrors.tenants ?? readErrors.history;
+    const { confirmAction } = useAppMessages();
+    useStatusMessage('error', 'admin.credits.failed', visibleError);
+    useStatusMessage('success', 'admin.credits.grant.done', notice);
 
     const loadCredits = useCallback(async (options: {
         tenantCursor?: string | null;
@@ -314,10 +318,13 @@ export function CreditsClient() {
             return;
         }
 
-        const confirmed = window.confirm(
-            creditGrantConfirmation(selected.name, amount,
+        const confirmed = await confirmAction({
+            code: 'admin.credits.grant.confirm',
+            title: 'Grant credits?',
+            body: creditGrantConfirmation(selected.name, amount,
                 estimateCreditGrant(selected.usageCredits, selected.creditDebt, amount)),
-        );
+            confirmLabel: 'Grant credits',
+        });
         if (!confirmed) return;
 
         const payload: CreditGrantPayload = {
@@ -420,38 +427,6 @@ export function CreditsClient() {
                     </article>
                 ))}
             </section>
-
-            {visibleError ? (
-                <div role="alert"
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #ffd0da',
-                        background: '#fff1f4',
-                        color: '#b4233f',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {visibleError}
-                </div>
-            ) : null}
-
-            {notice ? (
-                <div role="status"
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #c9d9ff',
-                        background: '#edf3ff',
-                        color: '#1d4ed8',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {notice}
-                </div>
-            ) : null}
 
             <section className={styles.balanceGrantGrid}>
                 <article

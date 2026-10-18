@@ -38,6 +38,7 @@ export const NATIVE_QUOTA_OWNERS = {
   listNotifications: { className: 'NotificationsController', handlerName: 'list' },
   markNotificationRead: { className: 'NotificationsController', handlerName: 'markRead' },
   markAllNotificationsRead: { className: 'NotificationsController', handlerName: 'markAllRead' },
+  recordClientEvents: { className: 'ApiV2NativeQuota', handlerName: 'recordClientEvents' },
   getPayrollExportEntitlement: { className: 'PayrollController', handlerName: 'exportEntitlement' },
   listPayrollPolicies: { className: 'PayrollController', handlerName: 'listPolicies' },
   getPayrollPolicy: { className: 'PayrollController', handlerName: 'getPolicy' },

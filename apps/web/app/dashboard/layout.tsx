@@ -3,6 +3,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { AppMessagesProvider } from '@/components/messages/AppMessages';
 import { LunchLineupMark } from '@/components/branding/LunchLineupMark';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import { handleLogoutNavigation } from '@/lib/logout-navigation';
@@ -438,7 +439,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           </div>
         </header>
 
-        <main id="workspace-main-content" tabIndex={-1} className="workspace-content">{children}</main>
+        <main id="workspace-main-content" tabIndex={-1} className="workspace-content"><AppMessagesProvider>{children}</AppMessagesProvider></main>
       </section>
     </div>
   );

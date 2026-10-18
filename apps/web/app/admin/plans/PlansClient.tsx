@@ -3,6 +3,7 @@
 import type { FormEvent } from 'react';
 import styles from './plans.module.css';
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 
 type PlanStatus = 'ACTIVE' | 'INACTIVE';
@@ -215,6 +216,9 @@ export function AdminPlansWorkspace() {
     const [saving, setSaving] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [notice, setNotice] = useState<Banner>(null);
+    const { confirmAction } = useAppMessages();
+    useStatusMessage('error', 'admin.plans.failed', error);
+    useStatusMessage(notice?.tone === 'error' ? 'error' : 'success', 'admin.plans.notice', notice?.text);
     const [query, setQuery] = useState('');
     const [selectedPlanId, setSelectedPlanId] = useState<string | null>(null);
     const [createForm, setCreateForm] = useState<PlanFormState>(() => emptyForm());
@@ -432,10 +436,14 @@ export function AdminPlansWorkspace() {
     }
 
     async function deletePlan(plan: PlanRecord) {
-        if (typeof window !== 'undefined') {
-            const confirmed = window.confirm(`Delete ${plan.name}? This will remove the plan from the catalog.`);
-            if (!confirmed) return;
-        }
+        const confirmed = await confirmAction({
+            code: 'admin.plans.delete.confirm',
+            title: `Delete ${plan.name}?`,
+            body: 'This will remove the plan from the catalog.',
+            confirmLabel: 'Delete plan',
+            tone: 'danger',
+        });
+        if (!confirmed) return;
 
         setError(null);
         setNotice(null);
@@ -521,38 +529,6 @@ export function AdminPlansWorkspace() {
                     </article>
                 ))}
             </section>
-
-            {error ? (
-                <div role="alert"
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #ffd0da',
-                        background: '#fff1f4',
-                        color: '#b4233f',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {error}
-                </div>
-            ) : null}
-
-            {notice ? (
-                <div role={notice.tone === 'error' ? 'alert' : 'status'}
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: '1px solid #c9d9ff',
-                        background: '#edf3ff',
-                        color: '#1d4ed8',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {notice.text}
-                </div>
-            ) : null}
 
             <section className={styles.catalogGrid}>
                 <article

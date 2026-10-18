@@ -59,32 +59,26 @@ async function openSetupReview(page: Page, staffName: string) {
   await page.getByRole('button', { name: 'Select staff' }).click();
   await expect(page.getByRole('button', { name: new RegExp(staffName) })).toBeVisible();
   await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
-  await expect(page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Save shifts' })).toBeEnabled();
 }
 
 async function enterPlanner(page: Page, staffName: string) {
   await openSetupReview(page, staffName);
-  page.once('dialog', async (dialog) => dialog.accept());
-  await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
+  await page.getByRole('button', { name: 'Save shifts' }).click();
   await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
 }
 
 async function generatePlanConfirmed(page: Page) {
-  const confirmation = page.waitForEvent('dialog').then(async (dialog) => {
-    expect(dialog.type()).toBe('confirm');
-    expect(dialog.message()).toBe('Generate a lunch and break plan for 1 shift? This uses exactly 1 usage credit. Existing break assignments for these shifts will be replaced. Unchanged retries recover the same request.');
-    await dialog.accept();
-  });
-  await Promise.all([
-    confirmation,
-    page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click(),
-  ]);
+  await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).first().click();
+  const confirmation = page.getByRole('alertdialog', { name: 'Generate plan?' });
+  await expect(confirmation).toContainText('replaces the existing break assignments for 1 shift');
+  await confirmation.getByRole('button', { name: 'Generate plan' }).click();
 }
 
 test.describe('Lunch/break durable recovery', () => {
   test.skip(runFullStack, 'The focused recovery contract uses deterministic local API routes.');
 
-  test('preserves a schedule-backed overnight shift and requires exact-cost confirmation before setup mutation', async ({ context, page }) => {
+  test('preserves a schedule-backed overnight shift and saves setup shifts with a plain Save shifts action', async ({ context, page }) => {
     const overnight = {
       ...scopedRow('loc-downtown'),
       shiftId: 'shift-overnight',
@@ -118,12 +112,7 @@ test.describe('Lunch/break durable recovery', () => {
     await expect(page.getByRole('link', { name: 'Open Calendar to correct this shift' })).toHaveAttribute('href', '/dashboard/scheduling');
     expect(setupBodies).toHaveLength(0);
 
-    page.once('dialog', async (dialog) => {
-      expect(dialog.message()).toContain('save 1 unchanged schedule-backed shift record');
-      expect(dialog.message()).toContain('uses exactly 1 usage credit');
-      await dialog.accept();
-    });
-    await page.getByRole('button', { name: 'Save 1 setup shift record · exactly 1 usage credit' }).click();
+    await page.getByRole('button', { name: 'Save shifts' }).click();
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
 
     expect(setupBodies).toHaveLength(1);
@@ -291,11 +280,9 @@ test.describe('Lunch/break durable recovery', () => {
     await openSetupReview(page, 'Scope A Staff');
     await openSetupReview(secondPage, 'Scope A Staff');
 
-    page.once('dialog', async (dialog) => dialog.accept());
-    secondPage.once('dialog', async (dialog) => dialog.accept());
     await Promise.all([
-      page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click(),
-      secondPage.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click(),
+      page.getByRole('button', { name: 'Save shifts' }).click(),
+      secondPage.getByRole('button', { name: 'Save shifts' }).click(),
     ]);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
     await expect(secondPage.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();

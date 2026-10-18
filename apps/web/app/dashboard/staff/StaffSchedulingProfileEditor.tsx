@@ -9,6 +9,7 @@ import type {
 } from '@lunchlineup/api-contract';
 
 import { Button } from '@/components/ui/button';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { ApiRequestError, fetchJsonWithSession } from '@/lib/client-api';
 
 import { ProfileOperationOwner, profileMatchesDraft } from './profile-save-state';
@@ -65,7 +66,10 @@ function ProfileEditorSession({ user, onClose, showHeader = true }: StaffSchedul
     const [locationLoadError, setLocationLoadError] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [message, setMessage] = useState<string | null>(null);
+    const { confirmAction } = useAppMessages();
     const [error, setError] = useState<string | null>(null);
+    useStatusMessage('error', 'staff.scheduling_profile.failed', error);
+    useStatusMessage('success', 'staff.scheduling_profile.status', isSaving ? null : message);
     const profileLoadRequestRef = useRef(0);
     const locationLoadRequestRef = useRef(0);
     const saveInFlightRef = useRef(false);
@@ -524,8 +528,16 @@ function ProfileEditorSession({ user, onClose, showHeader = true }: StaffSchedul
 
                     </fieldset>
                     <footer style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '0.75rem', flexWrap: 'wrap' }}>
-                        <div aria-live="polite" style={{ fontSize: '0.8rem', color: error ? '#b42318' : 'var(--text-muted)' }}>{error ?? message}</div>
-                        {error && !outcomeUnknown ? <Button type="button" variant="outline" disabled={isSaving} onClick={() => { if (window.confirm('Discard this draft and reload the saved profile?')) void loadProfile(); }}>Reload saved profile</Button> : null}
+                        <div aria-live="polite" style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>{isSaving ? message : null}</div>
+                        {error && !outcomeUnknown ? <Button type="button" variant="outline" disabled={isSaving} onClick={async () => {
+                            if (await confirmAction({
+                                code: 'staff.scheduling_profile.discard.confirm',
+                                title: 'Discard this draft?',
+                                body: 'Your draft will be discarded and the saved profile reloaded.',
+                                confirmLabel: 'Discard and reload',
+                                tone: 'danger',
+                            })) void loadProfile();
+                        }}>Reload saved profile</Button> : null}
                         {outcomeUnknown ? <Button type="button" variant="outline" disabled={isSaving} onClick={async () => {
                             const token = saveOwner.current.begin();
                             setIsSaving(true);

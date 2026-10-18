@@ -101,36 +101,16 @@ describe('availability PDF import contract', () => {
         });
     });
 
-    it('says refunded only for an exact positive terminal settlement', () => {
-        const exact = parseAvailabilityImportJob(jobPayload('FAILED', 3, 3));
-        expect(availabilityImportStatusView(exact.status, exact.settlement).creditDetail)
-            .toBe('3 paid credits were refunded for this import.');
-
-        const singular = parseAvailabilityImportJob(jobPayload('FAILED', 1, 1));
-        expect(availabilityImportStatusView(singular.status, singular.settlement).creditDetail)
-            .toBe('1 paid credit was refunded for this import.');
-    });
-
-    it('keeps failed terminal imports pending/unverified without a matching refund', () => {
-        for (const payload of [jobPayload('FAILED', 3, 0), jobPayload('FAILED', 3, 1)]) {
-            const job = parseAvailabilityImportJob(payload);
-            expect(availabilityImportStatusView(job.status, job.settlement).creditDetail)
-                .toBe('Refund settlement is pending or could not be verified.');
-        }
-    });
-
     it('rejects an impossible over-refund response', () => {
         expect(() => parseAvailabilityImportJob(jobPayload('FAILED', 3, 4)))
             .toThrow('invalid response');
     });
 
-    it('uses exact singular/plural charge copy without promising a refund', () => {
-        const one = parseAvailabilityImportJob(jobPayload('RUNNING', 1));
-        const three = parseAvailabilityImportJob(jobPayload('RUNNING', 3));
-        expect(availabilityImportStatusView(one.status, one.settlement).creditDetail)
-            .toBe('1 paid credit was charged. Final settlement is pending.');
-        expect(availabilityImportStatusView(three.status, three.settlement).creditDetail)
-            .toBe('3 paid credits were charged. Final settlement is pending.');
+    it('shows no per-action credit or charge wording in the status view', () => {
+        for (const job of [jobPayload('RUNNING', 1), jobPayload('FAILED', 3, 3), jobPayload('SUCCEEDED', 3)]) {
+            const parsed = parseAvailabilityImportJob(job);
+            expect(JSON.stringify(availabilityImportStatusView(parsed.status))).not.toMatch(/credit|charged|refund/i);
+        }
     });
 
     it('defines active and terminal lifecycle states', () => {

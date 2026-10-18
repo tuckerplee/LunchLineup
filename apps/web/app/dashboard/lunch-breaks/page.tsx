@@ -6,6 +6,8 @@ import styles from './lunch-breaks.module.css';
 import { breakTimingIssue } from './break-timing-validation';
 import { AnimatePresence, motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
+import { BILLING_ACTION, isBillingBlock } from '@/lib/messages/billing';
 import {
   apiPath,
   fetchApiHealth,
@@ -525,6 +527,11 @@ export default function LunchBreaksPage() {
   const [permissions, setPermissions] = useState<string[]>([]);
   const [sessionIdentity, setSessionIdentity] = useState<SessionIdentity | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { confirmAction } = useAppMessages();
+  const errorIsBillingBlock = isBillingBlock(setupShiftError?.status, error);
+  useStatusMessage('error', errorIsBillingBlock ? 'lunch_breaks.payment_required' : 'lunch_breaks.failed', error, errorIsBillingBlock
+    ? { action: BILLING_ACTION, detail: 'payment_required' }
+    : undefined);
   const initialSelectedDateRef = useRef(selectedDate);
   const desiredDayScopeRef = useRef<LunchBreakDayScope>({
     locationId: selectedLocationId,
@@ -836,31 +843,17 @@ export default function LunchBreaksPage() {
   const schedulingFeature = features?.features.scheduling;
   const hasSchedulingEnabled = Boolean(schedulingFeature?.enabled);
   const hasSharedScheduleData = Boolean(hasSchedulingEnabled && dayRows.length > 0);
-  const setupShiftsCreditCost = typeof schedulingFeature?.creditCost === 'number'
-    && Number.isSafeInteger(schedulingFeature.creditCost)
-    && schedulingFeature.creditCost > 0
-    ? schedulingFeature.creditCost
-    : null;
-  const setupShiftsBillingBlockReason = !capabilities.canReadBilling
-    ? 'Billing read access is required to verify the exact setup-shift credit cost before saving.'
-    : (
-        !schedulingFeature?.enabled
-        || schedulingFeature.source !== 'credits'
-        || setupShiftsCreditCost === null
-        || (features?.usageCredits ?? 0) < setupShiftsCreditCost
-      )
-      ? schedulingFeature?.reason || 'Setup shifts require an active paid subscription and configured usage credits.'
-      : null;
-  const generationCreditCost = capabilities.canReadBilling && lunchBreakFeature?.enabled
-    && Number.isSafeInteger(lunchBreakFeature.creditCost) && (lunchBreakFeature.creditCost ?? -1) >= 0
-    ? lunchBreakFeature.creditCost : null;
-  const confirmGeneration = useCallback((count: number, persisted: boolean) => {
-    if (generationCreditCost === null) {
-      setError('The exact generation cost is unavailable. Refresh billing information before generating.');
-      return false;
-    }
-    return window.confirm(`Generate a lunch and break plan for ${count} shift${count === 1 ? '' : 's'}? This uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'}.${persisted ? ' Existing break assignments for these shifts will be replaced.' : ' This creates a preview.'} Unchanged retries recover the same request.`);
-  }, [generationCreditCost]);
+  const confirmGeneration = useCallback(async (count: number, persisted: boolean) => {
+    // A saved plan replaces existing assignments, so it needs a real confirmation.
+    // A preview changes nothing and runs immediately.
+    if (!persisted) return true;
+    return confirmAction({
+      code: 'lunch_breaks.generate.confirm',
+      title: 'Generate plan?',
+      body: `This replaces the existing break assignments for ${count} shift${count === 1 ? '' : 's'}.`,
+      confirmLabel: 'Generate plan',
+    });
+  }, [confirmAction]);
   const setupShiftRecordCount = setupShiftRows.length;
   const hasInvalidSetupShiftRows = setupShiftRows.some((row) => (
     Boolean(row.intervalError)
@@ -872,9 +865,7 @@ export default function LunchBreaksPage() {
       activeTimeZone,
     ))
   ));
-  const setupShiftMutationLabel = setupShiftsCreditCost === null
-    ? `Save ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} · exact cost unavailable`
-    : `Save ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} · exactly ${setupShiftsCreditCost} usage credit${setupShiftsCreditCost === 1 ? '' : 's'}`;
+  const setupShiftMutationLabel = 'Save shifts';
 
   const selectDayScope = useCallback((dateValue: string, locationId: string) => {
     if (lunchBreakDaySelectionMatches({ locationId, dateValue }, desiredDayScopeRef.current)) return;
@@ -1141,7 +1132,7 @@ export default function LunchBreaksPage() {
       return;
     }
 
-    if (!confirmGeneration(selectedRows.length, true)) return;
+    if (!(await confirmGeneration(selectedRows.length, true))) return;
 
     const mutationScope = desiredDayScopeRef.current;
     const mutationTimeZone = activeTimeZone;
@@ -1264,7 +1255,7 @@ export default function LunchBreaksPage() {
         throw new Error('Add at least one employee shift to generate a lunch/break plan.');
       }
 
-      if (!confirmGeneration(shifts.length, false)) return;
+      if (!(await confirmGeneration(shifts.length, false))) return;
       const requestBody = {
         shifts,
         persist: false,
@@ -1718,16 +1709,6 @@ export default function LunchBreaksPage() {
       setError('Unable to bind setup-shift recovery to the active session. Refresh and retry.');
       return;
     }
-    if (setupShiftsBillingBlockReason) {
-      setSetupShiftError({
-        message: setupShiftsBillingBlockReason,
-        status: 403,
-        code: 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED',
-        remediation: 'Activate a paid subscription or add usage credits, then retry the unchanged setup.',
-      });
-      setError(setupShiftsBillingBlockReason);
-      return;
-    }
     const invalidSetupRow = setupShiftRows.find((row) => (
       Boolean(row.intervalError)
       || (row.source === 'temporary' && !lunchBreakShiftRange(
@@ -1740,24 +1721,6 @@ export default function LunchBreaksPage() {
     ));
     if (invalidSetupRow) {
       setError(`${invalidSetupRow.employeeName}: ${invalidSetupRow.intervalError ?? 'the temporary shift end must be after its start on the selected local day.'}`);
-      return;
-    }
-    if (setupShiftsCreditCost === null) {
-      setError('The exact setup-shift credit cost is unavailable. No shifts were saved.');
-      return;
-    }
-    const scheduledRecordCount = setupShiftRows.filter((row) => row.source === 'schedule').length;
-    const temporaryRecordCount = setupShiftRows.length - scheduledRecordCount;
-    const actionParts = [
-      scheduledRecordCount > 0
-        ? `save ${scheduledRecordCount} unchanged schedule-backed shift record${scheduledRecordCount === 1 ? '' : 's'}`
-        : null,
-      temporaryRecordCount > 0
-        ? `create ${temporaryRecordCount} temporary shift record${temporaryRecordCount === 1 ? '' : 's'}`
-        : null,
-    ].filter((part): part is string => Boolean(part));
-    const creditLabel = `${setupShiftsCreditCost} usage credit${setupShiftsCreditCost === 1 ? '' : 's'}`;
-    if (!window.confirm(`Confirm setup: ${actionParts.join(' and ')} for ${selectedDateLabel}. This uses exactly ${creditLabel}.`)) {
       return;
     }
     const persistedUserIds = new Set<string>([
@@ -1875,10 +1838,7 @@ export default function LunchBreaksPage() {
     policyLoaded,
     selectedShiftId,
     sessionIdentity,
-    setupShiftsBillingBlockReason,
-    setupShiftsCreditCost,
     setupShiftRows,
-    selectedDateLabel,
     updateDaySession,
   ]);
 
@@ -2052,7 +2012,6 @@ export default function LunchBreaksPage() {
               </h1>
             )}
             <p className={`workspace-subtitle ${styles.mobileRedundant}`}>Generate compliant lunches and staggered breaks for the selected day.</p>
-            {canWriteLunchBreaks ? <p className={styles.creditNotice}>{generationCreditCost === null ? 'Exact generation cost unavailable; generation is blocked.' : `Generation uses exactly ${generationCreditCost} usage credit${generationCreditCost === 1 ? '' : 's'} per request. Review and confirm before generating.`}</p> : null}
             <div className={styles.mobileRedundant} style={{ marginTop: 4, fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
               {selectedDateLabel} break plan
             </div>
@@ -2164,7 +2123,7 @@ export default function LunchBreaksPage() {
               fontWeight: 700,
             }}
           >
-            Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'} · credits {lastRun.creditConsumption.consumedCredits}
+            Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'}
           </div>
         ) : null}
 
@@ -2847,53 +2806,6 @@ export default function LunchBreaksPage() {
                     </div>
                   </div>
 
-                  <div
-                    id="setup-shifts-billing-requirement"
-                    className="surface-muted"
-                    style={{
-                      borderRadius: 10,
-                      padding: '0.65rem 0.75rem',
-                      minWidth: 0,
-                      position: 'relative',
-                      zIndex: 0,
-                      color: setupShiftsBillingBlockReason ? '#b45309' : 'var(--text-secondary)',
-                      fontSize: '0.76rem',
-                      fontWeight: 650,
-                    }}
-                  >
-                    {setupShiftsBillingBlockReason
-                      ?? (setupShiftsCreditCost
-                        ? `The confirmed action saves exactly ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'} and uses exactly ${setupShiftsCreditCost} separately purchased usage credit${setupShiftsCreditCost === 1 ? '' : 's'}. Unchanged retries recover the same attempt.`
-                        : 'Saving setup shifts is billable and requires an active paid subscription plus separately purchased usage credits. Unchanged retries recover the same attempt.')}
-                  </div>
-
-                  {setupShiftError ? (
-                    <div
-                      role="alert"
-                      style={{
-                        border: '1px solid rgba(244,63,94,0.35)',
-                        borderRadius: 10,
-                        background: 'rgba(244,63,94,0.08)',
-                        color: '#be123c',
-                        padding: '0.65rem 0.75rem',
-                        fontSize: '0.78rem',
-                      }}
-                    >
-                      <strong>
-                        {setupShiftError.code === 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED'
-                          ? 'Subscription and credits required'
-                          : setupShiftError.code === 'SETUP_SHIFTS_CONFLICT' || setupShiftError.status === 409
-                            ? 'Setup request conflict'
-                            : 'Setup save could not be confirmed'}
-                      </strong>
-                      <div style={{ marginTop: 3 }}>{setupShiftError.message}</div>
-                      <div style={{ marginTop: 3 }}>Retry with the same entries to recover this request without creating duplicate shifts or charging again.</div>
-                      {setupShiftError.remediation ? (
-                        <div style={{ marginTop: 3 }}>{setupShiftError.remediation}</div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
                   <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0, position: 'relative', zIndex: 1 }}>
                     <Button variant="outline" size="sm" onClick={() => setAutoGuideStep(3)} disabled={isApplyingSetupShifts}>
                       Back
@@ -2902,17 +2814,15 @@ export default function LunchBreaksPage() {
                       ref={setupSubmitButtonRef}
                       size="sm"
                       onClick={applySetupShifts}
-                      aria-describedby="setup-shifts-billing-requirement"
                       disabled={
                         setupShiftRows.length === 0
                         || isApplyingSetupShifts
                         || !canWriteLoadedDay
                         || !capabilities.canWriteShifts
                         || hasInvalidSetupShiftRows
-                        || Boolean(setupShiftsBillingBlockReason)
                       }
                     >
-                      {isApplyingSetupShifts ? `Saving ${setupShiftRecordCount} setup shift record${setupShiftRecordCount === 1 ? '' : 's'}...` : setupShiftMutationLabel}
+                      {isApplyingSetupShifts ? 'Saving shifts...' : setupShiftMutationLabel}
                     </Button>
                   </div>
                 </motion.div>
@@ -3045,7 +2955,7 @@ export default function LunchBreaksPage() {
                   width: 'fit-content',
                 }}
               >
-                Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'} · credits {lastRun.creditConsumption.consumedCredits}
+                Last run: {lastRun.source} · persisted {lastRun.persisted ? 'yes' : 'no'}
               </div>
             ) : null}
 
@@ -3384,17 +3294,10 @@ export default function LunchBreaksPage() {
 
                   {canWriteLunchBreaks ? (
                     <div style={{ display: 'grid', gap: 6 }}>
-                      <div
-                        id={`shift-break-save-cost-${selectedRow.shiftId}`}
-                        style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}
-                      >
-                        A value-changing save uses {lunchBreakFeature.creditCost ?? 'the configured number of'} credit(s). Safe replay and unchanged values do not charge again.
-                      </div>
                       <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
                         <Button
                           ref={shiftBreakSaveButtonRef}
                           size="sm"
-                          aria-describedby={`shift-break-save-cost-${selectedRow.shiftId}`}
                           onClick={() => void saveRow(selectedRow.shiftId)}
                           disabled={!selectedRow.dirty || selectedRow.saving || !canWriteLoadedDay || isSavingPolicy}
                         >
@@ -3601,8 +3504,6 @@ export default function LunchBreaksPage() {
 
                 <div style={{ borderTop: '1px solid var(--border)', paddingTop: 8, fontSize: '0.78rem', color: 'var(--text-secondary)' }}>
                   <div>Access source: <strong style={{ textTransform: 'capitalize' }}>{lunchBreakFeature.source}</strong></div>
-                  <div>Usage credits: <strong>{features?.usageCredits ?? 0}</strong></div>
-                  <div>Credit cost/run: <strong>{lunchBreakFeature.creditCost ?? 0}</strong></div>
                   <div>
                     Scheduling link:{' '}
                     <strong>
@@ -3620,20 +3521,6 @@ export default function LunchBreaksPage() {
         </section>
       ) : null}
 
-      {error ? (
-        <div
-          role="alert"
-          style={{
-            padding: '0.8rem 0.9rem',
-            borderRadius: 10,
-            border: '1px solid rgba(244,63,94,0.35)',
-            color: '#9f1239',
-            background: 'rgba(244,63,94,0.06)',
-          }}
-        >
-          {error}
-        </div>
-      ) : null}
     </div>
   );
 }

@@ -59,12 +59,13 @@ describe('platform admin user account safety wiring', () => {
         const refreshUsers = vi.fn(async () => undefined);
         const setSavingKey = vi.fn();
         const reset = pinExpression<() => Promise<void>>('reset', {
-            selectedUser: target, isSelf: false, window: { confirm: () => true }, writeJson,
+            selectedUser: target, isSelf: false, confirmAction: async () => true, writeJson,
             setRecoveryKey: setSavingKey, recoveryInFlight: { current: false }, requireAdminPinReset,
             setMessage: vi.fn(), refreshUsers,
             setTemporaryPin: (value: { userId: string; pin: string } | null) => { temporaryPin = value; },
         });
         const pending = reset();
+        await Promise.resolve(); await Promise.resolve();
         const visibleSelection = { id: 'user-b' };
         expect(writeJson).toHaveBeenCalledExactlyOnceWith('/admin/users/user-a/pin/reset', 'POST', {});
         release({ id: 'user-a', username: 'a', temporaryPin: '123456', pinResetRequired: true });
@@ -80,7 +81,7 @@ describe('platform admin user account safety wiring', () => {
         let temporaryPin: { userId: string; pin: string } | null = { userId: 'user-a', pin: 'old-synthetic-pin' };
         const target = { id: 'user-a', name: 'A', username: 'a', status: 'ACTIVE' };
         await pinExpression<() => Promise<void>>('reset', {
-            selectedUser: target, isSelf: false, window: { confirm: () => true },
+            selectedUser: target, isSelf: false, confirmAction: async () => true,
             writeJson: vi.fn(async () => ({})), setRecoveryKey: vi.fn(), recoveryInFlight: { current: false },
             requireAdminPinReset, setMessage: vi.fn(),
             refreshUsers: vi.fn(async () => undefined),

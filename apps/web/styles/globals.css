@@ -2735,3 +2735,89 @@ textarea.form-input {
     outline-offset: 2px;
   }
 }
+
+/* Single app message system (components/messages/AppMessages.tsx). */
+.app-messages {
+  position: sticky;
+  top: 0;
+  z-index: 60;
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.app-messages:empty,
+.app-messages > div:empty {
+  display: none;
+}
+
+.app-messages > div {
+  display: grid;
+  gap: 8px;
+}
+
+.app-message {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--r-md);
+  padding: 10px 12px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+  box-shadow: var(--e-1);
+}
+
+.app-message--success { border-color: var(--success-700); background: #f0fdf4; }
+.app-message--info { border-color: var(--brand-600); background: #eff6ff; }
+.app-message--warning { border-color: var(--warn-700); background: #fffbeb; }
+.app-message--error { border-color: var(--danger-600); background: #fef2f2; }
+
+.app-message__text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.app-message__action {
+  flex: none;
+  color: var(--brand-600);
+  font-weight: 700;
+  text-decoration: underline;
+}
+
+.app-message__dismiss {
+  flex: none;
+  min-width: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.app-message__dismiss:focus-visible {
+  outline: 2px solid var(--brand-600);
+  outline-offset: 2px;
+}
+
+.app-dialog__input {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.5rem 0.6rem;
+  background: #fff;
+  color: var(--text-primary);
+}
+
+.app-dialog__error {
+  margin: 0;
+  color: var(--danger-600);
+  font-size: 13px;
+  font-weight: 600;
+}

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent a
 import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useDialogFocus } from '@/components/ui/use-dialog-focus';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchWithSession, withIdempotencyKey } from '@/lib/client-api';
 import { acknowledgeCorruptInvitationRecovery, clearInvitationRecovery, invitationRecoveryStorageKey, prepareInvitationRecovery, readInvitationRecovery, type InvitationRecovery } from './invitation-recovery';
 import {
@@ -190,6 +191,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     const [pinResetUserId, setPinResetUserId] = useState<string | null>(null);
     const pinResetInFlight = useRef(false);
     const [error, setError] = useState<string | null>(null);
+    const { confirmAction } = useAppMessages();
+    useStatusMessage('error', 'staff.workspace.failed', error);
     const [pendingAction, setPendingAction] = useState<PendingStaffAction | null>(null);
     const { dialogRef: actionDialogRef, captureTrigger: captureActionTrigger } = useDialogFocus(pendingAction !== null);
     const openPendingAction = (action: StaffAction, user: StaffUser, trigger: HTMLElement) => {
@@ -394,7 +397,13 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
             setRecoveryReview({ raw });
             return;
         }
-        if (!window.confirm('Have you reviewed the refreshed staff directory, including additional pages, for an earlier employee creation? Clearing unreadable recovery details loses its retry key. Manage an existing employee rather than creating them again.')) return;
+        if (!await confirmAction({
+            code: 'staff.recovery.clear_unreadable.confirm',
+            title: 'Clear unreadable creation details?',
+            body: 'Have you reviewed the refreshed staff directory, including additional pages, for an earlier employee creation? Clearing unreadable recovery details loses its retry key. Manage an existing employee rather than creating them again.',
+            confirmLabel: 'Clear details',
+            tone: 'danger',
+        })) return;
         try {
             acknowledgeCorruptInvitationRecovery(sessionStorage, creationRecoveryScope, recoveryReview.raw);
             setInvitationRecovery(readInvitationRecovery(sessionStorage, creationRecoveryScope));
@@ -402,7 +411,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
         } finally {
             setRecoveryReview(null);
         }
-    }, [creationRecoveryScope, recoveryReview]);
+    }, [confirmAction, creationRecoveryScope, recoveryReview]);
 
     const inviteUser = useCallback(async (
         invitation: StaffInvitationPayload,
@@ -462,10 +471,15 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
             ? saved.username !== attempt.details.username : saved.email !== attempt.details.email)) {
             throw new Error('The employee login changed. Recovery details are retained.');
         }
-        if (!window.confirm('The employee already exists. Clear this creation retry and manage their access from the directory? Reset an unavailable PIN before sharing credentials.')) return;
+        if (!await confirmAction({
+            code: 'staff.recovery.clear_retry.confirm',
+            title: 'Clear this creation retry?',
+            body: 'The employee already exists. Clear this creation retry and manage their access from the directory? Reset an unavailable PIN before sharing credentials.',
+            confirmLabel: 'Clear retry',
+        })) return;
         clearInvitationRecovery(sessionStorage, creationRecoveryScope, attempt.key);
         setInvitationRecovery(null);
-    }, [creationRecoveryScope, users]);
+    }, [confirmAction, creationRecoveryScope, users]);
 
     const updateUserRoles = useCallback(async (userId: string, roleIds: string[]) => {
         setIsSaving(userId);
@@ -1346,11 +1360,6 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                 );
             })() : null}
 
-            {error ? (
-                <div style={{ padding: '0.7rem 0.8rem', borderRadius: 10, border: '1px solid rgba(244,63,94,0.35)', color: '#fda4af', background: 'rgba(244,63,94,0.06)' }} role="alert">
-                    {error}
-                </div>
-            ) : null}
         </div>
     );
 }

@@ -75,7 +75,7 @@ describe('schedule publish settlement UI contract', () => {
     expect(source).toContain('publishSettlementByScheduleId[schedule.id]');
   });
 
-  it('parses and clearly summarizes the aggregate configured cost and projected balance', () => {
+  it('parses the aggregate configured cost and reports readiness without cost wording', () => {
     const preflight = parseSchedulePublishPreflight('schedule-1', preflightPayload());
 
     expect(preflight).toMatchObject({
@@ -86,17 +86,17 @@ describe('schedule publish settlement UI contract', () => {
       sufficientCredits: true,
     });
     expect(publishPreflightSummary(preflight))
-      .toBe('Configured total: 8 credits. Balance after publish: 2 credits.');
+      .toBe('Ready to publish.');
   });
 
-  it('shows aggregate insufficiency rather than only the schedule cost', () => {
+  it('reports a real out-of-credits block as an inline message', () => {
     const preflight = parseSchedulePublishPreflight('schedule-1', preflightPayload({
       availableCredits: 7,
       sufficientCredits: false,
     }));
 
     expect(publishPreflightSummary(preflight))
-      .toBe('Configured total: 8 credits. Balance: 7 credits. 1 credit more required.');
+      .toBe('Publishing is blocked: this workspace is out of credits.');
   });
 
   it('requires reconfirmation when any configured cost component changes', () => {
@@ -145,7 +145,7 @@ describe('schedule publish settlement UI contract', () => {
 
     expect(published.settlement).toMatchObject({ creditsConsumed: 8, newBalance: 2 });
     expect(publishSettlementSummary(published.settlement))
-      .toBe('Schedule published. 8 credits were debited exactly once; 2 credits remain.');
+      .toBe('Schedule published.');
   });
 
   it.each([
@@ -174,7 +174,7 @@ describe('schedule publish settlement UI contract', () => {
     expect(schedulePublishFailure(402, 'Payment required')).toMatchObject({
       retryMode: 'review',
       resetAttempt: false,
-      message: expect.stringContaining('active paid subscription'),
+      message: expect.stringContaining('active subscription'),
     });
     expect(schedulePublishFailure(409, 'Wait for active auto-schedule jobs.')).toMatchObject({
       retryMode: 'review',
@@ -188,7 +188,7 @@ describe('schedule publish settlement UI contract', () => {
     expect(schedulePublishFailure(503, 'Unavailable')).toMatchObject({
       retryMode: 'replay',
       resetAttempt: false,
-      message: expect.stringContaining('cannot be debited twice'),
+      message: expect.stringContaining('cannot be applied twice'),
     });
     expect(schedulePublishFailure(null, 'The request timed out.')).toMatchObject({
       retryMode: 'replay',

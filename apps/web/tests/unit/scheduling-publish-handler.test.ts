@@ -12,6 +12,10 @@ vi.mock('react', async original => ({ ...await original<typeof import('react')>(
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-10-04&location=11111111-1111-4111-8111-111111111111') }));
 vi.mock('next/dynamic', () => ({ default: () => () => null }));
 vi.mock('@/components/ui/button', () => ({ Button: 'button' }));
+vi.mock('@/components/messages/AppMessages', () => ({
+  useAppMessages: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn(), dismissCode: vi.fn(), confirmAction: vi.fn(), promptAction: vi.fn() }),
+  useStatusMessage: vi.fn(),
+}));
 vi.mock('@/lib/api-v2', () => ({ apiV2: { getScheduleBoard: mocks.board, getSchedulePublishPlan: mocks.preflight, publishSchedule: mocks.publish } }));
 vi.mock('../../app/dashboard/scheduling/use-schedule-commands', () => ({ useScheduleCommands: () => ({ commandState: { byShiftId: {} }, updateShift: vi.fn(), copyShift: vi.fn(), deleteShift: vi.fn(), undoShift: vi.fn(), dismissFeedback: vi.fn() }) }));
 import SchedulingPage from '../../app/dashboard/scheduling/page';
@@ -33,10 +37,10 @@ function row(id: string, tree = h.render()) {
 function publishButton(id: string, label: string) { return button(row(id), label); }
 function idle(tree: unknown) { return !nodes(tree).some(node => node.type === 'button' && text(node.props.children).trim() === 'Checking...'); }
 async function click(id: string, label: string) { publishButton(id, label).props.onClick(); await h.until(idle); }
-async function review(id: string) { await click(id, 'Publish'); expect(text(row(id))).toContain(`Confirm - ${id === 'schedule-a' ? 2 : 5} credits`); }
+async function review(id: string) { await click(id, 'Publish'); expect(text(row(id))).toContain('Confirm publish'); }
 async function uncertainA() {
   await review('schedule-a'); mocks.publish.mockRejectedValueOnce(new Error('controlled lost response'));
-  await click('schedule-a', 'Confirm - 2 credits');
+  await click('schedule-a', 'Confirm publish');
   expect(mocks.publish).toHaveBeenCalledTimes(1);
   expect(text(row('schedule-a'))).toContain('Retry publish');
   return structuredClone(mocks.publish.mock.calls[0]);
@@ -92,17 +96,17 @@ describe('actual scheduling page publication replay', () => {
   ])('retains original custody after an internally valid %s success response', async (_label, wrongContract) => {
     await review('schedule-a');
     mocks.publish.mockResolvedValueOnce(published('schedule-a', wrongContract));
-    await click('schedule-a', 'Confirm - 2 credits');
+    await click('schedule-a', 'Confirm publish');
     const original = structuredClone(mocks.publish.mock.calls[0]);
     expect(text(row('schedule-a'))).toContain('DRAFT');
     expect(text(row('schedule-a'))).toContain('Retry publish');
-    expect(text(row('schedule-a'))).not.toContain('credits were debited exactly once');
+    expect(text(row('schedule-a'))).not.toContain('Schedule published.');
     const custody = mocks.refs.find(ref => ref.current?.['schedule-a']?.key === original[2]);
     expect(custody).toBeDefined();
     expect(custody.current['schedule-a'].payload.body).toEqual({ acceptedContract: contractA });
     await review('schedule-b');
     mocks.publish.mockResolvedValueOnce(published('schedule-b'));
-    await click('schedule-b', 'Confirm - 5 credits');
+    await click('schedule-b', 'Confirm publish');
     expect(text(row('schedule-b'))).toContain('PUBLISHED');
     mocks.publish.mockResolvedValueOnce(published('schedule-a'));
     await click('schedule-a', 'Retry publish');
@@ -125,7 +129,7 @@ describe('actual scheduling page publication replay', () => {
   it('replays A exact original body and key after successful B clears the shared review', async () => {
     const original = await uncertainA(); await review('schedule-b');
     mocks.publish.mockResolvedValueOnce(published('schedule-b'));
-    await click('schedule-b', 'Confirm - 5 credits');
+    await click('schedule-b', 'Confirm publish');
     expect(text(row('schedule-b'))).toContain('PUBLISHED');
     mocks.publish.mockResolvedValueOnce(published('schedule-a'));
     await click('schedule-a', 'Retry publish');
@@ -143,7 +147,7 @@ describe('actual scheduling page publication replay', () => {
   it('requires review and fresh confirmation before sending the first request', async () => {
     await review('schedule-a'); expect(mocks.publish).not.toHaveBeenCalled();
     const response = deferred<unknown>(); mocks.publish.mockReturnValueOnce(response.promise);
-    publishButton('schedule-a', 'Confirm - 2 credits').props.onClick();
+    publishButton('schedule-a', 'Confirm publish').props.onClick();
     await h.until(tree => text(tree).includes('Checking...'));
     expect(text(row('schedule-a'))).toContain('DRAFT');
     response.resolve(published('schedule-a')); await h.until(idle);
@@ -173,12 +177,13 @@ describe('actual scheduling page publication replay', () => {
   it('requires reconfirmation when fresh preflight costs change before the first POST', async () => {
     await review('schedule-a');
     mocks.preflight.mockResolvedValueOnce(preflight('schedule-a', contractB));
-    await click('schedule-a', 'Confirm - 2 credits');
+    await click('schedule-a', 'Confirm publish');
     expect(mocks.publish).not.toHaveBeenCalled();
-    expect(text(row('schedule-a'))).toContain('Confirm - 5 credits');
+    expect(text(h.render())).toContain('publish details changed');
+    expect(text(row('schedule-a'))).toContain('Confirm publish');
     mocks.preflight.mockResolvedValueOnce(preflight('schedule-a', contractB));
     mocks.publish.mockResolvedValueOnce(published('schedule-a', contractB));
-    await click('schedule-a', 'Confirm - 5 credits');
+    await click('schedule-a', 'Confirm publish');
     expect(mocks.publish).toHaveBeenCalledExactlyOnceWith('schedule-a', { acceptedContract: contractB }, expect.any(String));
   });
   it('preserves the pending original request through repeated lost responses', async () => {
@@ -194,7 +199,7 @@ describe('actual scheduling page publication replay', () => {
   it('keeps single-flight protection while a confirmed publish response is unresolved', async () => {
     await review('schedule-a'); const response = deferred<unknown>(); const entered = deferred<void>();
     mocks.publish.mockImplementationOnce(() => { entered.resolve(); return response.promise; });
-    const confirm = publishButton('schedule-a', 'Confirm - 2 credits');
+    const confirm = publishButton('schedule-a', 'Confirm publish');
     confirm.props.onClick(); await entered.promise;
     try {
       confirm.props.onClick();

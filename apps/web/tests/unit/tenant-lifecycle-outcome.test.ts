@@ -105,10 +105,10 @@ function callbackFixture(response: () => Promise<Response>, confirmation = true)
     loading: false, tenants: [tenant], selectedTenantId: target };
   const write = vi.fn(async (_path: string, _init: RequestInit) => response());
   const read = vi.fn(async (_path: string) => ({ data: [tenant], pagination: { hasMore: false, nextCursor: null } }));
-  const confirm = vi.fn(() => confirmation);
+  const confirm = vi.fn(async (..._args: unknown[]) => confirmation);
   const setter = (name: string) => (value: any) => { state[name] = typeof value === 'function' ? value(state[name]) : value; };
   const bindings = { tenantLifecycleOutcome, fetchWithSession: write, fetchJsonWithSession: read,
-    getCsrfHeaders: () => ({ 'x-csrf-token': 'controlled-csrf' }), confirmLifecycleAction: confirm,
+    getCsrfHeaders: () => ({ 'x-csrf-token': 'controlled-csrf' }), confirmLifecycleAction: confirm, promptAction: vi.fn(),
     buildAdminListPath, parseAdminListPagination, mergeAdminListPage, appliedQuery: '',
     ...Object.fromEntries(['error', 'notice', 'saving', 'lifecycleFeedback', 'loading', 'pagination', 'tenants', 'selectedTenantId']
       .map(name => [`set${name[0].toUpperCase()}${name.slice(1)}`, setter(name)])) };

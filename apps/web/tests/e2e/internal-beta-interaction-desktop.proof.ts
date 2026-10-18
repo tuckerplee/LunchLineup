@@ -226,26 +226,15 @@ test.describe('Internal beta desktop interaction proof', () => {
     await expect(page.getByLabel('End day for Staff One')).toBeDisabled();
     await expect(page.getByLabel('End time for Staff One')).toHaveValue('06:00');
     await expect(page.getByLabel('End time for Staff One')).toBeDisabled();
-    const billingDisclosure = page.locator('#setup-shifts-billing-requirement');
-    await expect(billingDisclosure).toContainText(/confirmed action saves exactly 1 setup shift record and uses exactly \d+ separately purchased usage credit/i);
-    const billingText = await billingDisclosure.innerText();
-    const exactCost = billingText.match(/uses exactly (\d+) separately purchased usage credit/i)?.[1];
-    expect(exactCost, 'Lunch setup exact credit cost').toBeTruthy();
-    const saveSetup = page.getByRole('button', { name: new RegExp(`Save 1 setup shift record · exactly ${exactCost} usage credit`) });
+    const saveSetup = page.getByRole('button', { name: 'Save shifts' });
     await expect(saveSetup).toBeEnabled();
-    const confirmPromise = page.waitForEvent('dialog');
-    const savePromise = saveSetup.click();
-    const confirm = await confirmPromise;
-    expect(confirm.message()).toMatch(new RegExp(`Confirm setup: save 1 unchanged schedule-backed shift record.*uses exactly ${exactCost} usage credit`, 'i'));
-    await confirm.accept();
-    await savePromise;
+    await saveSetup.click();
     const overnightRow = page.locator('button.schedule-row').filter({ hasText: 'Staff One' });
     await expect(overnightRow).toContainText('10:00 PM');
     await expect(overnightRow).toContainText('6:00 AM');
     for (const unsupported of ['Timeline', 'Staff', 'Conflicts']) {
       await expect(page.getByRole('button', { name: unsupported, exact: true })).toHaveCount(0);
     }
-    await expect(page.getByText(/Credit cost\/run:/)).toContainText(exactCost!);
     expect((await readShifts(page)).find((row) => row.id === overnight!.id)).toMatchObject(before);
 
     await page.goto('/dashboard/time-cards');

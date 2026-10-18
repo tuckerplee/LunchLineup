@@ -106,7 +106,7 @@ export function PayrollPeriodDetail({
     setSelected(new Set());
   }
 
-  async function confirm() {
+  async function submitConfirmation() {
     const generation = confirmationGeneration.current;
     if (confirmation === 'lock') await onLock();
     if (confirmation === 'export' && creditCost !== null && hasExportableEntries) await onExport(creditCost);
@@ -145,8 +145,8 @@ export function PayrollPeriodDetail({
 
       {confirmation ? <div ref={confirmationRef} className={`surface-card ${styles.confirmation}`} role="alertdialog" aria-modal="false" aria-labelledby="payroll-confirmation-title" tabIndex={-1} onKeyDown={(event) => { if (event.key === 'Escape' && (!isBusy || confirmation === 'export')) cancelConfirmation(); }}>
         <div className={styles.sectionHeading}><h3 id="payroll-confirmation-title" className={styles.confirmationTitle}>{confirmation === 'lock' ? 'Lock this payroll period?' : 'Create the payroll export?'}</h3><button className={styles.iconButton} type="button" onClick={cancelConfirmation} aria-label="Cancel confirmation"><X size={16} aria-hidden="true" /></button></div>
-        <p>{confirmation === 'lock' ? 'Locking closes this review. Any later correction must be recorded as an amendment in a future period.' : <>Creating this export uses <strong>{creditCost} {creditCost === 1 ? 'credit' : 'credits'}</strong>. Downloading it again does not use more credits.</>}</p>
-        <div className={styles.actionRow}><button className="btn btn-primary btn-sm" type="button" disabled={isBusy} onClick={() => void confirm()}>{confirmation === 'lock' ? <LockKeyhole size={15} aria-hidden="true" /> : <FileDown size={15} aria-hidden="true" />}{isBusy ? 'Working...' : confirmation === 'lock' ? 'Lock payroll' : 'Create export'}</button><button className="btn btn-secondary btn-sm" type="button" disabled={isBusy && confirmation !== 'export'} onClick={cancelConfirmation}>Cancel</button></div>
+        <p>{confirmation === 'lock' ? 'Locking closes this review. Any later correction must be recorded as an amendment in a future period.' : 'Creating this export prepares the payroll file for this locked period. You can download it again at any time.'}</p>
+        <div className={styles.actionRow}><button className="btn btn-primary btn-sm" type="button" disabled={isBusy} onClick={() => void submitConfirmation()}>{confirmation === 'lock' ? <LockKeyhole size={15} aria-hidden="true" /> : <FileDown size={15} aria-hidden="true" />}{isBusy ? 'Working...' : confirmation === 'lock' ? 'Lock payroll' : 'Create export'}</button><button className="btn btn-secondary btn-sm" type="button" disabled={isBusy && confirmation !== 'export'} onClick={cancelConfirmation}>Cancel</button></div>
       </div> : null}
 
       {period.status !== 'LOCKED' ? <section className={`surface-card ${styles.tablePanel}`} aria-labelledby="payroll-cards-title">
@@ -163,7 +163,7 @@ export function PayrollPeriodDetail({
 
       {showAmendments ? <PayrollAmendments entries={lockedEntries} amendments={amendments} periods={periods} sourcePeriod={period} currentUserId={currentUserId} canCreate={period.status === 'LOCKED' && capabilities.canReconcilePayroll} canDecide={capabilities.canApprovePayrollTimeCards} isBusy={isBusy} onCreate={onAmendment} onDecision={onAmendmentDecision} /> : null}
 
-      {batch ? <section className={`surface-card ${styles.panel}`} aria-labelledby="export-batch-title"><div className={styles.sectionHeading}><div><div className="workspace-kicker">Payroll export</div><h2 id="export-batch-title" className={styles.sectionTitle}>Export ready</h2></div><span className={styles.statusBadge}>{batch.rowCount} rows</span></div><dl className={styles.exportDetails}><div><dt>Status</dt><dd>{batch.status}</dd></div><div><dt>Signed payable</dt><dd>{formatSignedMinutes(batch.totalPayableMinutes)}</dd></div><div><dt>Credits used</dt><dd>{batch.settlement.consumedCredits}</dd></div><div><dt>Credit balance</dt><dd>{batch.settlement.newBalance}</dd></div></dl><p className={styles.helpText}>Download this file for your payroll provider, then confirm the provider results below.</p></section> : null}
+      {batch ? <section className={`surface-card ${styles.panel}`} aria-labelledby="export-batch-title"><div className={styles.sectionHeading}><div><div className="workspace-kicker">Payroll export</div><h2 id="export-batch-title" className={styles.sectionTitle}>Export ready</h2></div><span className={styles.statusBadge}>{batch.rowCount} rows</span></div><dl className={styles.exportDetails}><div><dt>Status</dt><dd>{batch.status}</dd></div><div><dt>Signed payable</dt><dd>{formatSignedMinutes(batch.totalPayableMinutes)}</dd></div></dl><p className={styles.helpText}>Download this file for your payroll provider, then confirm the provider results below.</p></section> : null}
 
       {batch && capabilities.canReconcilePayroll ? <PayrollReconciliation batch={batch} replay={reconciliationReplay} isBusy={isBusy} onLoadLines={onLoadExportLines} onSubmit={onReconcile} onReplay={onReplayReconciliation} /> : null}
 

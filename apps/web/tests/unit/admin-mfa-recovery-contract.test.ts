@@ -7,7 +7,9 @@ describe('platform admin MFA recovery wiring', () => {
         const source = readFileSync(resolve(__dirname, '../../app/admin/users/AdminUsersWorkspace.tsx'), 'utf8');
         expect(source).toContain('const expected = `reset-mfa:${selectedUser.id}`;');
         expect(source).toContain("`/admin/users/${selectedUser.id}/mfa/reset`");
-        expect(source).toContain('reason.trim().length < 10');
+        expect(source).toContain('value.trim().length >= 10');
+        expect(source).toContain('Confirmation must exactly equal ${expected}.');
+        expect(source).not.toMatch(/window\.(?:prompt|confirm)/);
         expect(source).toContain('isSelf || !selectedUser?.mfaEnabled');
         expect(source).toContain("selectedUser?.status === 'SUSPENDED'");
         expect(source).toContain('disabled={mfaDisabled}');

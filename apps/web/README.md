@@ -30,6 +30,10 @@ Next.js frontend for the LunchLineup platform. The web app is deployed as the `w
 - `vitest.config.ts` - Vitest configuration.
 - `vitest.shims.d.ts` - Vitest/browser shim declarations.
 
+## User messages
+
+All user-facing messages, confirmations and prompts go through the single message system in `lib/messages/` (`useAppMessages()` from `components/messages/AppMessages.tsx`), mounted by the dashboard and admin layouts. It renders inline in one consistent region, is tracked by stable code, and replaces every browser-native `alert`/`confirm`/`prompt`. See `lib/messages/README.md` for the API, rules and tracking contract. Do not add ad-hoc status banners or per-action credit-cost warnings.
+
 ## Access behavior
 
 `proxy.ts` allows users with `admin_portal:access` to access both the admin console and the team dashboard workspace. Super admins are not redirected away from `/dashboard`; the dashboard shell provides an Admin Console link when that permission is present. Scheduling access specifically requires effective `schedules:read`, `shifts:read`, and `locations:read` permissions. Lunch and break access requires effective `lunch_breaks:read` and `locations:read` permissions. These prerequisites stay aligned across the proxy, navigation, capability matrix, and page loaders; admin-portal access alone is not a bypass.

@@ -227,17 +227,15 @@ async function expectScopeBRowsInGuide(page: Page) {
 }
 
 async function submitConfirmedLunchSetup(page: Page) {
-  page.once('dialog', async (dialog) => dialog.accept());
-  await page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ }).click();
+  await page.getByRole('button', { name: 'Save shifts' }).click();
 }
 
 async function submitConfirmedLunchGeneration(page: Page, persisted: boolean, click: () => Promise<void>) {
-  const confirmation = page.waitForEvent('dialog').then(async (dialog) => {
-    expect(dialog.type()).toBe('confirm');
-    expect(dialog.message()).toBe(`Generate a lunch and break plan for 1 shift? This uses exactly 1 usage credit.${persisted ? ' Existing break assignments for these shifts will be replaced.' : ' This creates a preview.'} Unchanged retries recover the same request.`);
-    await dialog.accept();
-  });
-  await Promise.all([confirmation, click()]);
+  await click();
+  if (!persisted) return; // A preview runs immediately; a saved plan asks before replacing assignments.
+  const confirmation = page.getByRole('alertdialog', { name: 'Generate plan?' });
+  await expect(confirmation).toContainText('replaces the existing break assignments for 1 shift');
+  await confirmation.getByRole('button', { name: 'Generate plan' }).click();
 }
 
 test.describe('Lunch setup editor safety', () => {
@@ -286,7 +284,7 @@ test.describe('Lunch setup editor safety', () => {
           body: JSON.stringify({
             statusCode: 403,
             code: 'SETUP_SHIFTS_ENTITLEMENT_REQUIRED',
-            message: 'Setup shifts require an active paid subscription and enough usage credits.',
+            message: 'Saving shifts is blocked: this workspace needs an active subscription or has run out of credits.',
             remediation: 'Activate a paid subscription or add usage credits, then retry the unchanged setup.',
           }),
         });
@@ -387,10 +385,9 @@ test.describe('Lunch setup editor safety', () => {
     await expect(page.getByRole('link', { name: 'Open Calendar to correct this shift' })).toBeVisible();
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
 
-    const continueButton = page.getByRole('button', { name: 'Save 1 setup shift record · exactly 1 usage credit' });
-    page.once('dialog', async (dialog) => dialog.accept());
+    const continueButton = page.getByRole('button', { name: 'Save shifts' });
     await continueButton.click();
-    await expect(page.getByRole('alert').filter({ hasText: 'Subscription and credits required' })).toBeVisible();
+    await expect(page.getByRole('alert').filter({ hasText: 'run out of credits' })).toBeVisible();
     await expect(continueButton).toBeFocused();
 
     const retained = await page.evaluate((key) => {
@@ -407,7 +404,6 @@ test.describe('Lunch setup editor safety', () => {
     expect(retained?.[0]?.expiresAt).toBeLessThanOrEqual(Date.now() + SETUP_SHIFTS_RECOVERY_TTL_MS);
     expect(JSON.stringify(retained)).not.toMatch(/requestBody|rows|Mock Staff|user-mock-staff|loc-downtown/);
 
-    page.once('dialog', async (dialog) => dialog.accept());
     await continueButton.click();
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeFocused();
     await expectAccessibleGuidedScreen(page);
@@ -665,8 +661,7 @@ test.describe('Lunch setup editor safety', () => {
     await expectScopeBPlannerReset(page);
     await expectScopeBRowsInGuide(page);
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
-    const continueB = page.getByRole('button', { name: /Save \d+ setup shift records? · exactly \d+ usage credits?/ });
-    page.once('dialog', async (dialog) => dialog.accept());
+    const continueB = page.getByRole('button', { name: 'Save shifts' });
     await continueB.click();
     await expect.poll(() => setupCalls.filter((call) => call.locationId === 'loc-uptown').length).toBe(1);
 
@@ -1040,13 +1035,10 @@ test.describe.serial('Stress operations workflows', { tag: '@full-stack' }, () =
     await page.getByRole('button', { name: /Review \d+ shifts?/ }).click();
     await submitConfirmedLunchSetup(page);
     await expect(page.getByRole('heading', { name: /Lunch & break canvas/ })).toBeVisible();
-    const confirmationPromise = page.waitForEvent('dialog');
-    const generationClick = page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
-    const confirmation = await confirmationPromise;
-    expect(confirmation.type()).toBe('confirm');
-    expect(confirmation.message()).toMatch(/Generate a lunch and break plan for 1 shift\? This uses exactly \d+ usage credits?/);
-    await confirmation.accept();
-    await generationClick;
+    await page.getByRole('button', { name: 'Generate Lunch & Break Plan' }).click();
+    const generationConfirmation = page.getByRole('alertdialog', { name: 'Generate plan?' });
+    await expect(generationConfirmation).toContainText('replaces the existing break assignments for 1 shift');
+    await generationConfirmation.getByRole('button', { name: 'Generate plan' }).click();
     await expect(page.getByText('Meals assigned: 1')).toBeVisible();
     await expect(page.getByText('Breaks assigned: 2')).toBeVisible();
 

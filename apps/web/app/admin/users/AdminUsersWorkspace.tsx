@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Users } from 'lucide-react';
+import { useAppMessages, useStatusMessage } from '@/components/messages/AppMessages';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
 import {
     EMPTY_ADMIN_LIST_PAGINATION,
@@ -222,6 +223,8 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const [recoveryKey, setRecoveryKey] = useState<string | null>(null);
     const recoveryInFlight = useRef(false);
     const [message, setMessage] = useState<Banner>(null);
+    const { confirmAction, promptAction } = useAppMessages();
+    useStatusMessage(message?.tone === 'error' ? 'error' : 'success', 'admin.users.action', message?.text);
     const [temporaryPin, setTemporaryPin] = useState<{ userId: string; pin: string } | null>(null);
     const userRequestId = useRef(0);
     const tenantRequestId = useRef(0);
@@ -382,7 +385,13 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
     const resetPin = useCallback(async () => {
         if (recoveryInFlight.current) return;
         if (!selectedUser || isSelf || !selectedUser.username || selectedUser.status === 'DELETED' || selectedUser.status === 'SUSPENDED') return;
-        if (!window.confirm(`Reset the PIN for ${selectedUser.name}? This signs them out of all sessions.`)) return;
+        if (!await confirmAction({
+            code: 'admin.users.reset_pin.confirm',
+            title: `Reset the PIN for ${selectedUser.name}?`,
+            body: 'This signs them out of all sessions.',
+            confirmLabel: 'Reset PIN',
+            tone: 'danger',
+        })) return;
         recoveryInFlight.current = true;
         setRecoveryKey(`pin:${selectedUser.id}`);
         setMessage(null);
@@ -403,26 +412,31 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             recoveryInFlight.current = false;
             setRecoveryKey(null);
         }
-    }, [isSelf, refreshUsers, selectedUser]);
+    }, [confirmAction, isSelf, refreshUsers, selectedUser]);
 
     const resetMfa = useCallback(async () => {
         if (recoveryInFlight.current) return;
         if (!selectedUser || isSelf || !selectedUser.mfaEnabled || !canMutateAdminUserLifecycle(selectedUser.status) || selectedUser.status === 'SUSPENDED') return;
         const expected = `reset-mfa:${selectedUser.id}`;
-        const confirmation = typeof window === 'undefined'
-            ? null
-            : window.prompt(`Type ${expected} to clear MFA factors and revoke all sessions.`);
+        const confirmation = await promptAction({
+            code: 'admin.users.reset_mfa.confirm',
+            title: 'Clear MFA factors?',
+            body: 'This clears MFA factors and revokes all sessions.',
+            label: `Type ${expected} to confirm`,
+            confirmLabel: 'Continue',
+            tone: 'danger',
+            validate: (value) => value === expected ? null : `Confirmation must exactly equal ${expected}.`,
+        });
         if (confirmation === null) return;
-        if (confirmation !== expected) {
-            setMessage({ tone: 'error', text: `Confirmation must exactly equal ${expected}.` });
-            return;
-        }
-        const reason = typeof window === 'undefined' ? null : window.prompt('Enter the support reason for this MFA recovery.');
+        const reason = await promptAction({
+            code: 'admin.users.reset_mfa.reason',
+            title: 'Support reason',
+            label: 'Enter the support reason for this MFA recovery',
+            confirmLabel: 'Clear MFA',
+            tone: 'danger',
+            validate: (value) => value.trim().length >= 10 ? null : 'Recovery reason must contain at least 10 characters.',
+        });
         if (reason === null) return;
-        if (reason.trim().length < 10) {
-            setMessage({ tone: 'error', text: 'Recovery reason must contain at least 10 characters.' });
-            return;
-        }
 
         recoveryInFlight.current = true;
         setRecoveryKey(`mfa:${selectedUser.id}`);
@@ -438,7 +452,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
             recoveryInFlight.current = false;
             setRecoveryKey(null);
         }
-    }, [isSelf, refreshUsers, selectedUser]);
+    }, [isSelf, promptAction, refreshUsers, selectedUser]);
 
     const toggleLock = useCallback(async (targetUser?: AdminUser) => {
         const user = targetUser ?? selectedUser;
@@ -479,9 +493,13 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                 await writeJson(`/admin/users/${user.id}/activate`, 'POST');
                 setMessage({ tone: 'success', text: `${user.name} was reactivated.` });
             } else {
-                const confirmed = typeof window === 'undefined'
-                    ? true
-                    : window.confirm(`Suspend ${user.name}? This revokes current sessions while preserving identity and credentials. Reactivation restores sign-in.`);
+                const confirmed = await confirmAction({
+                    code: 'admin.users.suspend.confirm',
+                    title: `Suspend ${user.name}?`,
+                    body: 'This revokes current sessions while preserving identity and credentials. Reactivation restores sign-in.',
+                    confirmLabel: 'Suspend',
+                    tone: 'danger',
+                });
                 if (!confirmed) return;
                 await writeJson(`/admin/users/${user.id}/suspend`, 'POST');
                 setMessage({ tone: 'success', text: `${user.name} was suspended.` });
@@ -492,7 +510,7 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
         } finally {
             setSavingKey(null);
         }
-    }, [currentUserId, refreshUsers, selectedUser]);
+    }, [confirmAction, currentUserId, refreshUsers, selectedUser]);
 
     const selectUser = useCallback((userId: string) => {
         setSelectedUserId(userId);
@@ -547,22 +565,6 @@ export function AdminUsersWorkspace({ currentUserId }: WorkspaceProps) {
                     </div>
                 </div>
             </section>
-
-            {message ? (
-                <div role={message.tone === 'error' ? 'alert' : 'status'}
-                    style={{
-                        padding: '0.8rem 0.95rem',
-                        borderRadius: 12,
-                        border: message.tone === 'success' ? '1px solid #bdeed4' : '1px solid #ffd0da',
-                        background: message.tone === 'success' ? '#e9fbf1' : '#fff1f4',
-                        color: message.tone === 'success' ? '#166534' : '#b4233f',
-                        fontWeight: 600,
-                        fontSize: '0.86rem',
-                    }}
-                >
-                    {message.text}
-                </div>
-            ) : null}
 
             <section
                 className="surface-card"

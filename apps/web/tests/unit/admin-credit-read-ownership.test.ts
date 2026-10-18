@@ -125,9 +125,11 @@ function fixture() {
     let stateIndex = 0, refIndex = 0, holding = false, cleanup: (() => void) | undefined;
     let effects: Array<() => void | (() => void)> = [], current: { tree: Element };
     const apply = (name: string, value: any) => state.set(name, typeof value === 'function' ? value(state.get(name)) : value);
+    const confirmAction = vi.fn(async () => true);
     const bindings = {
         React, styles: {}, ...lists, creditGrantConfirmation, estimateCreditGrant, isCreditBalanceValue, createCreditReadOwner, createCreditGrantSubmissionState, submitCreditGrant,
-        parseCreditGrantAcknowledgement, withIdempotencyKey, document: undefined, window: { confirm: vi.fn(() => true) },
+        parseCreditGrantAcknowledgement, withIdempotencyKey, document: undefined, window: {},
+        useAppMessages: () => ({ confirmAction }), useStatusMessage: vi.fn(),
         useState(initial: any) {
             const name = stateNames[stateIndex++]; if (!name) throw new Error('Unexpected state slot');
             if (!state.has(name)) state.set(name, typeof initial === 'function' ? initial() : initial);
@@ -155,7 +157,7 @@ function fixture() {
     }
     async function flush() { for (let index = 0; index < 10; index += 1) await Promise.resolve(); render(); }
     render(); expect(effects).toHaveLength(1); cleanup = effects[0]() || undefined;
-    return { state, refs, reads, writes, setterCalls, render, button, flush, confirm: bindings.window.confirm,
+    return { state, refs, reads, writes, setterCalls, render, button, flush, confirm: confirmAction,
         click(label: string) { const node = button(label); expect(node.props.disabled).not.toBe(true); node.props.onClick(); },
         search(query: string) {
             one(render(), node => node.type === 'input' && node.props.placeholder === 'Search by tenant name or slug').props.onChange({ target: { value: query } });
@@ -247,7 +249,7 @@ describe('actual CreditsClient read ownership wiring', () => {
     it('keeps grant ownership independent and reads current search after the earlier ACK', async () => {
         vi.stubGlobal('crypto', { randomUUID: () => 'credit-read-owner-grant-key' });
         const f = fixture(); await f.complete(0, pageData()); f.draft();
-        f.grant(); expect(f.writes).toHaveLength(1);
+        f.grant(); await f.flush(); expect(f.writes).toHaveLength(1);
         expect(JSON.parse(String(f.writes[0].init.body))).toEqual({ tenantId: 'B', amount: 25, reason: 'Retain this draft' });
         expect(new Headers(f.writes[0].init.headers).get('idempotency-key')).toBe('credit-read-owner-grant-key');
         f.search('aurora'); await f.complete(1, pageData([A], null)); f.draft('A', '7', 'New Aurora draft');
@@ -264,7 +266,7 @@ describe('actual CreditsClient read ownership wiring', () => {
 
     it('finishes an acknowledged mutation after unmount without restarting reads or publishing UI state', async () => {
         vi.stubGlobal('crypto', { randomUUID: () => 'unmounted-credit-grant-key' });
-        const f = fixture(); await f.complete(0, pageData()); f.draft(); f.grant();
+        const f = fixture(); await f.complete(0, pageData()); f.draft(); f.grant(); await f.flush();
         f.unmount(); const count = f.setterCalls.length;
         f.writes[0].response.resolve(new Response(JSON.stringify({ success: true, newBalance: 65 }), { status: 201 }));
         await vi.waitFor(() => expect(f.refs.get('grantSubmission')!.current.inFlight).toBe(false));
@@ -306,7 +308,7 @@ describe('actual CreditsClient grant input boundary', () => {
         { label: '500 Unicode code units', reason: '😀'.repeat(250) },
     ])('confirms and submits exact trimmed $label without truncating the displayed draft', async ({ reason }) => {
         vi.stubGlobal('crypto', { randomUUID: () => 'valid-reason-input-key' });
-        const f = fixture(); await f.complete(0, pageData()); f.draft('B', '25', reason); f.grant();
+        const f = fixture(); await f.complete(0, pageData()); f.draft('B', '25', reason); f.grant(); await f.flush();
         expect(f.confirm).toHaveBeenCalledOnce(); expect(f.writes).toHaveLength(1);
         expect(JSON.parse(String(f.writes[0].init.body))).toEqual({ tenantId: 'B', amount: 25, reason: reason.trim() });
         expect(f.state.get('form').reason).toBe(reason);
@@ -317,7 +319,7 @@ describe('actual CreditsClient grant input boundary', () => {
     it('keeps an above-Int32 debt repayment amount eligible for deliberate submission', async () => {
         vi.stubGlobal('crypto', { randomUUID: () => 'combined-debt-input-key' });
         const f = fixture(); await f.complete(0, pageData([A, { ...B, usageCredits: 0, creditDebt: 2_147_483_647 }]));
-        f.draft('B', '4294967294', 'Combined capacity'); f.grant();
+        f.draft('B', '4294967294', 'Combined capacity'); f.grant(); await f.flush();
         expect(f.confirm).toHaveBeenCalledOnce(); expect(f.writes).toHaveLength(1);
         expect(JSON.parse(String(f.writes[0].init.body))).toEqual({ tenantId: 'B', amount: 4_294_967_294, reason: 'Combined capacity' });
         f.writes[0].response.resolve(new Response(JSON.stringify({ success: true, newBalance: 2_147_483_647 }), { status: 201 }));

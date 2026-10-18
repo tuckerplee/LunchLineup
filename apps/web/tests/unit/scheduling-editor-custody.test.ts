@@ -18,6 +18,10 @@ vi.mock('react', async original => ({ ...await original<typeof import('react')>(
 vi.mock('next/navigation', () => ({ useSearchParams: () => new URLSearchParams('date=2026-10-04&location=11111111-1111-4111-8111-111111111111') }));
 vi.mock('next/dynamic', () => ({ default: () => 'controlled-schedule-board' }));
 vi.mock('@/components/ui/button', () => ({ Button: 'button' }));
+vi.mock('@/components/messages/AppMessages', () => ({
+  useAppMessages: () => ({ success: vi.fn(), info: vi.fn(), warning: vi.fn(), error: vi.fn(), dismiss: vi.fn(), dismissCode: vi.fn(), confirmAction: vi.fn(async () => true), promptAction: vi.fn(async () => null) }),
+  useStatusMessage: () => undefined,
+}));
 vi.mock('@/lib/api-v2', () => ({ apiV2: { getScheduleBoard: mocks.board, createSchedule: mocks.create, applyScheduleChangeSet: mocks.apply } }));
 vi.mock('../../app/dashboard/scheduling/use-schedule-commands', () => ({ useScheduleCommands: () => ({ commandState: { byShiftId: {} }, updateShift: vi.fn(), copyShift: vi.fn(), deleteShift: vi.fn(), undoShift: vi.fn(), dismissFeedback: vi.fn() }) }));
 import SchedulingPage from '../../app/dashboard/scheduling/page';
