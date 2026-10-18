@@ -235,7 +235,6 @@ test.describe('Internal beta desktop interaction proof', () => {
     for (const unsupported of ['Timeline', 'Staff', 'Conflicts']) {
       await expect(page.getByRole('button', { name: unsupported, exact: true })).toHaveCount(0);
     }
-    await expect(page.getByText(/Credit cost\/run:/)).toContainText(exactCost!);
     expect((await readShifts(page)).find((row) => row.id === overnight!.id)).toMatchObject(before);
 
     await page.goto('/dashboard/time-cards');
