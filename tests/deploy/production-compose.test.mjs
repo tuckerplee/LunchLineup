@@ -1780,8 +1780,7 @@ test('Grafana dashboard copy exposes host filesystem pressure and native availab
   assert.match(availability.description, /No traffic yields no data/);
   assert.match(availability.description, /provisional until complete historical collection and independent launch evidence exist/);
   assert.match(availability.description, /cannot certify a complete 30-day SLO or months of private testing/);
-  assert.match(dashboard, /Public Web Availability SLO \(30d\)/);
-  assert.match(dashboard, /lunchlineup_public_web_probe_success/);
+  assert.doesNotMatch(dashboard, /lunchlineup_public_web_probe/);
   assert.doesNotMatch(dashboard, /"id": "tempo"/);
   assert.match(dashboard, /LunchLineup Platform Overview/);
   assert.equal(existsSync(join(root, 'infrastructure/grafana')), false, 'Grafana provisioning belongs to the estate');
@@ -1808,8 +1807,6 @@ test('Estate Prometheus alerts point at checked-in runbooks and cover the applic
     'HighApiLatency',
     'ApiAvailabilityBudgetFastBurn',
     'ApiAvailabilityBudgetSlowBurn',
-    'PublicWebAvailabilityBudgetFastBurn',
-    'PublicWebAvailabilityBudgetSlowBurn',
     'RequiredApiDependencyUnavailable',
     'WorkerJobFailures',
     'WebhookReplayNotReady',
@@ -1833,7 +1830,6 @@ test('Estate Prometheus alerts point at checked-in runbooks and cover the applic
   );
   assert.match(alerts, /ApiAvailabilityBudgetFastBurn[\s\S]*14\.4 \* 0\.001/);
   assert.match(alerts, /ApiAvailabilityBudgetSlowBurn[\s\S]*6 \* 0\.001/);
-  assert.match(alerts, /PublicWebAvailabilityBudgetFastBurn[\s\S]*avg_over_time/);
   assert.match(alerts, /lunchlineup_retention_purge_last_attempt_timestamp_seconds/);
   assert.match(alerts, /docs\/runbooks\/data-retention-delete-export\.md/);
   assert.doesNotMatch(alerts, /github\.com\/org\/lunchlineup|runbook:\s*"https:\/\/github\.com\/org/i);

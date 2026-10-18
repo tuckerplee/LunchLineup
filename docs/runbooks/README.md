@@ -23,7 +23,6 @@
 - `production-cutover.md`: current plan for replacing the legacy PHP app at lunchlineup.com: `deploy-release.sh --target production` path, rehearsal, cutover steps, go/no-go criteria and rollback (supersedes the VM217/Sigstore runbooks).
 - `production-readiness.md`: public SaaS production launch preflight, required remote versioned Terraform state, immutable release, scheduled encrypted offsite backup, cleanup/absence-bound DR proof, alert, and post-deploy checks.
 - `postgres-pitr-recovery.md`: estate pgBackRest point-in-time recovery contract, the application WAL-archive hook, and the application-side restore steps.
-- `public-web-unavailable.md`: public DNS, TLS, Caddy, Next.js, release-header, and host-probe paging response.
 - `security-incident.md`: security incident response.
 - `service-level-objectives.md`: public web and API availability objectives, multi-window error-budget alerts, dashboards, response, and launch evidence.
 

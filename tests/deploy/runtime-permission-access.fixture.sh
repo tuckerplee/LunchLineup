@@ -66,13 +66,13 @@ materialize_release() {
   release="$release_root/$sha"
   mkdir -p "$release/infrastructure/control"
   printf 'services:\n  backup: {}\n  pitr-base-backup: {}\n' > "$release/docker-compose.yml"
-  printf '#!/bin/sh\nexit 0\n' > "$release/infrastructure/control/public-web-probe.sh"
+  printf '#!/bin/sh\nexit 0\n' > "$release/infrastructure/control/release-check.sh"
   printf '%s\n' "$sha" > "$release/DEPLOYED_GIT_SHA"
   find "$release" -type d -exec chown "root:$service_gid" {} + -exec chmod 550 {} +
   chown "root:$service_gid" "$release/docker-compose.yml" "$release/DEPLOYED_GIT_SHA" \
-    "$release/infrastructure/control/public-web-probe.sh"
+    "$release/infrastructure/control/release-check.sh"
   chmod 440 "$release/docker-compose.yml" "$release/DEPLOYED_GIT_SHA"
-  chmod 550 "$release/infrastructure/control/public-web-probe.sh"
+  chmod 550 "$release/infrastructure/control/release-check.sh"
 }
 
 source_a="$(printf '%040d' 0 | tr 0 1)"
@@ -88,12 +88,12 @@ mv -Tf "$pointer_tmp" "$live_app/current"
 
 [ "$(stat -c '%u:%g:%a' "$release_root/$source_b")" = "0:$service_gid:550" ]
 [ "$(stat -c '%u:%g:%a' "$release_root/$source_b/docker-compose.yml")" = "0:$service_gid:440" ]
-[ "$(stat -c '%u:%g:%a' "$release_root/$source_b/infrastructure/control/public-web-probe.sh")" = "0:$service_gid:550" ]
+[ "$(stat -c '%u:%g:%a' "$release_root/$source_b/infrastructure/control/release-check.sh")" = "0:$service_gid:550" ]
 [ "$(cat "$live_app/DEPLOYED_GIT_SHA")" = "$source_a" ]
 [ "$(cat "$live_app/current/DEPLOYED_GIT_SHA")" = "$source_b" ]
 
 setpriv --reuid="$service_uid" --regid="$service_gid" --clear-groups \
-  sh -c 'cd "$1" && test -r docker-compose.yml && test -r "$2" && test "$(cat DEPLOYED_GIT_SHA)" = "$3" && ./infrastructure/control/public-web-probe.sh' \
+  sh -c 'cd "$1" && test -r docker-compose.yml && test -r "$2" && test "$(cat DEPLOYED_GIT_SHA)" = "$3" && ./infrastructure/control/release-check.sh' \
   sh "$live_app/current" "$durable_runtime" "$source_b"
 
 echo "runtime_permission_access_fixture_ok uid=$service_uid gid=$service_gid"

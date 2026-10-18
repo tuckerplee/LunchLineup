@@ -244,7 +244,7 @@ node scripts/verify-observability-configs.mjs --root . --tool-mode auto
 
 Use `--tool-mode host` to fail if any host tool is missing, or `--tool-mode container` to execute the digest-pinned fallback containers. Container mode requires Docker and is the release gate for real Caddy validation of every Caddyfile plus estate Prometheus rule validation and the `docs/estate/tests` fixtures; the focused deploy test also executes it whenever a Docker daemon is available.
 
-The same verifier checks the host-level public web probe, hardened systemd unit/timer, textfile metric path, critical estate-rule failure/staleness alerts, and checked-in runbook. This probe exercises the public edge without adding egress to an application container.
+The same verifier checks the estate rules, rule tests and dashboards. Public web probing is the estate blackbox probe, not an application component.
 
 ## Code Organization Note
 

@@ -26,10 +26,6 @@ export const OBSERVABILITY_FILES = Object.freeze({
   estateRuleTestDeletion: 'docs/estate/tests/tenant-deletion-billing.test.yml',
   platformDashboard: 'docs/estate/dashboards/platform-overview.json',
   deletionDashboard: 'docs/estate/dashboards/tenant-deletion-billing.json',
-  publicWebProbe: 'infrastructure/control/public-web-probe.sh',
-  publicWebProbeEnv: 'infrastructure/systemd/lunchlineup-public-web-probe.env.example',
-  publicWebProbeService: 'infrastructure/systemd/lunchlineup-public-web-probe.service',
-  publicWebProbeTimer: 'infrastructure/systemd/lunchlineup-public-web-probe.timer',
 });
 
 export const OBSERVABILITY_TOOL_IMAGES = Object.freeze({
@@ -90,14 +86,10 @@ const expectedAlerts = Object.freeze([
   'NativeApiHttpInstrumentationUnavailable',
   'HighNativeApiErrorRate',
   'HighNativeApiLatency',
-  'PublicWebUnavailable',
-  'PublicWebProbeStale',
   'HighApiErrorRate',
   'HighApiLatency',
   'ApiAvailabilityBudgetFastBurn',
   'ApiAvailabilityBudgetSlowBurn',
-  'PublicWebAvailabilityBudgetFastBurn',
-  'PublicWebAvailabilityBudgetSlowBurn',
   'RequiredApiDependencyUnavailable',
   'WorkerJobFailures',
   'WebhookReplayNotReady',
@@ -837,68 +829,6 @@ function validateWebContentSecurityPolicy(root, errors, checked) {
 }
 
 
-function validatePublicWebProbe(root, errors, checked) {
-  const script = readText(root, OBSERVABILITY_FILES.publicWebProbe, errors, checked);
-  const environment = readText(root, OBSERVABILITY_FILES.publicWebProbeEnv, errors, checked);
-  const service = readText(root, OBSERVABILITY_FILES.publicWebProbeService, errors, checked);
-  const timer = readText(root, OBSERVABILITY_FILES.publicWebProbeTimer, errors, checked);
-
-  for (const token of [
-    "--proto '=https'",
-    '--tlsv1.2',
-    '--connect-timeout "$PUBLIC_WEB_PROBE_CONNECT_TIMEOUT_SECONDS"',
-    '--max-time "$PUBLIC_WEB_PROBE_MAX_TIME_SECONDS"',
-    '--max-filesize "$PUBLIC_WEB_PROBE_MAX_BYTES"',
-    '--max-redirs 0',
-    '--resolve "$validated_host:443:$validated_ip"',
-    'lunchlineup_public_web_probe_success',
-    'lunchlineup_public_web_probe_last_attempt_timestamp_seconds',
-    'X-LunchLineUp-Release',
-    '<h1>LunchLineup</h1>',
-    '/_next/static/',
-    'mv "$metrics_tmp" "$PUBLIC_WEB_PROBE_METRICS_FILE"',
-  ]) {
-    expect(errors, script.includes(token), `${OBSERVABILITY_FILES.publicWebProbe}: missing ${token}`);
-  }
-  expect(errors, script.includes('parsed.scheme != "https"'), `${OBSERVABILITY_FILES.publicWebProbe}: URL validation must require HTTPS`);
-  expect(errors, script.includes('parsed.path not in ("", "/")'), `${OBSERVABILITY_FILES.publicWebProbe}: URL validation must require the root path`);
-  expect(errors, script.includes('parsed.username or parsed.password or parsed.query or parsed.fragment'), `${OBSERVABILITY_FILES.publicWebProbe}: URL validation must reject credentials, queries, and fragments`);
-  expect(errors, script.includes('socket.getaddrinfo(host, 443'), `${OBSERVABILITY_FILES.publicWebProbe}: URL validation must resolve the public hostname`);
-  expect(errors, script.includes('any(not address.is_global for address in addresses)'), `${OBSERVABILITY_FILES.publicWebProbe}: URL validation must reject private DNS answers`);
-
-  for (const token of [
-    'PUBLIC_WEB_PROBE_URL=https://lunchlineup.com/',
-    'PUBLIC_WEB_PROBE_METRICS_FILE=/var/lib/node_exporter/textfile_collector/lunchlineup_public_web.prom',
-    'PUBLIC_WEB_PROBE_EXPECTED_RELEASE_FILE=/opt/lunchlineup/current/DEPLOYED_GIT_SHA',
-    'PUBLIC_WEB_PROBE_CONNECT_TIMEOUT_SECONDS=5',
-    'PUBLIC_WEB_PROBE_MAX_TIME_SECONDS=15',
-    'PUBLIC_WEB_PROBE_MAX_BYTES=262144',
-  ]) {
-    expect(errors, environment.includes(token), `${OBSERVABILITY_FILES.publicWebProbeEnv}: missing ${token}`);
-  }
-
-  for (const token of [
-    'User=lunchlineup',
-    'EnvironmentFile=/etc/lunchlineup/public-web-probe.env',
-    'ExecStart=/usr/bin/bash /opt/lunchlineup/current/infrastructure/control/public-web-probe.sh',
-    'TimeoutStartSec=25s',
-    'NoNewPrivileges=true',
-    'ProtectSystem=strict',
-    'ReadWritePaths=/var/lib/node_exporter/textfile_collector',
-    'RestrictAddressFamilies=AF_INET AF_INET6',
-  ]) {
-    expect(errors, service.includes(token), `${OBSERVABILITY_FILES.publicWebProbeService}: missing ${token}`);
-  }
-
-  for (const token of [
-    'OnBootSec=30s',
-    'OnUnitActiveSec=60s',
-    'Persistent=true',
-    'Unit=lunchlineup-public-web-probe.service',
-  ]) {
-    expect(errors, timer.includes(token), `${OBSERVABILITY_FILES.publicWebProbeTimer}: missing ${token}`);
-  }
-}
 
 
 function validateComposeEstateShape(compose, errors) {
@@ -1069,7 +999,6 @@ export function validateObservabilityConfigs(options = {}) {
   validateMetricsGateway(root, OBSERVABILITY_FILES.caddyPilot, errors, checked);
   validateMetricsGateway(root, OBSERVABILITY_FILES.caddyProduction, errors, checked);
   validateWebContentSecurityPolicy(root, errors, checked);
-  validatePublicWebProbe(root, errors, checked);
   validateEstateRules(root, errors, checked);
   validateEstateTargets(root, errors, checked);
   validateEstateDashboards(root, errors, checked);

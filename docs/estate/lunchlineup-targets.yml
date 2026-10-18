@@ -26,11 +26,13 @@
 # path below. The gateway answers 401 without the token and 404 for unknown paths.
 #
 # Host metrics (job `node`, the VM's node_exporter plus its textfile collector for
-# the public web probe and retention timers) are scraped by the estate's normal
+# the retention timers) are scraped by the estate's normal
 # node_exporter job (target 10.1.50.10:9100, honor_labels true, labels site=p1,
 # host=p1-lunchlineup-dev01, role=app, env=dev); lunchlineup-rules.yml selects
 # job="node" with host="p1-lunchlineup-dev01", not the instance. The textfile
 # collector directory is /var/lib/node_exporter/textfile_collector.
+# Public HTTPS probing of https://dev.lunchlineup.com/ and /health is done by the
+# estate blackbox probe, not by the application; the app ships no public web probe.
 scrape_configs:
   - job_name: lunchlineup
     scrape_interval: 15s

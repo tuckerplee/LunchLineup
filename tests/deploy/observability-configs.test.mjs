@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import test from 'node:test';
@@ -17,7 +17,6 @@ import {
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 const verifierPath = join(root, 'scripts/verify-observability-configs.mjs');
-const bashPath = process.platform === 'win32' ? 'C:\\Program Files\\Git\\bin\\bash.exe' : '/bin/bash';
 const dockerAvailable = spawnSync('docker', ['version', '--format', '{{.Server.Version}}'], {
   encoding: 'utf8',
   timeout: 15_000,
@@ -332,84 +331,6 @@ test('automatic application-data execution has independent missing and 26-hour s
     panel.title === 'Application Data Retention Execution Age'
       && panel.targets?.some((target) => target.expr.includes('mode="execute",stage="application_data"')),
   ));
-});
-
-test('public web paging probe is external, bounded, release-aware, and fail-closed', () => {
-  const script = readFileSync(join(root, OBSERVABILITY_FILES.publicWebProbe), 'utf8');
-  const service = readFileSync(join(root, OBSERVABILITY_FILES.publicWebProbeService), 'utf8');
-  const timer = readFileSync(join(root, OBSERVABILITY_FILES.publicWebProbeTimer), 'utf8');
-  const alerts = readFileSync(join(root, OBSERVABILITY_FILES.estateRules), 'utf8');
-  const runbook = readFileSync(join(root, 'docs/runbooks/public-web-unavailable.md'), 'utf8');
-
-  assert.match(script, /--proto '=https'/);
-  assert.match(script, /--connect-timeout "\$PUBLIC_WEB_PROBE_CONNECT_TIMEOUT_SECONDS"/);
-  assert.match(script, /--max-time "\$PUBLIC_WEB_PROBE_MAX_TIME_SECONDS"/);
-  assert.match(script, /--max-filesize "\$PUBLIC_WEB_PROBE_MAX_BYTES"/);
-  assert.match(script, /--max-redirs 0/);
-  assert.match(script, /--resolve "\$validated_host:443:\$validated_ip"/);
-  assert.match(script, /socket\.getaddrinfo\(host, 443/);
-  assert.match(script, /any\(not address\.is_global for address in addresses\)/);
-  assert.match(script, /X-LunchLineUp-Release/);
-  assert.match(script, /DEPLOYED_GIT_SHA/);
-  assert.match(script, /mv "\$metrics_tmp" "\$PUBLIC_WEB_PROBE_METRICS_FILE"/);
-  assert.match(service, /ProtectSystem=strict/);
-  assert.match(service, /TimeoutStartSec=25s/);
-  assert.match(service, /ReadWritePaths=\/var\/lib\/node_exporter\/textfile_collector/);
-  assert.match(timer, /OnUnitActiveSec=60s/);
-  assert.match(alerts, /alert: PublicWebUnavailable[\s\S]*lunchlineup_public_web_probe_success\{job="node",host="p1-lunchlineup-dev01"\} == 0/);
-  assert.doesNotMatch(alerts, /job="node",instance/);
-  assert.match(alerts, /alert: PublicWebProbeStale[\s\S]*absent\(lunchlineup_public_web_probe_last_attempt_timestamp_seconds/);
-  assert.match(runbook, /Caddy `502`/);
-  assert.match(runbook, /Do not write `DEPLOYED_GIT_SHA` manually/);
-});
-
-test('public web probe publishes a failed metric for a Caddy 502 response', { skip: !existsSync(bashPath) }, () => {
-  const scratch = mkdtempSync(join(tmpdir(), 'lunchlineup-public-probe-'));
-  const curlStub = join(scratch, 'curl-stub.sh');
-  const metricsPath = join(scratch, 'lunchlineup_public_web.prom');
-  const releasePath = join(scratch, 'DEPLOYED_GIT_SHA');
-  const sourceSha = '0123456789abcdef0123456789abcdef01234567';
-  const shellPath = (path) => path.replaceAll('\\', '/');
-  const pythonPath = process.platform === 'win32' ? 'C:/Python314/python.exe' : '/usr/bin/python3';
-
-  writeFileSync(releasePath, `${sourceSha}\n`);
-  writeFileSync(curlStub, `#!/usr/bin/env bash
-while (( $# > 0 )); do
-  case "$1" in
-    --dump-header) headers="$2"; shift 2 ;;
-    --output) body="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
-printf 'HTTP/1.1 502 Bad Gateway\\r\\nContent-Type: text/html\\r\\nX-LunchLineUp-Release: ${sourceSha}\\r\\n\\r\\n' > "$headers"
-printf '<h1>Bad gateway</h1>' > "$body"
-printf '502 0.010'
-`);
-  chmodSync(curlStub, 0o755);
-
-  try {
-    const result = spawnSync(bashPath, [join(root, OBSERVABILITY_FILES.publicWebProbe)], {
-      cwd: root,
-      encoding: 'utf8',
-      env: {
-        ...process.env,
-        PUBLIC_WEB_PROBE_URL: 'https://93.184.216.34/',
-        PUBLIC_WEB_PROBE_METRICS_FILE: shellPath(metricsPath),
-        PUBLIC_WEB_PROBE_EXPECTED_RELEASE_FILE: shellPath(releasePath),
-        PUBLIC_WEB_PROBE_CURL_BIN: shellPath(curlStub),
-        PUBLIC_WEB_PROBE_PYTHON_BIN: pythonPath,
-      },
-    });
-
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /public edge returned HTTP 502/);
-    const metrics = readFileSync(metricsPath, 'utf8');
-    assert.match(metrics, /^lunchlineup_public_web_probe_success 0$/m);
-    assert.match(metrics, /^lunchlineup_public_web_probe_http_status 502$/m);
-    assert.match(metrics, /^lunchlineup_public_web_probe_last_attempt_timestamp_seconds [1-9][0-9]+$/m);
-  } finally {
-    rmSync(scratch, { recursive: true, force: true });
-  }
 });
 
 test('observability verifier CLI runs locally without Docker or config binaries', () => {

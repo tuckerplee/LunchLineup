@@ -79,30 +79,6 @@ groups:
           description: "The native scrape succeeds but its initialized instrumentation marker is missing or zero."
           runbook: "docs/runbooks/production-readiness.md"
 
-      - alert: PublicWebUnavailable
-        expr: lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"} == 0
-        for: 2m
-        labels:
-          severity: critical
-          team: ops
-        annotations:
-          summary: "LunchLineup public web edge is unavailable"
-          description: "The bounded external HTTPS probe is failing; DNS, TLS, Caddy, or the Next.js root page is unavailable or serving the wrong release."
-          runbook: "docs/runbooks/public-web-unavailable.md"
-
-      - alert: PublicWebProbeStale
-        expr: |
-          time() - lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",host="p1-lunchlineup-dev01"} > 180
-          or absent(lunchlineup_public_web_probe_last_attempt_timestamp_seconds{job="node",host="p1-lunchlineup-dev01"})
-        for: 2m
-        labels:
-          severity: critical
-          team: ops
-        annotations:
-          summary: "LunchLineup public web probe telemetry is stale"
-          description: "The host probe has not published a current public edge result, so availability cannot be confirmed."
-          runbook: "docs/runbooks/public-web-unavailable.md"
-
   - name: lunchlineup.api
     interval: 1m
     rules:
@@ -164,34 +140,6 @@ groups:
         annotations:
           summary: "API availability error budget is burning persistently"
           description: "The 99.9% API availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
-          runbook: "docs/runbooks/service-level-objectives.md"
-
-      - alert: PublicWebAvailabilityBudgetFastBurn
-        expr: |
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[5m])) > (14.4 * 0.001)
-          and
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[1h])) > (14.4 * 0.001)
-        for: 2m
-        labels:
-          severity: critical
-          team: ops
-        annotations:
-          summary: "Public web availability error budget is burning rapidly"
-          description: "The 99.9% public web availability SLO is consuming error budget above 14.4x across both five-minute and one-hour windows."
-          runbook: "docs/runbooks/service-level-objectives.md"
-
-      - alert: PublicWebAvailabilityBudgetSlowBurn
-        expr: |
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[30m])) > (6 * 0.001)
-          and
-          (1 - avg_over_time(lunchlineup_public_web_probe_success{job="node",host="p1-lunchlineup-dev01"}[6h])) > (6 * 0.001)
-        for: 15m
-        labels:
-          severity: warning
-          team: ops
-        annotations:
-          summary: "Public web availability error budget is burning persistently"
-          description: "The 99.9% public web availability SLO is consuming error budget above 6x across both 30-minute and six-hour windows."
           runbook: "docs/runbooks/service-level-objectives.md"
 
       - alert: RequiredApiDependencyUnavailable
