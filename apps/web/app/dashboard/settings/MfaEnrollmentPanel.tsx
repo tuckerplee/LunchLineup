@@ -4,6 +4,7 @@ import type { CSSProperties } from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { CheckCircle2, KeyRound, Loader2, RefreshCw, ShieldCheck, ShieldOff } from 'lucide-react';
 import { fetchWithSession } from '@/lib/client-api';
+import { MFA_QR_HINT, MfaQrCode, buildMfaQrSvg } from '../../mfa-qr-code';
 import {
     requireMfaEnrollmentState,
     requireMfaSetupChallenge,
@@ -317,11 +318,14 @@ export function MfaEnrollmentPanel({ tenantMfaRequired }: MfaEnrollmentPanelProp
                         >
                             {setup.qrCodeDataUrl ? (
                                 <img src={setup.qrCodeDataUrl} alt="MFA setup QR code" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+                            ) : setup.otpauthUrl && buildMfaQrSvg(setup.otpauthUrl) ? (
+                                <MfaQrCode otpauthUrl={setup.otpauthUrl} />
                             ) : (
                                 <KeyRound size={34} aria-hidden="true" color="var(--text-secondary)" />
                             )}
                         </div>
                         <div style={{ display: 'grid', gap: '0.6rem' }}>
+                            <p style={{ margin: 0, color: 'var(--text-secondary)', fontSize: '0.78rem' }}>{MFA_QR_HINT}</p>
                             <label className="form-group">
                                 <span className="form-label">Manual setup key</span>
                                 <input className="form-input" value={setup.manualEntryKey} readOnly aria-label="Manual setup key" />

@@ -52,6 +52,8 @@ vi.mock('next/link', () => ({ default: 'a' }));
 vi.mock('@/lib/client-api', () => ({ fetchPublicApi: mocks.fetch }));
 vi.mock('@/components/branding/LunchLineupMark', () => ({ LunchLineupMark: () => null }));
 import MfaPage from '../../app/mfa/page';
+import { MFA_QR_HINT, MFA_QR_LABEL, MfaQrCode, buildMfaQrSvg } from '../../app/mfa-qr-code';
+import QRCode from 'qrcode';
 const json = (value: unknown, status = 200) => new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } });
 const setup = { secret: 'SYNTHETICSETUPKEY', otpauthUrl: 'otpauth://totp/Synthetic?secret=SYNTHETICSETUPKEY', expiresInSeconds: 600 };
 const confirmation = { success: true, mfaVerified: true, backupCodes: ['synthetic-recovery-1', 'synthetic-recovery-2'] };
@@ -140,5 +142,38 @@ describe('actual MFA page strict response and request custody', () => {
     button(render(), race === 'confirm-then-restart' ? 'Restart MFA setup' : 'Retry MFA setup').props.onClick();
     await h.until(tree => nodes(tree).some(node => node.type === 'input' && node.props.value === 'SECONDSETUPKEY'));
     expect(mocks.fetch).toHaveBeenCalledTimes(4); expect(mocks.assign).not.toHaveBeenCalled();
+  });
+});
+
+describe('MFA sign-in setup QR code', () => {
+  it('renders an inline SVG QR code generated from otpauthUrl with the manual key and hint kept', async () => {
+    await mount();
+    const node = nodes(render()).find(n => n.type === MfaQrCode);
+    expect(node?.props.otpauthUrl).toBe(setup.otpauthUrl);
+    const svg = (node!.type as (props: any) => any)(node!.props);
+    expect(svg.type).toBe('svg');
+    expect(svg.props['aria-label']).toBe(MFA_QR_LABEL);
+    expect(MFA_QR_LABEL).toBe('MFA setup QR code');
+    const expected = buildMfaQrSvg(setup.otpauthUrl)!;
+    expect(nodes(svg).find(n => n.type === 'path')!.props.d).toBe(expected.path);
+    expect(expected.size).toBe(QRCode.create(setup.otpauthUrl, { errorCorrectionLevel: 'M' }).modules.size + 8);
+    expect(text(render())).toContain('In Google Authenticator: + → Scan a QR code, or Enter a setup key.');
+    expect(MFA_QR_HINT).toBe('In Google Authenticator: + → Scan a QR code, or Enter a setup key.');
+    expect(input(render(), 'Manual setup key').props.value).toBe(setup.secret);
+  });
+  it('never sends the secret to a third party: no QR request, no external image or URL', async () => {
+    await mount();
+    const calls = mocks.fetch.mock.calls.map(call => String(call[0]));
+    expect(calls).toEqual(['/auth/mfa/enrollment', '/auth/mfa/enrollment']);
+    expect(calls.every(url => url.startsWith('/'))).toBe(true);
+    const tree = nodes(render());
+    expect(tree.filter(n => n.type === 'img')).toHaveLength(0);
+    expect(JSON.stringify(tree.map(n => n.props.src ?? n.props.href ?? ''))).not.toMatch(/https?:/);
+    const qrSource = readFileSync(resolve(__dirname, '../../app/mfa-qr-code.tsx'), 'utf8');
+    expect(qrSource).not.toMatch(/https?:\/\/|fetch\(|<img|new Image/);
+  });
+  it('renders no QR for an invalid otpauthUrl', () => {
+    expect(buildMfaQrSvg('https://example.invalid/?secret=X')).toBeNull();
+    expect(MfaQrCode({ otpauthUrl: null })).toBeNull();
   });
 });
