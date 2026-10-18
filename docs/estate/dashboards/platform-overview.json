@@ -34,7 +34,7 @@
       "title": "Native API Request Rate (req/s)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -72,7 +72,7 @@
       "title": "Native API p99 Latency (seconds)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -110,7 +110,7 @@
       "title": "Active Tenants",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -132,7 +132,7 @@
       "title": "Solve Queue Depth",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -154,7 +154,7 @@
       "title": "Native API Request Rate by Route",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -182,7 +182,7 @@
       "title": "Native API Eligible Response Error Ratio",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -214,7 +214,7 @@
       "title": "Solver Job Duration (seconds)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -241,12 +241,12 @@
       "title": "Application Logs",
       "datasource": {
         "type": "loki",
-        "uid": "loki"
+        "uid": "${loki_datasource}"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "{job=\"lunchlineup\"} |= ``",
+          "expr": "{job=\"docker\", host=\"p1-lunchlineup-dev01\"} |= ``",
           "legendFormat": ""
         }
       ],
@@ -270,7 +270,7 @@
       "title": "Worker Job Failures",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -292,7 +292,7 @@
       "title": "Service Scrape Health",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -329,12 +329,12 @@
       "title": "Host Filesystem Free",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
           "refId": "A",
-          "expr": "100 * node_filesystem_avail_bytes{job=\"node\",instance=~\"10[.]231[.]10[.]108(:[0-9]+)?\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",instance=~\"10[.]231[.]10[.]108(:[0-9]+)?\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
+          "expr": "100 * node_filesystem_avail_bytes{job=\"node\",host=\"p1-lunchlineup-dev01\",fstype!~\"tmpfs|overlay|squashfs|aufs\"} / node_filesystem_size_bytes{job=\"node\",host=\"p1-lunchlineup-dev01\",fstype!~\"tmpfs|overlay|squashfs|aufs\"}",
           "legendFormat": "{{mountpoint}}"
         }
       ],
@@ -351,7 +351,7 @@
       "title": "Native API Availability (30d, provisional)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -407,7 +407,7 @@
       "title": "Availability PDF Parser Readiness",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -449,7 +449,7 @@
       "description": "Terminal rows require cause triage and a fresh business invitation; encrypted payloads are intentionally erased.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -491,7 +491,7 @@
       "description": "A value of 1 fails worker readiness; verify provider status, credentials, and egress.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -533,7 +533,7 @@
       "description": "Compare the last healthy sweep age with the configured maximum freshness bound.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -562,7 +562,7 @@
       "description": "A value of 0 means the enabled sweep's latest cycle failed or detected systemic provider failure.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -604,7 +604,7 @@
       "description": "Due work should drain, expired leases should remain zero, and recent provider failures should stay below the configured outage threshold.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -643,7 +643,7 @@
       "description": "Age of the automatic confirmed application_data execution. Retained-record dry runs are intentionally excluded.",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -684,7 +684,7 @@
       "title": "Retained API Request Rate (diagnostic)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -712,7 +712,7 @@
       "title": "Retained API p99 Latency (ms, diagnostic)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -740,7 +740,7 @@
       "title": "Retained API Request Rate by Route",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -768,7 +768,7 @@
       "title": "Retained API Error Ratio (diagnostic)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -800,7 +800,7 @@
       "title": "Native API Telemetry (scrape, not readiness)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -844,7 +844,7 @@
       "title": "Native API Aborted Requests (diagnostic)",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -873,7 +873,7 @@
       "title": "Retained API Required Dependencies",
       "datasource": {
         "type": "prometheus",
-        "uid": "prometheus"
+        "uid": "${datasource}"
       },
       "targets": [
         {
@@ -911,5 +911,37 @@
   "timezone": "browser",
   "title": "LunchLineup Platform Overview",
   "uid": "lunchlineup-platform",
-  "version": 1
+  "version": 1,
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": [],
+        "includeAll": false,
+        "multi": false,
+        "skipUrlSync": false
+      },
+      {
+        "name": "loki_datasource",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "hide": 0,
+        "refresh": 1,
+        "regex": "",
+        "options": [],
+        "includeAll": false,
+        "multi": false,
+        "skipUrlSync": false
+      }
+    ]
+  }
 }
