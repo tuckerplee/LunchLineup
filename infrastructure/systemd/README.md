@@ -10,10 +10,11 @@
 - `lunchlineup-retention-purge.env.example`: optional runtime.env overrides (token source, uid/gid, bind directories) for both retention schedules.
 - `lunchlineup-retention-purge.service`: confirmed 30-day application-data purge unit (container).
 - `lunchlineup-retention-purge.timer`: daily application-data retention timer.
+- `lunchlineup-pgbackrest-backup@.service`, `lunchlineup-pgbackrest-repo{2,3}-{full,diff}.timer`, `run-pgbackrest-backup.sh`, `install-pgbackrest-schedule.sh`: per-repository pgBackRest backup schedule (see the last section).
 
 ## Host prerequisites
 
-The units write Prometheus textfile metrics to `/var/lib/node_exporter/textfile_collector/`, which the VM's own node_exporter (an estate service, not part of the application stack) serves to the estate Prometheus. Backups are not scheduled from this folder: Postgres PITR is the estate pgBackRest and file backups are host restic, both owned by estate-infra (`docs/estate/README.md`).
+The units write Prometheus textfile metrics to `/var/lib/node_exporter/textfile_collector/`, which the VM's own node_exporter (an estate service, not part of the application stack) serves to the estate Prometheus. The retention units do not run backups; the pgBackRest backup timers are described in the last section, and file backups are host restic owned by estate-infra (`docs/estate/README.md`).
 
 The VM has no host Node.js and no `lunchlineup` user, by design. The jobs run `scripts/invoke-retained-record-purge.mjs` in a one-shot container from the already-deployed `migrate` image (`${IMAGE_PREFIX}/migrate:${IMAGE_TAG}`, which already carries Node and the repo `scripts/` tree; no Dockerfile change and no image rebuild). Nothing is built on the VM.
 
@@ -75,3 +76,13 @@ The application-data unit runs the container with `RETENTION_PURGE_STAGE=applica
 ## Monitoring and Alert Ownership
 
 Platform on-call owns `ApplicationDataRetentionExecutionTelemetryMissing`, `ApplicationDataRetentionExecutionStale`, `RetentionPurgeTelemetryMissing`, `RetentionPurgeStale`, `RetentionPurgeFailed`, and `RetentionPurgeCandidatesReady`. The first pair requires `mode="execute",stage="application_data"`, so dry-run proof cannot satisfy automatic purge monitoring; treat missing or older-than-26-hour execution telemetry as scheduler deployment or runtime breakage. Treat candidate-ready alerts as reviewed data-retention tickets with the dry-run proof attached; do not execute a retained-record purge from the timer.
+
+## pgBackRest backup schedule
+
+These units schedule pgBackRest backups per repository, independently (the repo2/NAS schedule never waits on or masks the repo3/GCS one). Nothing in the repository scheduled backups before; estate-infra previously ran them outside it.
+
+- `lunchlineup-pgbackrest-backup@.service`: oneshot template. Instance `repo2-full`, `repo2-diff`, `repo3-full` or `repo3-diff`. It takes `/run/lock/lunchlineup-deploy.lock` (`flock -w 600`) and runs `run-pgbackrest-backup.sh`, which reads `PGBACKREST_STANZA` from runtime.env (never sourced) and executes `docker exec -u postgres lunchlineup-postgres-1 pgbackrest --stanza=<stanza> --repo=<N> --type=full|diff backup`. Override the container name with `LUNCHLINEUP_POSTGRES_CONTAINER`. repo3 instances refuse to run unless `PGBACKREST_REPO3_ENABLED=true`.
+- `lunchlineup-pgbackrest-repo2-full.timer` (Monday 01:10 UTC), `lunchlineup-pgbackrest-repo2-diff.timer` (Tuesday to Sunday 01:10 UTC), `lunchlineup-pgbackrest-repo3-full.timer` (Monday 02:20 UTC), `lunchlineup-pgbackrest-repo3-diff.timer` (Tuesday to Sunday 02:20 UTC); each has a 10 minute random delay and `Persistent=true`. The full and diff calendars of a repository are disjoint (full on Monday, diff on the other six days), so a diff never runs on the day of a full and no skip logic is needed. repo2 and repo3 are 70 minutes apart and avoid the 03:17/04:17 retention timers, the 04:00 lake runs, the 15:00 restic run and Sunday from 16:00 UTC. A fresh repository gets its first full automatically: pgBackRest promotes a diff (or incr) backup to full when the repository has no full backup yet. They share the deploy flock, so a long backup delays a deploy or another backup (lock wait is 600 seconds).
+- `install-pgbackrest-schedule.sh`: as root from the release checkout, verifies `PGBACKREST_ENABLED=true` and the stanza, installs the template and the repo2 timers (repo3 timers only when `PGBACKREST_REPO3_ENABLED=true`), runs `systemd-analyze verify` and `daemon-reload`. It never enables or starts anything.
+
+Enable (separate owner decision): `systemctl enable --now lunchlineup-pgbackrest-repo2-full.timer lunchlineup-pgbackrest-repo2-diff.timer` and, for offsite, the matching `repo3` timers. The first full backup of a new repository is `docker exec -u postgres lunchlineup-postgres-1 pgbackrest --stanza=<stanza> --repo=3 --type=full backup`.

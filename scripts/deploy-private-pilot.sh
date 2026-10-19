@@ -10,7 +10,7 @@
 # loaded image ID, both taken from the exporter metadata. When PGBACKREST_ENABLED=true
 # the postgres container's pgBackRest is verified (host files) and set up
 # (`stanza-create`, `check`) after postgres is healthy; the script takes no backup and
-# installs no timer (the estate schedules `pgbackrest backup`).
+# installs no timer (the backup schedule is the infrastructure/systemd pgBackRest timers, installed separately; the estate only alerts on freshness).
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/lunchlineup}"
@@ -60,6 +60,41 @@ compose() {
     -f "$APP_DIR/infrastructure/development-admission/compose.private-proxy.yml" ${COMPOSE_EXTRA[@]+"${COMPOSE_EXTRA[@]}"} "$@"
 }
 
+# Optional repo3 (type gcs, offsite). Only when PGBACKREST_REPO3_ENABLED=true (PGBACKREST_ENABLED
+# is already true here): verify every setting and host file, then add the repo3 overlay.
+check_pgbackrest_repo3() {
+  local enabled key path mode
+  enabled="$(env_optional PGBACKREST_REPO3_ENABLED)"
+  case "${enabled:-false}" in
+    false) return 0 ;;
+    true) ;;
+    *) fail "PGBACKREST_REPO3_ENABLED must be true or false" ;;
+  esac
+  [[ -f "$APP_DIR/infrastructure/postgres/compose.pgbackrest-repo3.yml" ]] || fail "infrastructure/postgres/compose.pgbackrest-repo3.yml missing from the checkout"
+  [[ "$(env_value PGBACKREST_REPO3_GCS_BUCKET)" =~ ^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$ ]] || fail "PGBACKREST_REPO3_GCS_BUCKET is invalid"
+  [[ "$(env_value PGBACKREST_REPO3_PATH)" =~ ^/[A-Za-z0-9._/-]{0,255}$ ]] || fail "PGBACKREST_REPO3_PATH must be an absolute path prefix inside the bucket"
+  [[ "$(env_optional PGBACKREST_REPO3_GCS_ENDPOINT)" =~ ^([A-Za-z0-9][A-Za-z0-9._-]{0,252}(:[0-9]{1,5})?)?$ ]] || fail "PGBACKREST_REPO3_GCS_ENDPOINT must be host[:port]"
+  [[ "$(env_optional PGBACKREST_REPO3_RETENTION_FULL)" =~ ^([0-9]{1,3})?$ ]] || fail "PGBACKREST_REPO3_RETENTION_FULL must be a count"
+  [[ "$(env_optional PGBACKREST_REPO3_RETENTION_DIFF)" =~ ^([0-9]{1,3})?$ ]] || fail "PGBACKREST_REPO3_RETENTION_DIFF must be a count"
+  for key in PGBACKREST_REPO3_GCS_KEY_FILE PGBACKREST_REPO3_CIPHER_PASS_FILE; do
+    path="$(env_value "$key")"
+    [[ "$path" == /* ]] || fail "$key must be an absolute host path"
+    [[ -f "$path" && ! -L "$path" && -s "$path" && -r "$path" ]] || fail "$key: $path is missing, empty, unreadable or a symlink (pgBackRest repo3 requires it)"
+    mode="$(stat -c %a "$path")"
+    (( (8#$mode & 8#077) == 0 )) || fail "$key must not be group/world accessible (chmod 600 $path)"
+  done
+  path="$(env_value PGBACKREST_REPO3_GCS_KEY_FILE)"
+  # Shape check only; the key content is never printed.
+  if command -v jq >/dev/null 2>&1; then
+    jq -e '.type == "service_account"' "$path" >/dev/null 2>&1 || fail "PGBACKREST_REPO3_GCS_KEY_FILE is not a service-account JSON key"
+  else
+    grep -Eq '"type"[[:space:]]*:[[:space:]]*"service_account"' "$path" || fail "PGBACKREST_REPO3_GCS_KEY_FILE is not a service-account JSON key"
+  fi
+  [[ "$(env_value PGBACKREST_REPO3_CIPHER_PASS_FILE)" != "$(env_value PGBACKREST_CIPHER_PASS_FILE)" ]] || fail "PGBACKREST_REPO3_CIPHER_PASS_FILE must be a different file from PGBACKREST_CIPHER_PASS_FILE"
+  COMPOSE_EXTRA+=(-f "$APP_DIR/infrastructure/postgres/compose.pgbackrest-repo3.yml")
+  echo "pgBackRest: repo3 (gcs bucket $(env_value PGBACKREST_REPO3_GCS_BUCKET)) enabled"
+}
+
 check_pgbackrest() {
   local enabled key path mode
   PGBACKREST_ON=false; COMPOSE_EXTRA=()
@@ -88,6 +123,7 @@ check_pgbackrest() {
   done
   PGBACKREST_ON=true
   COMPOSE_EXTRA=(-f "$APP_DIR/infrastructure/postgres/compose.pgbackrest.yml")
+  check_pgbackrest_repo3
   echo "pgBackRest: enabled (stanza $PGBACKREST_STANZA_VALUE)"
 }
 

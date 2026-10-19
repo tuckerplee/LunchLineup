@@ -9,11 +9,11 @@ LunchLineup does not run its own monitoring, alerting, dashboard, log, tracing o
 | Dashboards | Estate Grafana | `dashboards/*.json` reference copies |
 | Logs | Alloy on the VM (estate-infra `log_shipper` role) pushing to estate Loki | Containers log to the Docker `json-file` driver; Alloy picks up the container logs, including `autoheal` restart lines (below) |
 | Tracing | None | Nothing is added; the OTLP exporters stay dormant because no endpoint is configured |
-| Postgres PITR | pgBackRest inside the postgres container, repository `repo2` on the NAS over SFTP | The image, the `compose.pgbackrest.yml` overlay and deploy checks (off unless `PGBACKREST_ENABLED=true`; `infrastructure/postgres/README.md`). Backup schedules are estate-owned. |
+| Postgres PITR | pgBackRest inside the postgres container, repository `repo2` on the NAS over SFTP | The image, the `compose.pgbackrest.yml` overlay and deploy checks (off unless `PGBACKREST_ENABLED=true`; `infrastructure/postgres/README.md`). The backup schedule is the `infrastructure/systemd` timers; an optional offsite `repo3` (GCS) can be added. |
 | File backups | Host restic online backup | Nothing |
 | Transactional end-user email (Resend) | Product functionality, unchanged | Unchanged |
 
-There is no S3 offsite target and no in-container dump anywhere in this repository. The one backup tool in the stack is pgBackRest in the postgres container, configured and driven as described under Backups and recovery.
+There is no S3 offsite target (the only offsite option is the optional pgBackRest repo3 on GCS) and no in-container dump anywhere in this repository. The one backup tool in the stack is pgBackRest in the postgres container, configured and driven as described under Backups and recovery.
 
 ## Files
 
@@ -70,7 +70,7 @@ Compose keeps every service on the `json-file` logging driver with size-capped r
 ## Backups and recovery
 
 - Postgres: pgBackRest runs inside the postgres container (pinned package in the image; `repo2` is type `sftp` on the NAS chroot user, host `p0-nas01` port 22). It is OFF by default. `PGBACKREST_ENABLED=true` plus the `PGBACKREST_*` keys, key/known_hosts/passphrase files on the VM (see `infrastructure/postgres/README.md`) make the deploy scripts add `infrastructure/postgres/compose.pgbackrest.yml`: `archive_mode=on`, `archive_command=pgbackrest --stanza=<stanza> archive-push %p`, and a dedicated `pgbackrest-egress` network attached to postgres only. Deploys fail closed on a missing file and run the idempotent `pgbackrest stanza-create` and `pgbackrest check`. Restores follow `docs/runbooks/postgres-pitr-recovery.md`.
-- **Backup schedule (estate-infra):** the application installs no timer or cron. Estate-infra schedules, on the VM, `docker exec -u postgres <postgres container> pgbackrest --stanza=lunchlineup --type=full backup` (for example weekly) and `--type=diff` (daily), alerts on the exit status and on `pgbackrest info` freshness, and opens the egress firewall from the `pgbackrest-egress` network to `PGBACKREST_SFTP_HOST:22` only. A manual full backup uses the same command.
+- **Backup schedule (application):** `infrastructure/systemd` carries the pgBackRest timers (weekly full on Monday, daily diff otherwise, per repository: repo2 at 01:10 UTC, repo3 at 02:20 UTC), installed with `install-pgbackrest-schedule.sh` and enabled by the owner. Estate-infra alerts on the exit status of `lunchlineup-pgbackrest-backup@*.service` and on `pgbackrest info` freshness, and opens the egress firewall from the `pgbackrest-egress` network to `PGBACKREST_SFTP_HOST:22` (and HTTPS 443 to `storage.googleapis.com` for repo3) only. A manual full backup uses the same `docker exec -u postgres` command.
 - Files: host restic online backup (uploads volume, runtime env and secret files). Include the pgBackRest key, `known_hosts` and passphrase files and keep an independent copy of the passphrase: without it the repository cannot be restored.
 - The estate drill evidence replaces the former in-stack `backup`/`pitr-*` drills.
 

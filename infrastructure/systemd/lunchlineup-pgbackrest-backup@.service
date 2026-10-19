@@ -1,0 +1,16 @@
+[Unit]
+Description=LunchLineup pgBackRest backup (%i)
+Documentation=file:/opt/lunchlineup/current/infrastructure/postgres/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/opt/lunchlineup-secrets/runtime.env
+
+# Instance is <repo>-<type>, for example repo3-full, repo3-diff, repo2-full, repo2-diff.
+# Each repository has its own schedule; they never depend on one another.
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/lunchlineup
+TimeoutStartSec=8h
+ExecStart=/usr/bin/flock -w 600 /run/lock/lunchlineup-deploy.lock /bin/sh /opt/lunchlineup/infrastructure/systemd/run-pgbackrest-backup.sh %i

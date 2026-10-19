@@ -22,7 +22,7 @@ Point-in-time recovery for LunchLineup is **pgBackRest running inside the `postg
    ```
 
    `status: ok`, the new full backup and a current `wal archive min/max` prove archiving. `select archived_count, failed_count, last_archived_wal from pg_stat_archiver;` should show `failed_count` not increasing.
-4. Estate-infra schedules `pgbackrest --stanza=lunchlineup --type=full|diff backup` through `docker exec -u postgres` and monitors freshness (see `docs/estate/README.md`). Record the estate drill evidence under `LAUNCH_PROOF_DR_DRILL_URI`.
+4. The application schedules `pgbackrest --stanza=lunchlineup --repo=N --type=full|diff backup` (`infrastructure/systemd` timers, `docker exec -u postgres`); estate-infra monitors freshness (see `docs/estate/README.md`). Record the estate drill evidence under `LAUNCH_PROOF_DR_DRILL_URI`.
 
 ## Restoring
 

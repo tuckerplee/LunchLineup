@@ -8,7 +8,7 @@
 // public-launch policy in scripts/validate-production-launch.mjs. It never makes
 // a network call and never prints a secret value.
 import { spawnSync } from 'node:child_process';
-import { statSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -218,6 +218,33 @@ export function checkProductionEnv(env, { legalConfig = readLegalLaunchConfig() 
     .map((key) => value(key)).filter(Boolean);
   if (new Set(pgbrFiles).size !== pgbrFiles.length) fail('PGBACKREST_*_FILE paths must be three different files.');
 
+  // 5c. Optional repo3 (pgBackRest type gcs, offsite). Only meaningful with PGBACKREST_ENABLED=true.
+  const repo3Keys = ['PGBACKREST_REPO3_GCS_BUCKET', 'PGBACKREST_REPO3_PATH', 'PGBACKREST_REPO3_GCS_KEY_FILE', 'PGBACKREST_REPO3_CIPHER_PASS_FILE'];
+  if (value('PGBACKREST_REPO3_ENABLED') && !['true', 'false'].includes(value('PGBACKREST_REPO3_ENABLED'))) {
+    fail('PGBACKREST_REPO3_ENABLED must be true or false.');
+  }
+  if (value('PGBACKREST_REPO3_ENABLED') === 'true') {
+    if (value('PGBACKREST_ENABLED') !== 'true') fail('PGBACKREST_REPO3_ENABLED=true requires PGBACKREST_ENABLED=true.');
+    for (const key of repo3Keys) if (!value(key)) fail(`${key} is required when PGBACKREST_REPO3_ENABLED=true.`);
+    if (value('PGBACKREST_REPO3_GCS_BUCKET') && !/^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$/.test(value('PGBACKREST_REPO3_GCS_BUCKET'))) {
+      fail('PGBACKREST_REPO3_GCS_BUCKET must be a valid GCS bucket name.');
+    }
+    if (value('PGBACKREST_REPO3_PATH') && !/^\/[A-Za-z0-9._/-]{0,255}$/.test(value('PGBACKREST_REPO3_PATH'))) {
+      fail('PGBACKREST_REPO3_PATH must be an absolute path prefix inside the bucket.');
+    }
+    for (const key of ['PGBACKREST_REPO3_GCS_KEY_FILE', 'PGBACKREST_REPO3_CIPHER_PASS_FILE']) {
+      if (value(key) && !/^\/[^\s"'`$\\]+$/.test(value(key))) fail(`${key} must be an absolute host file path without spaces or shell characters.`);
+    }
+    if (value('PGBACKREST_REPO3_GCS_ENDPOINT') && !/^[A-Za-z0-9][A-Za-z0-9._-]{0,252}(:[0-9]{1,5})?$/.test(value('PGBACKREST_REPO3_GCS_ENDPOINT'))) {
+      fail('PGBACKREST_REPO3_GCS_ENDPOINT must be host[:port].');
+    }
+    const all = [...pgbrFiles, ...repo3Keys.slice(2).map((key) => value(key)).filter(Boolean)];
+    if (new Set(all).size !== all.length) fail('PGBACKREST_*_FILE paths (repo2 and repo3) must all be different files.');
+  }
+  if (value('PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX') && !/^[0-9]{1,9}([KkMmGgTt]i?[Bb]?|[Bb])?$/.test(value('PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX'))) {
+    fail('PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX must be a size such as 4GiB.');
+  }
+
   // 6. Signup mode agreement and mode-specific prerequisites
   const mode = value('PUBLIC_SIGNUP_MODE');
   if (mode && mode !== value('NEXT_PUBLIC_SIGNUP_MODE')) {
@@ -282,6 +309,29 @@ export function verifyPgbackrestFiles(env) {
   return errors;
 }
 
+// Same for the optional repo3 files (the GCS key must parse as a service-account JSON key; never printed).
+export function verifyRepo3Files(env) {
+  const errors = [];
+  if (String(env.PGBACKREST_REPO3_ENABLED ?? '').trim() !== 'true') return errors;
+  for (const key of ['PGBACKREST_REPO3_GCS_KEY_FILE', 'PGBACKREST_REPO3_CIPHER_PASS_FILE']) {
+    const path = String(env[key] ?? '').trim();
+    if (!path) continue;
+    let info;
+    try { info = statSync(path); } catch { errors.push(`${key}: ${path} does not exist on this host.`); continue; }
+    if (!info.isFile() || info.size === 0) { errors.push(`${key}: ${path} must be a non-empty regular file.`); continue; }
+    if (process.platform !== 'win32' && (info.mode & 0o077) !== 0) errors.push(`${key}: ${path} must not be group/world accessible (chmod 600).`);
+    if (key === 'PGBACKREST_REPO3_GCS_KEY_FILE') {
+      try {
+        const parsed = JSON.parse(readFileSync(path, 'utf8'));
+        if (parsed?.type !== 'service_account') errors.push(`${key}: ${path} is not a service_account key.`);
+      } catch {
+        errors.push(`${key}: ${path} is not valid JSON.`);
+      }
+    }
+  }
+  return errors;
+}
+
 function runLaunchPolicy(envPath, extraArgs) {
   const result = spawnSync(
     process.execPath,
@@ -314,6 +364,7 @@ function main() {
     ...collector.errors,
     ...checkProductionEnv(env, legalConfigPath ? { legalConfig: readLegalLaunchConfig(resolve(legalConfigPath)) } : {}),
     ...(args.includes('--verify-local-secret-files') ? verifyPgbackrestFiles(env) : []),
+    ...(args.includes('--verify-local-secret-files') ? verifyRepo3Files(env) : []),
     ...runLaunchPolicy(envPath, args.filter((argument) => argument === '--verify-local-secret-files')),
   ];
   const unique = [...new Set(errors)];

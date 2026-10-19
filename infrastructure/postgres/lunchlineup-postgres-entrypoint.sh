@@ -10,7 +10,11 @@
 # does not start) on anything missing, render a pgBackRest config plus the SFTP key,
 # known_hosts and cipher material into the postgres-owned tmpfs /run/pgbackrest,
 # force archive_mode=on with the pgBackRest archive_command, then hand over to the
-# stock entrypoint. When the first argument is "pgbackrest" (restore through
+# stock entrypoint. When LL_PGBR_REPO3_ENABLED=true as well (set only by
+# compose.pgbackrest-repo3.yml), an optional second repository repo3 (type gcs, Google
+# Cloud Storage, its own cipher passphrase) is validated and rendered the same way;
+# without it the rendered config is byte-identical to the repo2-only config.
+# When the first argument is "pgbackrest" (restore through
 # `docker compose run`), the command runs as the postgres user.
 set -eu
 
@@ -46,6 +50,7 @@ REPO_PATH="${LL_PGBR_REPO_PATH:-}"
 RET_FULL="${LL_PGBR_RETENTION_FULL:-4}"
 RET_DIFF="${LL_PGBR_RETENTION_DIFF:-7}"
 PG_USER="${LL_PGBR_PG_USER:-}"
+QUEUE_MAX="${LL_PGBR_ARCHIVE_PUSH_QUEUE_MAX:-}"
 
 need PGBACKREST_STANZA "$STANZA" '^[a-z0-9][a-z0-9_-]{0,63}$'
 need PGBACKREST_SFTP_HOST "$HOST" '^[A-Za-z0-9][A-Za-z0-9._-]{0,252}$'
@@ -55,6 +60,9 @@ need PGBACKREST_REPO_PATH "$REPO_PATH" '^/[A-Za-z0-9._/-]{0,255}$'
 need PGBACKREST_RETENTION_FULL "$RET_FULL" '^[0-9]{1,3}$'
 need PGBACKREST_RETENTION_DIFF "$RET_DIFF" '^[0-9]{1,3}$'
 need POSTGRES_USER "$PG_USER" '^[A-Za-z_][A-Za-z0-9_]{0,62}$'
+if [ -n "$QUEUE_MAX" ]; then
+  need PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX "$QUEUE_MAX" '^[0-9]{1,9}([KkMmGgTt]i?[Bb]?|[Bb])?$'
+fi
 need_file PGBACKREST_SFTP_KEY_FILE "$SRC/sftp_key"
 need_file PGBACKREST_SFTP_KNOWN_HOSTS_FILE "$SRC/known_hosts"
 need_file PGBACKREST_CIPHER_PASS_FILE "$SRC/cipher_pass"
@@ -63,6 +71,29 @@ grep -Eq '^\|1\|' "$SRC/known_hosts" \
   || grep -Eq "(^|[ ,])($HOST|\[$HOST\]:$PORT)[ ,]" "$SRC/known_hosts" \
   || fatal "PGBACKREST_SFTP_KNOWN_HOSTS_FILE has no entry for $HOST (port $PORT); host key checking is strict"
 
+REPO3=false
+if [ "${LL_PGBR_REPO3_ENABLED:-false}" = "true" ]; then
+  REPO3=true
+  R3_BUCKET="${LL_PGBR_REPO3_GCS_BUCKET:-}"
+  R3_PATH="${LL_PGBR_REPO3_PATH:-}"
+  R3_ENDPOINT="${LL_PGBR_REPO3_GCS_ENDPOINT:-}"
+  R3_RET_FULL="${LL_PGBR_REPO3_RETENTION_FULL:-2}"
+  R3_RET_DIFF="${LL_PGBR_REPO3_RETENTION_DIFF:-7}"
+  need PGBACKREST_REPO3_GCS_BUCKET "$R3_BUCKET" '^[a-z0-9][a-z0-9._-]{1,220}[a-z0-9]$'
+  need PGBACKREST_REPO3_PATH "$R3_PATH" '^/[A-Za-z0-9._/-]{0,255}$'
+  need PGBACKREST_REPO3_RETENTION_FULL "$R3_RET_FULL" '^[0-9]{1,3}$'
+  need PGBACKREST_REPO3_RETENTION_DIFF "$R3_RET_DIFF" '^[0-9]{1,3}$'
+  if [ -n "$R3_ENDPOINT" ]; then
+    need PGBACKREST_REPO3_GCS_ENDPOINT "$R3_ENDPOINT" '^[A-Za-z0-9][A-Za-z0-9._-]{0,252}(:[0-9]{1,5})?$'
+  fi
+  need_file PGBACKREST_REPO3_GCS_KEY_FILE "$SRC/gcs_key"
+  need_file PGBACKREST_REPO3_CIPHER_PASS_FILE "$SRC/cipher_pass_repo3"
+  # Only test the key's shape; never print it.
+  grep -Eq '"type"[[:space:]]*:[[:space:]]*"service_account"' "$SRC/gcs_key" \
+    || fatal 'PGBACKREST_REPO3_GCS_KEY_FILE is not a service-account JSON key ("type":"service_account")'
+  grep -Eq '"private_key"' "$SRC/gcs_key" || fatal "PGBACKREST_REPO3_GCS_KEY_FILE has no private_key"
+fi
+
 umask 077
 install -d -o postgres -g postgres -m 0700 "$DEST/lock"
 install -o postgres -g postgres -m 0600 "$SRC/sftp_key" "$DEST/sftp_key"
@@ -70,6 +101,15 @@ install -o postgres -g postgres -m 0600 "$SRC/known_hosts" "$DEST/known_hosts"
 CIPHER_PASS="$(tr -d '\r\n' < "$SRC/cipher_pass")"
 [ -n "$CIPHER_PASS" ] || fatal "PGBACKREST_CIPHER_PASS_FILE holds no passphrase"
 case "$CIPHER_PASS" in *[!A-Za-z0-9_.@%+=,:/-]*) fatal "PGBACKREST_CIPHER_PASS_FILE: use only [A-Za-z0-9_.@%+=,:/-] (e.g. 'openssl rand -hex 32')" ;; esac
+
+CIPHER_PASS3=""
+if [ "$REPO3" = "true" ]; then
+  install -o postgres -g postgres -m 0600 "$SRC/gcs_key" "$DEST/gcs_key"
+  CIPHER_PASS3="$(tr -d '\r\n' < "$SRC/cipher_pass_repo3")"
+  [ -n "$CIPHER_PASS3" ] || fatal "PGBACKREST_REPO3_CIPHER_PASS_FILE holds no passphrase"
+  case "$CIPHER_PASS3" in *[!A-Za-z0-9_.@%+=,:/-]*) fatal "PGBACKREST_REPO3_CIPHER_PASS_FILE: use only [A-Za-z0-9_.@%+=,:/-] (e.g. 'openssl rand -hex 32')" ;; esac
+  [ "$CIPHER_PASS3" != "$CIPHER_PASS" ] || fatal "PGBACKREST_REPO3_CIPHER_PASS_FILE must differ from PGBACKREST_CIPHER_PASS_FILE"
+fi
 
 {
   echo "[global]"
@@ -80,6 +120,7 @@ case "$CIPHER_PASS" in *[!A-Za-z0-9_.@%+=,:/-]*) fatal "PGBACKREST_CIPHER_PASS_F
   echo "log-level-file=info"
   echo "start-fast=y"
   echo "archive-async=y"
+  if [ -n "$QUEUE_MAX" ]; then echo "archive-push-queue-max=$QUEUE_MAX"; fi
   echo "compress-type=zst"
   echo "process-max=2"
   echo "repo2-type=sftp"
@@ -96,6 +137,19 @@ case "$CIPHER_PASS" in *[!A-Za-z0-9_.@%+=,:/-]*) fatal "PGBACKREST_CIPHER_PASS_F
   echo "repo2-retention-diff=$RET_DIFF"
   echo "repo2-cipher-type=aes-256-cbc"
   echo "repo2-cipher-pass=$CIPHER_PASS"
+  if [ "$REPO3" = "true" ]; then
+    echo "repo3-type=gcs"
+    echo "repo3-path=$R3_PATH"
+    echo "repo3-gcs-bucket=$R3_BUCKET"
+    echo "repo3-gcs-key=$DEST/gcs_key"
+    echo "repo3-gcs-key-type=service"
+    if [ -n "$R3_ENDPOINT" ]; then echo "repo3-gcs-endpoint=$R3_ENDPOINT"; fi
+    echo "repo3-retention-full-type=count"
+    echo "repo3-retention-full=$R3_RET_FULL"
+    echo "repo3-retention-diff=$R3_RET_DIFF"
+    echo "repo3-cipher-type=aes-256-cbc"
+    echo "repo3-cipher-pass=$CIPHER_PASS3"
+  fi
   echo
   echo "[$STANZA]"
   echo "pg1-path=${PGDATA:-/var/lib/postgresql/data}"
@@ -104,7 +158,7 @@ case "$CIPHER_PASS" in *[!A-Za-z0-9_.@%+=,:/-]*) fatal "PGBACKREST_CIPHER_PASS_F
 } > "$CONF"
 chown postgres:postgres "$CONF"
 chmod 0600 "$CONF"
-unset CIPHER_PASS
+unset CIPHER_PASS CIPHER_PASS3
 
 if [ "${1:-}" = "pgbackrest" ]; then
   exec su-exec postgres "$@"
