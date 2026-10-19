@@ -1364,7 +1364,8 @@ class ConstraintSolver:
         shift_end: datetime,
     ) -> bool:
         rules = availability.get(staff_id, []) if availability is not None else []
-        recurring_configured = availability is not None and staff_id in availability
+        # No recurring rules means "available any time"; only dated exceptions can restrict.
+        recurring_configured = bool(rules)
         exceptions_by_date = availability_exceptions.get(staff_id, {}) if availability_exceptions else {}
         del current_date
         for local_date, weekday, start_minute, end_minute in self._availability_segments(shift_start, shift_end):
@@ -1373,7 +1374,7 @@ class ConstraintSolver:
             if available:
                 base_covered = self._minute_windows_cover(available, start_minute, end_minute)
             elif recurring_configured:
-                base_covered = bool(rules) and self._availability_rules_cover(
+                base_covered = self._availability_rules_cover(
                     rules, weekday, start_minute, end_minute,
                 )
             else:

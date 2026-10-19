@@ -255,7 +255,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await staffRow.getByText('Mock Staff', { exact: true }).click();
     await expect(page.getByRole('dialog', { name: 'Manage Mock Staff' })).toBeVisible();
     const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
-    await expect(editor.getByText('No recurring availability is configured. This staff member is unavailable except on dates with an Available exception.')).toBeVisible();
+    await expect(editor.getByText('No availability set — this person can be scheduled any time. Add windows to limit when they can work.')).toBeVisible();
 
     await editor.getByLabel('Skills').fill('  Line   Cook ');
     await editor.getByRole('button', { name: 'Add skill' }).click();

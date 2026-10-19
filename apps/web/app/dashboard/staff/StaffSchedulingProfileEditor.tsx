@@ -392,8 +392,8 @@ function ProfileEditorSession({ user, onClose, showHeader = true }: StaffSchedul
                             </Button>
                         </div>
                         {availability.length === 0 ? (
-                            <div role="status" style={{ border: '1px solid #e8b04d', background: '#fff8e8', color: '#6f4a00', padding: '0.75rem', borderRadius: 6, fontSize: '0.82rem' }}>
-                                No recurring availability is configured. This staff member is unavailable except on dates with an Available exception.
+                            <div role="status" style={{ border: '1px solid var(--border)', background: 'var(--surface-muted, #f6f7f9)', color: 'var(--text-muted)', padding: '0.75rem', borderRadius: 6, fontSize: '0.82rem' }}>
+                                No availability set — this person can be scheduled any time. Add windows to limit when they can work.
                             </div>
                         ) : null}
                         {isLocationsLoading ? (
