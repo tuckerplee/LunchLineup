@@ -494,9 +494,8 @@ for (const which of ['release', 'pilot']) {
     assert.match(notSa.stderr, /not a service-account JSON key/);
     const notJson = check(runtimeEnvFile({ ...repo3Values(), ...repo3Host({ key: 'hello\n' }) }));
     assert.match(notJson.stderr, /not a service-account JSON key/);
-    const withRepo2 = runtimeEnvFile(repo3Values());
-    const pass2 = readFileSync(withRepo2, 'utf8').match(/^PGBACKREST_CIPHER_PASS_FILE=(.*)$/m)[1];
-    assert.match(check(runtimeEnvFile({ ...repo3Values(), PGBACKREST_REPO3_CIPHER_PASS_FILE: pass2 })).stderr, /must be a different file/);
+    const shared = repo3Values();
+    assert.match(check(runtimeEnvFile({ ...shared, PGBACKREST_CIPHER_PASS_FILE: shared.PGBACKREST_REPO3_CIPHER_PASS_FILE })).stderr, /must be a different file/);
     assert.doesNotMatch(notSa.stderr + notSa.stdout, /SECRETKEYMATERIAL|PRIVATE KEY/);
   });
 
