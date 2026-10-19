@@ -116,6 +116,10 @@ test('retention wrapper runs the exact compose invocation and forwards the pinne
   assert.match(wrapper, /PGBACKREST_ENABLED/);
   assert.match(wrapper, /-f infrastructure\/postgres\/compose\.pgbackrest\.yml/);
   assert.match(wrapper, /run --rm --no-deps -T/);
+  // The estate textfile dir is node-exp 0775: write through that group, resolved per run.
+  assert.match(wrapper, /getent group node-exp \| cut -d: -f3/);
+  assert.match(wrapper, /export RETENTION_PURGE_GID/);
+  assert.match(read('infrastructure/systemd/install-retention-scheduler.sh'), /getent group node-exp \| cut -d: -f3/);
   assert.match(wrapper, /COMPOSE_SERVICE_ENV_FILE="\$E" exec "\$@"/);
   assert.match(wrapper, /retention-scheduler/);
   for (const name of ['RETENTION_PURGE_STAGE', 'RETENTION_PURGE_DRY_RUN', 'RETENTION_PURGE_EXECUTE_CONFIRM', 'RETENTION_PURGE_PROOF_FILE', 'RETENTION_PURGE_METRICS_FILE', 'RETENTION_PURGE_LOCK_FILE']) {
