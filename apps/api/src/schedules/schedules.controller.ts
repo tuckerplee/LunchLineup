@@ -2062,9 +2062,6 @@ export class SchedulesController implements OnModuleInit, OnModuleDestroy {
             const exceptions = availabilityExceptionsByUser.get(shift.userId) ?? [];
             for (const segment of splitInstantRangeByLocalDay(shift.startTime, shift.endTime, timeZone)) {
                 const dated = exceptions.filter((entry) => entry.localDate === segment.localDate);
-                if (!rows.length && !dated.some((entry) => entry.kind === 'AVAILABLE')) {
-                    throw new BadRequestException(`Shift ${shift.id} is assigned to staff with no applicable configured availability.`);
-                }
                 const covered = availabilityWithExceptionsCoversLocalSegment(
                     rows,
                     exceptions,

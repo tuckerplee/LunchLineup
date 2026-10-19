@@ -2362,7 +2362,7 @@ describe("SchedulesController", () => {
     expect(result.status).toBe("QUEUED");
   });
 
-  it("sends explicit empty availability so unconfigured staff are not treated as unrestricted", async () => {
+  it("sends empty availability for unconfigured staff, which the solver treats as available any time", async () => {
     tx.schedule.findFirst.mockResolvedValue({
       id: "sch-1",
       tenantId: "tenant-1",
@@ -2399,8 +2399,9 @@ describe("SchedulesController", () => {
     }));
   });
 
-  it("rejects publishing an assigned shift with no applicable configured availability", async () => {
+  it("accepts publishing an assigned shift when staff has no availability configured (available any time)", async () => {
     persistedAvailabilityRows = [];
+    persistedAvailabilityExceptionRows = [];
 
     await expect((controller as any).assertAssignedShiftsWithinAvailability(
       tx,
@@ -2414,7 +2415,32 @@ describe("SchedulesController", () => {
         endTime: new Date("2026-03-10T21:00:00.000Z"),
         breaks: [],
       }],
-    )).rejects.toThrow("no applicable configured availability");
+    )).resolves.toBeUndefined();
+  });
+
+  it("still rejects unconfigured staff on a dated Unavailable exception", async () => {
+    persistedAvailabilityRows = [];
+    persistedAvailabilityExceptionRows = [{
+      userId: "u1",
+      localDate: "2026-03-10",
+      kind: "UNAVAILABLE",
+      startTimeMinutes: 0,
+      endTimeMinutes: 1440,
+    }];
+
+    await expect((controller as any).assertAssignedShiftsWithinAvailability(
+      tx,
+      "tenant-1",
+      "loc-1",
+      "America/Los_Angeles",
+      [{
+        id: "shift-no-availability-time-off",
+        userId: "u1",
+        startTime: new Date("2026-03-10T17:00:00.000Z"),
+        endTime: new Date("2026-03-10T21:00:00.000Z"),
+        breaks: [],
+      }],
+    )).rejects.toThrow("conflicts with dated staff availability or time off");
   });
 
   it("rejects publish when active tenant shifts exceed the local Monday weekly limit", async () => {

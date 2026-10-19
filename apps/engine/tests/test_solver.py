@@ -437,7 +437,7 @@ class TestConstraintSolver:
         }
         assert tuesday_staff == {"bob"}
 
-    def test_explicit_empty_staff_availability_is_unavailable(self):
+    def test_explicit_empty_staff_availability_is_available_any_time(self):
         result = self.solver.solve(
             staff_ids=["alice"],
             start_date="2026-03-09",
@@ -449,7 +449,43 @@ class TestConstraintSolver:
             },
         )
 
-        assert result["feasible"] is False
+        assert result["feasible"] is True
+        assert [a["staff_id"] for a in result["assignments"]] == ["alice"]
+
+    def test_unconfigured_staff_is_candidate_alongside_configured_staff(self):
+        result = self.solver.solve(
+            staff_ids=["alice", "bob"],
+            start_date="2026-03-09",
+            end_date="2026-03-11",
+            constraints={
+                "min_floor_coverage": 1,
+                "shift_duration_hours": 4,
+                "max_hours_per_week": 40,
+                "availability": {
+                    "alice": [{"day_of_week": "monday", "start_time": "08:00", "end_time": "18:00"}],
+                    "bob": [],
+                },
+            },
+        )
+
+        assert result["feasible"] is True
+        by_date = {a["date"]: a["staff_id"] for a in result["assignments"]}
+        assert by_date["2026-03-10"] == "bob"
+
+    def test_unconfigured_staff_still_blocked_by_unavailable_exception(self):
+        time_zone = ZoneInfo("UTC")
+        exceptions = self.solver._normalize_availability_exceptions({
+            "alice": [
+                {"local_date": "2026-03-10", "kind": "UNAVAILABLE", "start_time_minutes": 0, "end_time_minutes": 1440},
+            ],
+        }, ["alice"])
+        day = datetime(2026, 3, 10, 12, tzinfo=time_zone)
+        end = datetime(2026, 3, 10, 15, tzinfo=time_zone)
+        assert self.solver._is_available({"alice": []}, exceptions, "alice", day, day, end) is False
+        other = datetime(2026, 3, 11, 12, tzinfo=time_zone)
+        assert self.solver._is_available(
+            {"alice": []}, exceptions, "alice", other, other, datetime(2026, 3, 11, 15, tzinfo=time_zone),
+        ) is True
 
     def test_location_timezone_preserves_local_days_and_emits_utc_instants_across_dst(self):
         result = self.solver.solve(

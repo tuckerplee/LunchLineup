@@ -56,6 +56,39 @@ describe('schedule availability windows', () => {
     )).toBe(true);
   });
 
+  it('treats staff with no recurring availability and no dated Available exception as available any time', () => {
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      [], [], '2026-03-10', 'Tuesday', 0, 1440,
+    )).toBe(true);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      [],
+      [{ localDate: '2026-03-11', kind: 'UNAVAILABLE', startTimeMinutes: 0, endTimeMinutes: 1440 }],
+      '2026-03-10', 'Tuesday', 9 * 60, 17 * 60,
+    )).toBe(true);
+  });
+
+  it('keeps explicit time off blocking staff with no recurring availability', () => {
+    const timeOff = [{
+      localDate: '2026-03-10', kind: 'UNAVAILABLE' as const, startTimeMinutes: 12 * 60, endTimeMinutes: 13 * 60,
+    }];
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      [], timeOff, '2026-03-10', 'Tuesday', 11 * 60, 14 * 60,
+    )).toBe(false);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      [], timeOff, '2026-03-10', 'Tuesday', 9 * 60, 12 * 60,
+    )).toBe(true);
+  });
+
+  it('still restricts staff with configured recurring windows to those windows', () => {
+    const recurring = [{ dayOfWeek: 1, startTimeMinutes: 9 * 60, endTimeMinutes: 12 * 60 }];
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, [], '2026-03-10', 'Tuesday', 9 * 60, 12 * 60,
+    )).toBe(false);
+    expect(availabilityWithExceptionsCoversLocalSegment(
+      recurring, [], '2026-03-09', 'Monday', 13 * 60, 15 * 60,
+    )).toBe(false);
+  });
+
   it('makes partial and all-day time off win over recurring or dated availability', () => {
     const recurring = [{ dayOfWeek: 2, startTimeMinutes: 9 * 60, endTimeMinutes: 17 * 60 }];
     const partialTimeOff = [{

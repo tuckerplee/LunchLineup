@@ -160,6 +160,10 @@ export function availabilityWindowsCoverLocalSegment(
  * Local-date exceptions take deterministic precedence over weekly rules:
  * one or more AVAILABLE windows replace weekly availability for that date,
  * then every UNAVAILABLE window subtracts from the selected base.
+ *
+ * Staff with no applicable recurring availability and no AVAILABLE exception
+ * for the date are available at any time (industry default); only explicit
+ * UNAVAILABLE exceptions / time off can block them.
  */
 export function availabilityWithExceptionsCoversLocalSegment(
     recurringWindows: PersistedAvailabilityWindow[],
@@ -183,7 +187,7 @@ export function availabilityWithExceptionsCoversLocalSegment(
     const available = dated.filter((entry) => entry.kind === 'AVAILABLE');
     const baseCovered = available.length > 0
         ? minuteWindowsCoverLocalSegment(available, segmentStartMinutes, segmentEndMinutes)
-        : availabilityWindowsCoverLocalSegment(
+        : recurringWindows.length === 0 || availabilityWindowsCoverLocalSegment(
             recurringWindows,
             weekday,
             segmentStartMinutes,
