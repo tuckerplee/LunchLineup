@@ -97,7 +97,7 @@ compose() {
     -f "$APP_DIR/$OVERLAY" ${COMPOSE_EXTRA[@]+"${COMPOSE_EXTRA[@]}"} "$@"
 }
 
-# Optional repo3 (type gcs, offsite). Only when PGBACKREST_REPO3_ENABLED=true (PGBACKREST_ENABLED
+# Optional repo3 (type gcs). Only when PGBACKREST_REPO3_ENABLED=true (PGBACKREST_ENABLED
 # is already true here): verify every setting and host file, then add the repo3 overlay.
 check_pgbackrest_repo3() {
   local enabled key path mode

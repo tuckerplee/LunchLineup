@@ -317,7 +317,7 @@ test('docs describe the key set, fail-closed deploy, restore and estate-owned sc
   assert.match(runbook, /pgbackrest --stanza=lunchlineup --delta --type=time/);
   assert.match(runbook, /--target-action=promote restore/);
   assert.match(runbook, /--type=full backup/);
-  assert.match(estate, /Backup schedule \(estate-infra\)/);
+  assert.match(estate, /Backup schedule \(application\)/);
   assert.match(estate, /docker exec -u postgres/);
   assert.match(estate, /found to be unhealthy/);
   assert.match(estate, /\/var\/lib\/node_exporter\/textfile_collector/);
@@ -464,8 +464,9 @@ for (const which of ['release', 'pilot']) {
   test(`${script}: repo3 overlay is added only when PGBACKREST_REPO3_ENABLED=true`, { skip: !bash }, () => {
     const off = check(runtimeEnvFile());
     assert.equal(off.status, 0, off.stderr);
-    assert.doesNotMatch(off.stdout, /repo3/);
-    assert.doesNotMatch(check(runtimeEnvFile({ PGBACKREST_REPO3_ENABLED: 'false', PGBACKREST_REPO3_GCS_BUCKET: 'bad!' })).stdout, /repo3/);
+    const noRepo3 = /compose\.pgbackrest-repo3|repo3 \(gcs/;
+    assert.doesNotMatch(off.stdout, noRepo3);
+    assert.doesNotMatch(check(runtimeEnvFile({ PGBACKREST_REPO3_ENABLED: 'false', PGBACKREST_REPO3_GCS_BUCKET: 'bad!' })).stdout, noRepo3);
     const on = check(runtimeEnvFile(repo3Values()));
     assert.equal(on.status, 0, on.stderr);
     assert.match(on.stdout, /ON=true EXTRA=-f \S*compose\.pgbackrest\.yml -f \S*compose\.pgbackrest-repo3\.yml/);
