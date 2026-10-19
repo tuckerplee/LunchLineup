@@ -20,6 +20,7 @@ const capabilityLockedServices = [
   'pdf-parser',
   'control',
   'autoheal',
+  'retention-scheduler',
 ];
 
 const startupCapabilityServices = [
