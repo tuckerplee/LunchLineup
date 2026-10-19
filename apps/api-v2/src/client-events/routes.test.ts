@@ -82,7 +82,7 @@ describe('POST /v2/client-events', () => {
     expect(events()[0]).toMatchObject({
       event: 'ui_message',
       code: 'lunch_breaks.generate.failed',
-      level: 'error',
+      uiLevel: 'error',
       kind: 'message',
       route: '/dashboard/lunch-breaks',
       detail: 'payment_required',
@@ -153,6 +153,6 @@ describe('ui_message log shape', () => {
     expect(uiMessageLogRecord(
       { code: 'a.b', level: 'success', kind: 'message', route: '/dashboard' },
       { tenantId: 't', sub: 'u' },
-    )).toEqual({ event: 'ui_message', code: 'a.b', level: 'success', kind: 'message', route: '/dashboard', tenantId: 't', userId: 'u' });
+    )).toEqual({ event: 'ui_message', code: 'a.b', uiLevel: 'success', kind: 'message', route: '/dashboard', tenantId: 't', userId: 'u' });
   });
 });
