@@ -13,6 +13,10 @@
 # passphrase file. See infrastructure/postgres/README.md.
 services:
   postgres:
+    # pgBackRest archive-async forks a daemon; with postgres as PID 1 an orphaned
+    # daemon is reparented to the postmaster, whose non-zero exit triggers crash
+    # recovery. docker-init (tini) as PID 1 reaps it instead.
+    init: true
     environment:
       LL_PGBR_ENABLED: "true"
       LL_PGBR_STANZA: "${PGBACKREST_STANZA:?Set PGBACKREST_STANZA in .env}"

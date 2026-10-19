@@ -51,6 +51,9 @@ test('pgBackRest overlay: postgres only, dedicated egress network, read-only key
     assert.match(overlay, new RegExp(`\\$\\{${key}:\\?`), `${key} must be required by the overlay`);
   }
   assert.match(overlay, /LL_PGBR_ENABLED: "true"/);
+  // archive-async daemons must not be reparented to the postmaster (PID 1): a non-zero
+  // exit there is treated as a crashed backend and loops postgres through crash recovery.
+  assert.match(overlay, /^  postgres:\n(?:    #[^\n]*\n)*    init: true$/m);
   assert.match(overlay, /PGBACKREST_CONFIG: \/run\/pgbackrest\/pgbackrest\.conf/);
   assert.match(overlay, /\/run\/pgbackrest:rw,noexec,nosuid,nodev,size=1m,mode=0700,uid=70,gid=70/);
   assert.equal([...overlay.matchAll(/read_only: true/g)].length, 3);
