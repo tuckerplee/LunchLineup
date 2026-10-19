@@ -724,6 +724,54 @@ services:
       retries: 3
     restart: unless-stopped
 
+  # ─── Retention scheduler (one-shot; never started by `up`) ───
+  # Runs scripts/invoke-retained-record-purge.mjs from the already-deployed migrate image
+  # (node + the repo scripts/ tree; no host Node.js). Invoked only by the
+  # lunchlineup-retention-purge / lunchlineup-retained-record-review systemd units:
+  #   docker compose ... run --rm --no-deps -e RETENTION_PURGE_STAGE=... retention-scheduler
+  # It reaches the API through the private app network (api-v2 -> legacy api), never
+  # the public hostname, and defaults to a retained_records dry-run.
+  retention-scheduler:
+    <<: *locked-runtime
+    cpus: "0.50"
+    mem_limit: 256m
+    pids_limit: 64
+    profiles:
+      - ops
+    user: "${RETENTION_PURGE_UID:-1000}:${RETENTION_PURGE_GID:-1000}"
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,mode=1777
+    image: "${IMAGE_PREFIX:-lunchlineup}/migrate:${IMAGE_TAG:-local}"
+    command:
+      - node
+      - scripts/invoke-retained-record-purge.mjs
+    networks:
+      - app
+    environment:
+      - RETENTION_PURGE_URL=http://api-v2:3002/v2/admin/retention/purge-expired
+      - RETENTION_PURGE_TOKEN_FILE=/run/secrets/retention_purge_token
+      - RETENTION_PURGE_STAGE=retained_records
+      - RETENTION_PURGE_DRY_RUN=true
+      - RETENTION_PURGE_PROOF_FILE=/var/lib/lunchlineup/proofs/retained-record-review-latest.json
+      - RETENTION_PURGE_METRICS_FILE=/var/lib/node_exporter/textfile_collector/lunchlineup_retained_record_review.prom
+      - RETENTION_PURGE_LOCK_FILE=/tmp/retention-purge.lock
+      - RETENTION_PURGE_TIMEOUT_MS=${RETENTION_PURGE_TIMEOUT_MS:-30000}
+      - RETENTION_PURGE_MAX_PAGES=${RETENTION_PURGE_MAX_PAGES:-20}
+    secrets:
+      - retention_purge_token
+    volumes:
+      - type: bind
+        source: ${RETENTION_PROOF_DIR:-/var/lib/lunchlineup/proofs}
+        target: /var/lib/lunchlineup/proofs
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${RETENTION_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}
+        target: /var/lib/node_exporter/textfile_collector
+        bind:
+          create_host_path: false
+    restart: "no"
+
   # ─── Autoheal (restart unhealthy containers) ───
   # The pinned image logs each restart to its own stdout by default ("... found to be
   # unhealthy - Restarting container now ..."); Alloy ships it. No log flag is needed

@@ -1,22 +1,20 @@
 [Unit]
-Description=LunchLineup 30-day application-data purge
+Description=LunchLineup 30-day application-data purge (one-shot container)
 Documentation=file:/opt/lunchlineup/current/docs/runbooks/data-retention-delete-export.md
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
-After=network-online.target
+ConditionPathExists=/opt/lunchlineup-secrets/runtime.env
 
 [Service]
 Type=oneshot
-User=lunchlineup
-Group=lunchlineup
-WorkingDirectory=/opt/lunchlineup/current
-EnvironmentFile=/etc/lunchlineup/retention-purge.env
-StateDirectory=lunchlineup
-RuntimeDirectory=lunchlineup
-ReadWritePaths=/var/lib/lunchlineup /var/lib/node_exporter/textfile_collector /run/lunchlineup
-ExecStart=/usr/bin/env RETENTION_PURGE_STAGE=application_data RETENTION_PURGE_DRY_RUN=false RETENTION_PURGE_EXECUTE_CONFIRM=purge-expired-application-data /usr/bin/node /opt/lunchlineup/current/scripts/invoke-retained-record-purge.mjs
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectHome=true
-ProtectSystem=strict
-RestrictSUIDSGID=true
-LockPersonality=true
+User=root
+WorkingDirectory=/opt/lunchlineup
+TimeoutStartSec=30min
+Environment=RETENTION_PURGE_STAGE=application_data
+Environment=RETENTION_PURGE_DRY_RUN=false
+Environment=RETENTION_PURGE_EXECUTE_CONFIRM=purge-expired-application-data
+Environment=RETENTION_PURGE_PROOF_FILE=/var/lib/lunchlineup/proofs/retention-purge-latest.json
+Environment=RETENTION_PURGE_METRICS_FILE=/var/lib/node_exporter/textfile_collector/lunchlineup_retention_purge.prom
+Environment=RETENTION_PURGE_LOCK_FILE=/tmp/retention-purge.lock
+ExecStart=/usr/bin/flock -w 600 /run/lock/lunchlineup-deploy.lock /bin/sh /opt/lunchlineup/infrastructure/systemd/run-retention-scheduler.sh

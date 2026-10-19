@@ -3,6 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  fchmodSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -215,9 +216,10 @@ function endpointUrl() {
     throw new Error("RETENTION_PURGE_URL must be a valid URL.");
   }
 
+  const internalApi = isInternalApiV2(url);
   if (
     url.protocol !== "https:" &&
-    !(url.protocol === "http:" && isLoopbackHost(url.hostname))
+    !(url.protocol === "http:" && (isLoopbackHost(url.hostname) || internalApi))
   ) {
     throw new Error(
       "RETENTION_PURGE_URL must use https, except loopback http for local/private same-host invocation.",
@@ -231,10 +233,13 @@ function endpointUrl() {
     throw new Error("RETENTION_PURGE_URL must use the canonical LunchLineup origin.");
   }
 
-  if (url.pathname !== "/api/v2/admin/retention/purge-expired") {
-    throw new Error(
-      "RETENTION_PURGE_URL must target /api/v2/admin/retention/purge-expired.",
-    );
+  // The compose-internal api-v2 listener serves the route without the /api prefix
+  // that the public proxy strips (Caddyfile: /api/v2/* -> api-v2).
+  const expectedPath = internalApi
+    ? "/v2/admin/retention/purge-expired"
+    : "/api/v2/admin/retention/purge-expired";
+  if (url.pathname !== expectedPath) {
+    throw new Error(`RETENTION_PURGE_URL must target ${expectedPath}.`);
   }
 
   return url;
@@ -563,7 +568,8 @@ function writeOutputs({ result, status, error }) {
     atomicWriteJson(proofFile, proof);
   }
   if (metricsFile) {
-    atomicWrite(metricsFile, retentionMetrics(proof));
+    // Metrics carry no secrets and must be readable by the node_exporter user.
+    atomicWrite(metricsFile, retentionMetrics(proof), 0o644);
   }
 }
 
@@ -650,14 +656,15 @@ function atomicWriteJson(path, payload) {
   atomicWrite(path, `${JSON.stringify(payload, null, 2)}\n`);
 }
 
-function atomicWrite(path, contents) {
+function atomicWrite(path, contents, mode = 0o600) {
   ensureParent(path);
   const output = resolve(path);
   const temporary = join(dirname(output), `.${basename(output)}.${process.pid}.${randomUUID()}.tmp`);
   let handle;
   try {
-    handle = openSync(temporary, "wx", 0o600);
+    handle = openSync(temporary, "wx", mode);
     writeFileSync(handle, contents, "utf8");
+    fchmodSync(handle, mode);
     fsyncSync(handle);
     closeSync(handle);
     handle = undefined;
@@ -719,6 +726,16 @@ function stringValue(value) {
 
 function trim(value) {
   return String(value ?? "").trim();
+}
+
+// One-shot scheduler container on the private `app` network (docker-compose.yml
+// service retention-scheduler): plain HTTP to the compose service name only.
+function isInternalApiV2(url) {
+  return (
+    url.protocol === "http:" &&
+    url.hostname === "api-v2" &&
+    url.port === "3002"
+  );
 }
 
 function isLoopbackHost(hostname) {
