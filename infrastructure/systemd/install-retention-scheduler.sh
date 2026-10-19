@@ -37,8 +37,14 @@ for u in $UNITS run-retention-scheduler.sh; do [ -f "$SRC/$u" ] || fail "missing
 token="$(sed -n 's/^RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE=//p' "$E" | tail -n 1 | tr -d "\"' \r")"
 [ -n "$token" ] || fail "RETENTION_PURGE_SERVICE_TOKEN_SECRET_FILE is not set in $E"
 [ -s "$token" ] || fail "retention token file missing or empty: $token"
-setpriv --reuid="$UID_C" --regid="$GID_C" --clear-groups test -r "$token" \
-  || fail "retention token file $token is not readable by uid $UID_C:$GID_C"
+# Docker bind-mounts the file itself as a compose secret, so the host directory may stay
+# root-only (0700); only the file's own mode/owner decide what the container uid can read.
+read -r t_mode t_uid t_gid <<EOF
+$(stat -L -c '%a %u %g' "$token")
+EOF
+t_bits() { awk -v m="$t_mode" -v n="$1" 'BEGIN { print substr(m, length(m) - n + 1, 1) }'; } # n=3 owner, 2 group, 1 other
+if [ "$t_uid" = "$UID_C" ]; then r="$(t_bits 3)"; elif [ "$t_gid" = "$GID_C" ]; then r="$(t_bits 2)"; else r="$(t_bits 1)"; fi
+case "$r" in 4|5|6|7) ;; *) fail "retention token file $token (mode $t_mode, $t_uid:$t_gid) is not readable by uid $UID_C:$GID_C" ;; esac
 
 # Proof directory (ours): create if absent, owned by the container uid.
 install -d -o "$UID_C" -g "$GID_C" -m 0750 "$PROOFS"
