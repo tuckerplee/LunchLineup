@@ -13,7 +13,9 @@ set -eu
 ROOT="${LUNCHLINEUP_ROOT:-/opt/lunchlineup}"
 E="${LUNCHLINEUP_RUNTIME_ENV:-/opt/lunchlineup-secrets/runtime.env}"
 UID_C="${RETENTION_PURGE_UID:-1000}"
-GID_C="${RETENTION_PURGE_GID:-1000}"
+# Same lookup as run-retention-scheduler.sh: the textfile dir is writable through node-exp.
+GID_C="${RETENTION_PURGE_GID:-$(getent group node-exp | cut -d: -f3)}"
+[ -n "$GID_C" ] || { echo "install-retention-scheduler: group node-exp not found; set RETENTION_PURGE_GID" >&2; exit 1; }
 PROOFS="${RETENTION_PROOF_DIR:-/var/lib/lunchlineup/proofs}"
 TEXTFILE="${RETENTION_TEXTFILE_DIR:-/var/lib/node_exporter/textfile_collector}"
 SRC="$ROOT/infrastructure/systemd"

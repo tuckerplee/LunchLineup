@@ -23,6 +23,16 @@ if [ "$pgbackrest" = "true" ]; then
   set -- "$@" -f infrastructure/postgres/compose.pgbackrest.yml
 fi
 
+# Write the estate textfile collector through its group (node-exp, 0775) instead of
+# changing the estate-owned directory. Resolve the gid on every run: a node_exporter
+# reinstall can renumber the group. Compose interpolation prefers this exported value.
+if [ -z "${RETENTION_PURGE_GID:-}" ]; then
+  gid="$(getent group node-exp | cut -d: -f3)"
+  [ -n "$gid" ] || { echo "group node-exp not found; set RETENTION_PURGE_GID" >&2; exit 1; }
+  RETENTION_PURGE_GID="$gid"
+fi
+export RETENTION_PURGE_GID
+
 set -- "$@" run --rm --no-deps -T
 for name in RETENTION_PURGE_STAGE RETENTION_PURGE_DRY_RUN RETENTION_PURGE_EXECUTE_CONFIRM \
   RETENTION_PURGE_PROOF_FILE RETENTION_PURGE_METRICS_FILE RETENTION_PURGE_LOCK_FILE; do
