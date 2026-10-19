@@ -1,5 +1,7 @@
 import { expect, test } from './qa-isolation-fixture';
-import { loginAsSeedAdmin, loginAsSeedManager, seedTenant } from './support';
+import { answerInPageConfirm, loginAsSeedAdmin, loginAsSeedManager, seedTenant } from './support';
+
+const DISCARD_DRAFT = { title: 'Discard your unconfirmed draft?', confirmLabel: 'Discard and reload' };
 
 test.describe.serial('Settings recovery acceptance', { tag: '@full-stack' }, () => {
     test.beforeEach(() => seedTenant());
@@ -98,17 +100,15 @@ test.describe.serial('Settings recovery acceptance', { tag: '@full-stack' }, () 
         await expect(page.getByLabel('Organization Name')).toHaveValue('Never committed draft');
         await page.getByRole('button', { name: 'Check saved settings' }).click();
         await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toBeDisabled();
-        page.once('dialog', dialog => dialog.dismiss());
-        await page.getByRole('button', { name: 'Discard draft and load saved settings' }).click();
+        const discard = () => page.getByRole('button', { name: 'Discard draft and load saved settings' }).click();
+        await answerInPageConfirm(page, DISCARD_DRAFT, false, discard);
         await expect(page.getByLabel('Organization Name')).toHaveValue('Never committed draft');
         await page.route('**/api/v2/settings', route => route.abort('connectionfailed'));
-        page.once('dialog', dialog => dialog.accept());
-        await page.getByRole('button', { name: 'Discard draft and load saved settings' }).click();
+        await answerInPageConfirm(page, DISCARD_DRAFT, true, discard);
         await expect(page.getByRole('button', { name: 'Discard draft and load saved settings' })).toBeEnabled();
         await expect(page.getByLabel('Organization Name')).toHaveValue('Never committed draft');
         await page.unroute('**/api/v2/settings');
-        page.once('dialog', dialog => dialog.accept());
-        await page.getByRole('button', { name: 'Discard draft and load saved settings' }).click();
+        await answerInPageConfirm(page, DISCARD_DRAFT, true, discard);
         await expect(page.getByLabel('Organization Name')).toHaveValue(before);
         await expect(page.getByRole('button', { name: 'Save Changes', exact: true })).toBeEnabled();
         expect(writes).toBe(1);

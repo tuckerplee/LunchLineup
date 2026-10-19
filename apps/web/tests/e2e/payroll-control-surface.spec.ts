@@ -187,7 +187,7 @@ async function installPayrollApi(
       await fulfillJson(route, options.exportEntitlement ?? {
         eligible: true,
         creditCost: 1,
-        reason: 'Enabled by active paid subscription and separately purchased credits.',
+        reason: 'Export is available for this workspace.',
       });
       return;
     }
@@ -308,7 +308,7 @@ test.describe('Payroll control surface', { tag: '@chromium' }, () => {
 
     await page.getByRole('button', { name: 'Create payroll export' }).click();
     const confirmation = page.getByRole('alertdialog', { name: 'Create the payroll export?' });
-    await expect(confirmation).toContainText('uses 1 credit');
+    await expect(confirmation).toContainText('prepares the payroll file for this locked period');
     await confirmation.getByRole('button', { name: 'Create export' }).click();
 
     await expect(page.getByText(/Payroll export created for 1 credit; balance 499/)).toBeVisible();
@@ -334,12 +334,11 @@ test.describe('Payroll control surface', { tag: '@chromium' }, () => {
 
     await page.getByRole('button', { name: 'Create payroll export' }).click();
     const confirmation = page.getByRole('alertdialog', { name: 'Create the payroll export?' });
-    await expect(confirmation).toContainText('uses 1 credit');
+    await expect(confirmation).toContainText('prepares the payroll file for this locked period');
     await confirmation.getByRole('button', { name: 'Create export' }).click();
 
     await expect(page.getByText(/Payroll export created for 1 credit; balance 499/)).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Export ready' })).toBeVisible();
-    await expect(page.getByText('Credits used')).toBeVisible();
     expect(exportRequests).toHaveLength(1);
     expect(exportRequests[0].key).toMatch(/^[0-9a-f-]{36}$/i);
     expect(exportRequests[0].body).toEqual({ expectedCreditCost: 1 });
@@ -412,7 +411,7 @@ test.describe('Payroll control surface', { tag: '@chromium' }, () => {
     },
     {
       name: 'insufficient separate credits',
-      reason: 'Feature requires 1 separately purchased usage credit.',
+      reason: 'Export is blocked: this workspace has run out of credits.',
     },
   ]) {
     test(`honors authoritative ${ineligible.name} export ineligibility without POST`, async ({ page }) => {

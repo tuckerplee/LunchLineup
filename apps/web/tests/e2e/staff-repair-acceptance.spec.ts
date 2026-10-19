@@ -1,5 +1,7 @@
 import { expect, test } from './qa-isolation-fixture';
-import { loginAsSeedAdmin, seedTenant } from './support';
+import { answerInPageConfirm, loginAsSeedAdmin, seedTenant } from './support';
+
+const CLEAR_UNREADABLE = { title: 'Clear unreadable creation details?', confirmLabel: 'Clear details' };
 
 test.describe.serial('Staff repair acceptance', { tag: '@full-stack' }, () => {
   test.beforeEach(() => seedTenant());
@@ -47,12 +49,10 @@ test.describe.serial('Staff repair acceptance', { tag: '@full-stack' }, () => {
     const acknowledgement = page.getByRole('button', { name: 'Acknowledge directory review and retry recovery' });
     await expect(acknowledgement).toBeVisible();
     await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
-    page.once('dialog', dialog => dialog.dismiss());
-    await acknowledgement.click();
+    await answerInPageConfirm(page, CLEAR_UNREADABLE, false, () => acknowledgement.click());
     expect(await page.evaluate(key => sessionStorage.getItem(key), scopedKey)).toBe('{');
     await expect(form.getByRole('button', { name: 'Create team member' })).toBeDisabled();
-    page.once('dialog', dialog => dialog.accept());
-    await acknowledgement.click();
+    await answerInPageConfirm(page, CLEAR_UNREADABLE, true, () => acknowledgement.click());
     await expect(form.getByRole('button', { name: 'Create team member' })).toBeEnabled();
     await expect(acknowledgement).toHaveCount(0);
     expect(await page.evaluate(key => sessionStorage.getItem(key), scopedKey)).toBeNull();

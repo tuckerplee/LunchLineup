@@ -286,6 +286,24 @@ export async function loginAsSeedSuperAdmin(page: Page, next = '/admin') {
   });
 }
 
+/**
+ * Clicks `open`, then answers the in-page confirmation it raises (AppMessages
+ * `confirmAction`, role="alertdialog"; see lib/messages/README.md). The app never
+ * uses native dialogs, so `page.on('dialog')` would never fire.
+ */
+export async function answerInPageConfirm(
+  page: Page,
+  dialog: { title: string; confirmLabel: string },
+  accept: boolean,
+  open: () => Promise<unknown>,
+): Promise<void> {
+  await open();
+  const confirmation = page.getByRole('alertdialog', { name: dialog.title, exact: true });
+  await expect(confirmation).toBeVisible();
+  await confirmation.getByRole('button', { name: accept ? dialog.confirmLabel : 'Cancel', exact: true }).click();
+  await expect(confirmation).toHaveCount(0);
+}
+
 export async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   const csrfToken = (await page.context().cookies()).find((cookie) => cookie.name === 'csrf_token')?.value;
   expect(csrfToken, 'CSRF token after login').toBeTruthy();

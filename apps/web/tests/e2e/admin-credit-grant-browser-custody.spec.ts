@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { Dialog, Response } from '@playwright/test';
+import type { Response } from '@playwright/test';
 import { expect, test, type Page, type Route } from './qa-isolation-fixture';
 import { loginAsSeedSuperAdmin, runFullStack } from './support';
 
@@ -201,20 +201,20 @@ function responseForGrant(page: Page) {
   const pending = page.waitForResponse(response => new URL(response.url()).pathname === GRANT && response.request().method() === 'POST');
   void pending.catch(() => undefined); return pending;
 }
+// The in-page confirmation (role="alertdialog") rendered by AppMessages; native dialogs are not used.
+const grantDialog = (page: Page) => page.getByRole('alertdialog', { name: 'Grant credits?', exact: true });
+async function answerGrantDialog(page: Page, expected: string, accept: boolean): Promise<string> {
+  await submit(page).click({ timeout: 5000 });
+  const dialog = grantDialog(page);
+  await expect(dialog).toBeVisible({ timeout: 6000 });
+  const actual = (await dialog.locator('p').first().textContent()) ?? '';
+  expect(actual).toBe(expected); await expect(dialog).toHaveAccessibleDescription(expected);
+  await dialog.getByRole('button', { name: accept ? 'Grant credits' : 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  return actual;
+}
 async function confirm(page: Page, accept: boolean) {
-  const completed = deferred<void>(), failures: unknown[] = [];
-  const handler = async (dialog: Dialog) => {
-    try {
-      expect(dialog.type()).toBe('confirm');
-      expect(dialog.message()).toBe('Grant 25 credits to Boreal Kitchen? Estimated debt repayment: 0 credits. Estimated spendable balance: 65 credits. Estimated remaining debt: 0 credits. Estimates use loaded balances; the server settles against current balances.');
-      if (accept) await dialog.accept(); else await dialog.dismiss();
-    } catch (error) { failures.push(error); await dialog.dismiss().catch(() => undefined); }
-    finally { completed.resolve(); }
-  };
-  page.once('dialog', handler);
-  try { await bounded(Promise.all([submit(page).click({ timeout: 5000 }), completed.promise]), 'credit confirmation click/dialog', 6000); }
-  finally { page.off('dialog', handler); }
-  expect(failures).toEqual([]);
+  await answerGrantDialog(page, 'Grant 25 credits to Boreal Kitchen? Estimated debt repayment: 0 credits. Estimated spendable balance: 65 credits. Estimated remaining debt: 0 credits. Estimates use loaded balances; the server settles against current balances.', accept);
 }
 async function exactDelivery(page: Page, adapter: Adapter, response: Response, expectedPayload = payload) {
   const row = writes(adapter).at(-1)!;
@@ -1342,19 +1342,8 @@ async function debtEvidence(page: Page, adapter: DebtAdapter, label: string) {
   return { ui, state };
 }
 async function confirmDebt(page: Page, adapter: DebtAdapter, expected: string, accept: boolean) {
-  const completed = deferred<void>(), failures: unknown[] = [];
-  const handler = async (dialog: Dialog) => {
-    try {
-      adapter.dialogs.push({ type: dialog.type(), actual: dialog.message(), expected, accepted: accept });
-      expect(dialog.type()).toBe('confirm'); expect(dialog.message()).toBe(expected);
-      if (accept) await dialog.accept(); else await dialog.dismiss();
-    } catch (error) { failures.push(error); await dialog.dismiss().catch(() => undefined); }
-    finally { completed.resolve(); }
-  };
-  page.once('dialog', handler);
-  try { await bounded(Promise.all([submit(page).click({ timeout: 5000 }), completed.promise]), 'debt confirmation click/dialog', 6000); }
-  finally { page.off('dialog', handler); }
-  expect(failures).toEqual([]);
+  const actual = await answerGrantDialog(page, expected, accept);
+  adapter.dialogs.push({ type: 'alertdialog', actual, expected, accepted: accept });
 }
 async function waitDebtGrant(page: Page, adapter: DebtAdapter, count: number) {
   await expect.poll(() => adapter.ledger.filter(row => row.method === 'POST').length).toBe(count);
@@ -1544,16 +1533,12 @@ test.describe('Admin credit grant input browser custody', () => {
     const expectedPayload = { ...payload, reason: exactReason };
     await scenario(page, 'positive', async adapter => {
       await fill(page); await reason(page).fill('r'.repeat(501));
-      const unexpectedDialogs: string[] = [];
-      const rejectDialog = async (dialog: Dialog) => { unexpectedDialogs.push(dialog.message()); await dialog.dismiss(); };
-      page.on('dialog', rejectDialog);
-      try {
-        await submit(page).click(); await expect(page.getByText('Reason must be 500 characters or fewer.', { exact: true })).toBeVisible();
-        await expect(reason(page)).toHaveValue('r'.repeat(501)); await expect(amount(page)).toHaveValue('25'); await expect(tenant(page)).toHaveValue(B);
-        expect(unexpectedDialogs).toEqual([]); expect(writes(adapter)).toHaveLength(0);
-        await expect(page.getByText('Use 1–500 characters. Leading and trailing spaces are ignored.', { exact: true })).toBeVisible();
-        expect(await reason(page).getAttribute('maxlength')).toBeNull();
-      } finally { page.off('dialog', rejectDialog); }
+      const unexpectedDialogs = page.getByRole('alertdialog');
+      await submit(page).click(); await expect(page.getByText('Reason must be 500 characters or fewer.', { exact: true })).toBeVisible();
+      await expect(reason(page)).toHaveValue('r'.repeat(501)); await expect(amount(page)).toHaveValue('25'); await expect(tenant(page)).toHaveValue(B);
+      await expect(unexpectedDialogs).toHaveCount(0); expect(writes(adapter)).toHaveLength(0);
+      await expect(page.getByText('Use 1–500 characters. Leading and trailing spaces are ignored.', { exact: true })).toBeVisible();
+      expect(await reason(page).getAttribute('maxlength')).toBeNull();
       await reason(page).fill(rawReason); await confirm(page, false);
       expect(writes(adapter)).toHaveLength(0); expect((await adapter.read()).tenants).toEqual(adapter.initial);
       await expect(reason(page)).toHaveValue(rawReason); await expect(amount(page)).toHaveValue('25'); await expect(tenant(page)).toHaveValue(B);
@@ -1567,23 +1552,19 @@ test.describe('Admin credit grant input browser custody', () => {
       expect(writes(adapter)).toHaveLength(1); expect(writes(adapter)[0].effects).toBe(1);
       await test.info().attach('credit-reason-boundary-input-custody', { contentType: 'application/json',
         body: JSON.stringify({ rejectedLength: 501, displayedLength: rawReason.length, sentLength: exactReason.length,
-          unexpectedDialogs, exactPayload: expectedPayload, writes: writes(adapter) }) });
+          unexpectedDialogs: [], exactPayload: expectedPayload, writes: writes(adapter) }) });
     }, expectedPayload);
   });
 
   test('refuses an unsafe amount before confirmation or POST and preserves the selected grant fields', async ({ page }) => {
     await scenario(page, 'positive', async adapter => {
       await fill(page); await amount(page).fill('9007199254740992');
-      const dialogs: string[] = [], handler = async (dialog: Dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); };
-      page.on('dialog', handler);
-      try {
-        await submit(page).click(); await expect(page.getByText('Amount must be a positive integer.', { exact: true })).toBeVisible();
-        expect(dialogs).toEqual([]); expect(writes(adapter)).toHaveLength(0);
-        await expect(amount(page)).toHaveValue('9007199254740992'); await expect(reason(page)).toHaveValue(REASON); await expect(tenant(page)).toHaveValue(B);
-        const state = await adapter.read(); expect(state.tenants).toEqual(adapter.initial); expect(state.history).toEqual([]);
-        await expect(page.getByText('Credits granted.', { exact: true })).toHaveCount(0);
-        await test.info().attach('credit-unsafe-amount-input-custody', { contentType: 'application/json', body: JSON.stringify({ dialogs, state, writes: writes(adapter) }) });
-      } finally { page.off('dialog', handler); }
+      await submit(page).click(); await expect(page.getByText('Amount must be a positive integer.', { exact: true })).toBeVisible();
+      await expect(page.getByRole('alertdialog')).toHaveCount(0); expect(writes(adapter)).toHaveLength(0);
+      await expect(amount(page)).toHaveValue('9007199254740992'); await expect(reason(page)).toHaveValue(REASON); await expect(tenant(page)).toHaveValue(B);
+      const state = await adapter.read(); expect(state.tenants).toEqual(adapter.initial); expect(state.history).toEqual([]);
+      await expect(page.getByText('Credits granted.', { exact: true })).toHaveCount(0);
+      await test.info().attach('credit-unsafe-amount-input-custody', { contentType: 'application/json', body: JSON.stringify({ dialogs: [], state, writes: writes(adapter) }) });
     });
   });
 });

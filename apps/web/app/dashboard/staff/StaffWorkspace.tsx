@@ -96,11 +96,6 @@ type UserDirectoryPage = {
     pagination?: UserDirectoryPageMetadata;
 };
 
-type PendingStaffAction = {
-    action: StaffAction;
-    user: StaffUser;
-};
-
 function getCsrfTokenFromCookie(): string {
     if (typeof document === 'undefined') return '';
     const pair = document.cookie
@@ -193,14 +188,24 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
     const [error, setError] = useState<string | null>(null);
     const { confirmAction } = useAppMessages();
     useStatusMessage('error', 'staff.workspace.failed', error);
-    const [pendingAction, setPendingAction] = useState<PendingStaffAction | null>(null);
-    const { dialogRef: actionDialogRef, captureTrigger: captureActionTrigger } = useDialogFocus(pendingAction !== null);
-    const openPendingAction = (action: StaffAction, user: StaffUser, trigger: HTMLElement) => {
-        const drawer = trigger.closest<HTMLElement>('[role="dialog"]');
-        const fallback = drawer?.querySelector<HTMLElement>('[aria-label="Close staff management"]')
-            ?? trigger.closest<HTMLElement>('main');
-        captureActionTrigger(trigger, fallback);
-        setPendingAction({ action, user });
+    // Tracked in-page confirmation (AppMessages); the opener regains focus when it closes.
+    const openPendingAction = async (action: StaffAction, user: StaffUser) => {
+        if (action === 'reset-pin' && pinResetInFlight.current) return;
+        const confirmation = buildStaffActionConfirmation(action, user);
+        if (!await confirmAction({
+            code: action === 'reset-pin' ? 'staff.reset_pin.confirm' : 'staff.remove.confirm',
+            title: confirmation.title,
+            body: confirmation.description,
+            confirmLabel: confirmation.confirmLabel,
+            tone: action === 'remove' ? 'danger' : 'default',
+        })) return;
+        if (action === 'reset-pin') {
+            // Select the credential recipient on confirmation, never on a late response.
+            setSchedulingProfileUser(user);
+            void resetPin(user.id);
+            return;
+        }
+        void removeStaff(user.id);
     };
     const [pendingRoleDeletion, setPendingRoleDeletion] = useState<RoleCatalogItem | null>(null);
     const { dialogRef: roleDeletionDialogRef, captureTrigger: captureRoleDeletionTrigger } = useDialogFocus(pendingRoleDeletion !== null);
@@ -593,20 +598,6 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
         }
     }, []);
 
-    const confirmPendingAction = useCallback(() => {
-        if (!pendingAction || (pendingAction.action === 'reset-pin' && pinResetInFlight.current)) return;
-
-        const { action, user } = pendingAction;
-        setPendingAction(null);
-        if (action === 'reset-pin') {
-            // Select the credential recipient on confirmation, never on a late response.
-            setSchedulingProfileUser(user);
-            void resetPin(user.id);
-            return;
-        }
-        void removeStaff(user.id);
-    }, [removeStaff, pendingAction, resetPin]);
-
     const saveRole = useCallback(async () => {
         if (!editorName.trim()) {
             setError('Role name is required.');
@@ -902,13 +893,13 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId && !user.email ? (
-                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('reset-pin', user, event.currentTarget)} disabled={pinResetUserId !== null || isSaving === user.id}>
+                                                <Button size="sm" variant="outline" onClick={() => void openPendingAction('reset-pin', user)} disabled={pinResetUserId !== null || isSaving === user.id}>
                                                     <RotateCcw aria-hidden="true" size={14} />
                                                     {pinResetUserId === user.id ? 'Resetting...' : 'Reset PIN'}
                                                 </Button>
                                             ) : null}
                                             {canAdminister && user.id !== currentUserPublicId ? (
-                                                <Button size="sm" variant="outline" onClick={(event) => openPendingAction('remove', user, event.currentTarget)} disabled={isSaving === user.id || pinResetUserId === user.id}>
+                                                <Button size="sm" variant="outline" onClick={() => void openPendingAction('remove', user)} disabled={isSaving === user.id || pinResetUserId === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
                                                     {isSaving === user.id ? 'Removing...' : 'Remove permanently'}
                                                 </Button>
@@ -1093,7 +1084,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                         <Button
                                             size="sm"
                                             variant="outline"
-                                            onClick={(event) => openPendingAction('reset-pin', schedulingProfileUser, event.currentTarget)}
+                                            onClick={() => void openPendingAction('reset-pin', schedulingProfileUser)}
                                             disabled={pinResetUserId !== null || isSaving === schedulingProfileUser.id}
                                         >
                                             <RotateCcw aria-hidden="true" size={14} />
@@ -1103,7 +1094,7 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
                                     <Button
                                         size="sm"
                                         variant="outline"
-                                        onClick={(event) => openPendingAction('remove', schedulingProfileUser, event.currentTarget)}
+                                        onClick={() => void openPendingAction('remove', schedulingProfileUser)}
                                         disabled={isSaving === schedulingProfileUser.id || pinResetUserId === schedulingProfileUser.id}
                                     >
                                         <UserMinus aria-hidden="true" size={14} />
@@ -1261,48 +1252,6 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
             ) : null}
 
             {identityUserId ? <StaffIdentityEditor key={identityUserId} userId={identityUserId} onClose={() => setIdentityUserId(null)} onSaved={loadWorkspace} /> : null}
-
-            {pendingAction ? (() => {
-                const confirmation = buildStaffActionConfirmation(pendingAction.action, pendingAction.user);
-                return (
-                    <div className="staff-confirmation-backdrop" role="presentation">
-                        <div
-                            ref={actionDialogRef}
-                            tabIndex={-1}
-                            className="staff-confirmation-dialog"
-                            role="alertdialog"
-                            aria-modal="true"
-                            aria-labelledby="staff-confirmation-title"
-                            aria-describedby="staff-confirmation-description"
-                            onKeyDown={(event) => {
-                                if (event.key === 'Escape') setPendingAction(null);
-                            }}
-                        >
-                            <div>
-                                <h2 id="staff-confirmation-title">{confirmation.title}</h2>
-                                <p id="staff-confirmation-description">{confirmation.description}</p>
-                            </div>
-                            <div className="staff-confirmation-actions">
-                                <Button variant="outline" onClick={() => setPendingAction(null)} autoFocus>
-                                    Cancel
-                                </Button>
-                                <Button
-                                    variant={pendingAction.action === 'remove' ? 'destructive' : 'default'}
-                                    onClick={confirmPendingAction}
-                                    disabled={pendingAction.action === 'reset-pin' && pinResetUserId !== null}
-                                >
-                                    {pendingAction.action === 'reset-pin' ? (
-                                        <RotateCcw aria-hidden="true" size={16} />
-                                    ) : (
-                                        <UserMinus aria-hidden="true" size={16} />
-                                    )}
-                                    {confirmation.confirmLabel}
-                                </Button>
-                            </div>
-                        </div>
-                    </div>
-                );
-            })() : null}
 
             {pendingRoleDeletion ? (() => {
                 const confirmation = buildRoleDeletionConfirmation(pendingRoleDeletion);

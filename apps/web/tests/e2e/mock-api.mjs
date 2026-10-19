@@ -1584,7 +1584,7 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       target.mfaEnabled = false;
-      sendJson(res, 200, { success: true });
+      sendJson(res, 200, { id: target.id, mfaEnabled: false, sessionsRevoked: 1 });
       return;
     }
     if (pathname === '/v1/admin/account/exports' && req.method === 'GET') {
@@ -2051,14 +2051,14 @@ const server = http.createServer(async (req, res) => {
       const preflight = schedulePublishPreflight(schedule);
       if (!schedulePublishContractMatches(body.acceptedContract, preflight.acceptedContract)) {
         sendJson(res, 409, {
-          message: 'Schedule or configured publish cost changed after confirmation. Review and confirm the current preflight.',
+          message: 'Schedule changed after confirmation. Review and confirm the current publish details.',
           preflight,
         });
         return;
       }
       if (!preflight.sufficientCredits) {
         sendJson(res, 403, {
-          message: 'Insufficient usage credits balance for schedule publication and matching webhook deliveries.',
+          message: 'Publishing is blocked: this workspace has run out of credits.',
           preflight,
         });
         return;

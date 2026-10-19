@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { ConsoleMessage, Dialog, Locator, Request } from '@playwright/test';
+import type { ConsoleMessage, Locator, Request } from '@playwright/test';
 import { expect, test, type Page, type Route } from './qa-isolation-fixture';
 import { loginAsSeedSuperAdmin, runFullStack } from './support';
 
@@ -182,21 +182,33 @@ type Adapter = Awaited<ReturnType<typeof install>>;
 const directory = (page: Page) => page.getByRole('article', { name: 'Tenant directory table', exact: true });
 const target = (page: Page, id: string) => directory(page).getByRole('row').filter({ hasText: id === A ? 'aurora-fixture' : 'boreal-fixture' });
 const archivedNotice = (page: Page) => page.getByText('Boreal Kitchen archived.', { exact: true });
+// Typed confirmations are the in-page AppMessages prompt (role="alertdialog"): the
+// first paragraph is the title, the middle the description, the last the input label.
+// A mismatched entry is refused in place with an inline error, so the only way out
+// without the exact slug is Cancel; nothing is sent either way.
+async function answerTypedPrompt(page: Page, expected: string, confirmLabel: string, answer: string | null, open: () => Promise<void>) {
+  const parts = expected.split('\n\n'), title = parts[0], label = parts[parts.length - 1], body = parts.slice(1, -1).join(' ');
+  const expectedInput = /^Type (.+) to confirm\.$/.exec(label)![1];
+  await bounded(open(), `${title} opener click`);
+  const dialog = page.getByRole('alertdialog', { name: title, exact: true });
+  await expect(dialog).toBeVisible(); await expect(dialog).toHaveAccessibleDescription(body);
+  const input = dialog.getByRole('textbox', { name: label, exact: true });
+  if (answer !== null) {
+    await input.fill(answer);
+    await dialog.getByRole('button', { name: confirmLabel, exact: true }).click();
+    if (answer.trim() !== expectedInput) {
+      await expect(dialog.getByRole('alert')).toHaveText(`Enter ${expectedInput} exactly to continue.`);
+      await expect(input).toHaveValue(answer);
+    }
+  }
+  if (answer === null || answer.trim() !== expectedInput) await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  return [title, body, label].join('\n\n');
+}
 async function prompt(page: Page, adapter: Adapter, answer: string | null) {
-  let handler!: (dialog: Dialog) => void;
-  const seen = new Promise<void>((resolve, reject) => {
-    handler = dialog => { void (async () => {
-      adapter.dialogs.push({ type: dialog.type(), message: dialog.message(), answer });
-      try {
-        expect(dialog.type()).toBe('prompt'); expect(dialog.message()).toBe(PROMPT);
-        if (answer === null) await dialog.dismiss(); else await dialog.accept(answer);
-        resolve();
-      } catch (error) { await dialog.dismiss().catch(() => undefined); reject(error); }
-    })(); };
-    page.once('dialog', handler);
-  });
-  try { await bounded(Promise.all([seen, target(page, B).getByRole('button', { name: 'Archive', exact: true }).click()]), 'archive confirmation'); }
-  finally { page.off('dialog', handler); }
+  const message = await answerTypedPrompt(page, PROMPT, 'Archive', answer,
+    () => target(page, B).getByRole('button', { name: 'Archive', exact: true }).click());
+  adapter.dialogs.push({ type: 'alertdialog', message, answer });
 }
 async function capture(page: Page, adapter: Adapter, label: string) {
   const state = await adapter.read(); await adapter.drainReceipts();
@@ -762,30 +774,13 @@ async function lifecycleClick(page: Page, adapter: Adapter, entry: Entry, answer
   }
   if (action === 'activate' || action === 'restore') {
     // These current user flows have an explicit button, not a confirmation dialog.
-    // Install a handler so any unexpected dialog fails promptly instead of hanging.
-    const unexpected: string[] = [];
-    const handler = (dialog: Dialog) => { unexpected.push(dialog.message()); void dialog.dismiss(); };
-    page.on('dialog', handler);
-    try { await bounded(button.click(), `${action} explicit click`); expect(unexpected).toEqual([]); }
-    finally { page.off('dialog', handler); }
+    await bounded(button.click(), `${action} explicit click`); await expect(page.getByRole('alertdialog')).toHaveCount(0);
     return;
   }
   const expectedPrompt = action === 'archive' ? PROMPT
     : 'Suspend Boreal Kitchen?\n\nUsers may lose workspace access until the tenant is activated again.\n\nType boreal-fixture to confirm.';
-  let handler!: (dialog: Dialog) => void;
-  const seen = new Promise<void>((resolve, reject) => {
-    handler = dialog => { void (async () => {
-      adapter.dialogs.push({ entry, action, type: dialog.type(), message: dialog.message(), answer });
-      try {
-        expect(dialog.type()).toBe('prompt'); expect(dialog.message()).toBe(expectedPrompt);
-        if (answer === null) await dialog.dismiss(); else await dialog.accept(answer);
-        resolve();
-      } catch (error) { await dialog.dismiss().catch(() => undefined); reject(error); }
-    })(); };
-    page.once('dialog', handler);
-  });
-  try { await bounded(Promise.all([seen, button.click()]), `${action} exact confirmation`); }
-  finally { page.off('dialog', handler); }
+  const message = await answerTypedPrompt(page, expectedPrompt, action === 'archive' ? 'Archive' : 'Suspend', answer, () => button.click());
+  adapter.dialogs.push({ entry, action, type: 'alertdialog', message, answer });
 }
 async function lifecycleState(page: Page, adapter: Adapter, committed: boolean) {
   const expectedB = committed ? completedTenant(adapter.initial[1], adapter.action) : adapter.initial[1];
@@ -823,11 +818,11 @@ async function refusedThenSuccessful(page: Page, action: Exclude<Action, 'archiv
     const evidence = await capture(page, adapter, `${action}-refusal-before-ui-verdict`);
     expect(evidence.state.data).toEqual(adapter.initial);
     await expect(completedNotice(page, action)).toHaveCount(0);
-    await expect(page.getByText(REFUSAL, { exact: true })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Notifications' }).getByText(REFUSAL)).toBeVisible();
     await expect(uncertainGuidance(page, action)).toBeVisible();
     await lifecycleState(page, adapter, false);
     await refresh(page, adapter);
-    await expect(page.getByText(REFUSAL, { exact: true })).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Notifications' }).getByText(REFUSAL)).toBeVisible();
     await expect(uncertainGuidance(page, action)).toBeVisible();
     expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(1);
     if (action === 'suspend') {
@@ -839,7 +834,7 @@ async function refusedThenSuccessful(page: Page, action: Exclude<Action, 'archiv
     await lifecycleClick(page, adapter, 'selected'); await waitPosts(page, adapter, 2);
     await expect(completedNotice(page, action)).toBeVisible();
     await expect(uncertainGuidance(page, action)).toHaveCount(0);
-    await expect(page.getByText(REFUSAL, { exact: true })).toHaveCount(0);
+    await expect(page.getByRole('status', { name: 'Notifications' }).getByText(REFUSAL)).toHaveCount(0);
     await lifecycleState(page, adapter, true);
     await expect(selected(page).getByLabel('Name', { exact: true })).toHaveValue('Boreal Kitchen');
     await expect(selected(page).getByLabel('Status', { exact: true })).toHaveValue(action === 'suspend' ? 'SUSPENDED' : 'ACTIVE');
@@ -924,7 +919,7 @@ test.describe('Tenant archive browser response custody', () => {
   test('preserves a refused archive and requires a fresh explicit confirmation before the successful retry', async ({ page }) => {
     await scenario(page, 'refusal', async adapter => {
       await prompt(page, adapter, 'boreal-fixture'); await waitPosts(page, adapter, 1);
-      await expect(page.getByText(REFUSAL, { exact: true })).toBeVisible(); await expect(archivedNotice(page)).toHaveCount(0);
+      await expect(page.getByRole('status', { name: 'Notifications' }).getByText(REFUSAL)).toBeVisible(); await expect(archivedNotice(page)).toHaveCount(0);
       expect((await adapter.read()).data).toEqual(adapter.initial);
       await prompt(page, adapter, null); expect(adapter.ledger.filter(row => row.method === 'POST')).toHaveLength(1);
       await prompt(page, adapter, 'boreal-fixture'); await waitPosts(page, adapter, 2);
