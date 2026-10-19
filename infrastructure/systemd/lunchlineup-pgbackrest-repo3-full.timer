@@ -1,0 +1,11 @@
+[Unit]
+Description=LunchLineup pgBackRest full backup to repo3
+
+[Timer]
+OnCalendar=Mon *-*-* 02:20:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=lunchlineup-pgbackrest-backup@repo3-full.service
+
+[Install]
+WantedBy=timers.target

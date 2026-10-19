@@ -1,0 +1,11 @@
+[Unit]
+Description=LunchLineup pgBackRest diff backup to repo2
+
+[Timer]
+OnCalendar=Tue..Sun *-*-* 01:10:00 UTC
+RandomizedDelaySec=10m
+Persistent=true
+Unit=lunchlineup-pgbackrest-backup@repo2-diff.service
+
+[Install]
+WantedBy=timers.target

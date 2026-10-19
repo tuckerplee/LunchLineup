@@ -1,0 +1,41 @@
+# Optional second pgBackRest repository (repo3, type gcs = Google Cloud Storage) for
+# offsite copies, alongside repo2 (sftp to the NAS). Include it ONLY when
+# PGBACKREST_ENABLED=true AND PGBACKREST_REPO3_ENABLED=true, always AFTER
+# infrastructure/postgres/compose.pgbackrest.yml. scripts/deploy-release.sh and
+# scripts/deploy-private-pilot.sh add it automatically and fail closed on any missing
+# setting or file. Compose cannot make a bind mount conditional, hence this separate file.
+#
+#   docker compose -f docker-compose.yml -f <proxy overlay> \
+#     -f infrastructure/postgres/compose.pgbackrest.yml \
+#     -f infrastructure/postgres/compose.pgbackrest-repo3.yml --env-file <runtime.env> ...
+#
+# Required host files (mounted read-only, copied 0600 into the postgres-owned tmpfs
+# at start, never baked into the image): a GCS service-account JSON key and a repo3
+# cipher passphrase file that differs from the repo2 one. GCS egress uses the existing
+# pgbackrest-egress network: allow HTTPS 443 to storage.googleapis.com (or
+# PGBACKREST_REPO3_GCS_ENDPOINT) in the VM/estate firewall. See infrastructure/postgres/README.md.
+services:
+  postgres:
+    environment:
+      LL_PGBR_REPO3_ENABLED: "true"
+      LL_PGBR_REPO3_GCS_BUCKET: "${PGBACKREST_REPO3_GCS_BUCKET:?Set PGBACKREST_REPO3_GCS_BUCKET in .env}"
+      LL_PGBR_REPO3_PATH: "${PGBACKREST_REPO3_PATH:?Set PGBACKREST_REPO3_PATH in .env}"
+      LL_PGBR_REPO3_GCS_ENDPOINT: "${PGBACKREST_REPO3_GCS_ENDPOINT:-}"
+      # WAL queue cap for archive-async: when repo2 or repo3 is unreachable and the spool reaches this size,
+      # pgBackRest drops WAL (recording a gap, repo backups after it need a new full) instead of filling the disk.
+      LL_PGBR_ARCHIVE_PUSH_QUEUE_MAX: "${PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX:-4GiB}"
+      LL_PGBR_REPO3_RETENTION_FULL: "${PGBACKREST_REPO3_RETENTION_FULL:-2}"
+      LL_PGBR_REPO3_RETENTION_DIFF: "${PGBACKREST_REPO3_RETENTION_DIFF:-7}"
+    volumes:
+      - type: bind
+        source: "${PGBACKREST_REPO3_GCS_KEY_FILE:?Set PGBACKREST_REPO3_GCS_KEY_FILE in .env}"
+        target: /run/pgbackrest-src/gcs_key
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${PGBACKREST_REPO3_CIPHER_PASS_FILE:?Set PGBACKREST_REPO3_CIPHER_PASS_FILE in .env}"
+        target: /run/pgbackrest-src/cipher_pass_repo3
+        read_only: true
+        bind:
+          create_host_path: false

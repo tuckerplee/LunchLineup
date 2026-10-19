@@ -27,6 +27,7 @@ services:
       LL_PGBR_RETENTION_FULL: "${PGBACKREST_RETENTION_FULL:-4}"
       LL_PGBR_RETENTION_DIFF: "${PGBACKREST_RETENTION_DIFF:-7}"
       LL_PGBR_PG_USER: "${POSTGRES_USER:?Set POSTGRES_USER in .env}"
+      LL_PGBR_ARCHIVE_PUSH_QUEUE_MAX: "${PGBACKREST_ARCHIVE_PUSH_QUEUE_MAX:-}"
       # Native pgBackRest option: every `pgbackrest` invocation (archive_command, docker
       # compose exec/run) reads the rendered config from the tmpfs.
       PGBACKREST_CONFIG: /run/pgbackrest/pgbackrest.conf
