@@ -28,7 +28,8 @@ export function normalizeClientRoute(route: string): string {
 export type UiMessageLogRecord = {
   event: 'ui_message';
   code: string;
-  level: ClientEvent['level'];
+  // Not 'level': pino owns that key (numeric log level); a second one breaks Loki parsing.
+  uiLevel: ClientEvent['level'];
   kind: ClientEvent['kind'];
   route: string;
   outcome?: ClientEvent['outcome'];
@@ -48,7 +49,7 @@ export function uiMessageLogRecord(
   return {
     event: 'ui_message',
     code: event.code,
-    level: event.level,
+    uiLevel: event.level,
     kind: event.kind,
     route: normalizeClientRoute(event.route),
     ...(event.outcome === undefined ? {} : { outcome: event.outcome }),
