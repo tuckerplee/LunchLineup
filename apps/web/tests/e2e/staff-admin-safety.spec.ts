@@ -202,7 +202,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     });
     await page.route('**/api/v2/users/user-reset/pin/reset', async (route) => {
       resetRequests += 1;
-      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ temporaryPin: '123456' }) });
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: 'user-reset', username: 'reset-candidate', pinResetRequired: true, temporaryPin: '123456' }) });
     });
     await page.route('**/api/v2/users/user-remove', async (route) => {
       removeRequests += 1;
@@ -273,7 +273,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await datedException.getByLabel('Start').fill('12:00');
     await datedException.getByLabel('End').fill('14:00');
     await editor.getByRole('button', { name: 'Save profile' }).click();
-    await expect(editor.getByText('Scheduling profile saved and confirmed.')).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Notifications' }).getByText('Scheduling profile saved and confirmed.')).toBeVisible();
 
     await page.getByRole('dialog', { name: 'Manage Mock Staff' }).getByRole('button', { name: 'Close staff management' }).click();
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
@@ -377,7 +377,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     await staffRow.getByRole('button', { name: 'Edit schedule profile' }).click();
     const editor = page.getByRole('region', { name: 'Scheduling profile for Mock Staff' });
 
-    await expect(editor.getByText('PDF only, up to 5 MiB. This import costs 3 paid credits.')).toBeVisible();
+    await expect(editor.getByText('PDF only, up to 5 MiB.', { exact: true })).toBeVisible();
     await editor.locator('#availability-pdf-file').setInputFiles({
       name: 'availability.pdf',
       mimeType: 'application/pdf',
@@ -389,7 +389,8 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
 
     await editor.getByRole('button', { name: 'Retry upload' }).click();
     await expect(editor.getByText('Succeeded')).toBeVisible({ timeout: 10_000 });
-    await expect(editor.getByText('3 paid credits were charged for this completed import.')).toBeVisible();
+    // Per-action credit wording was removed; the import shows no cost copy.
+    await expect(editor.getByText(/credit/i)).toHaveCount(0);
     await expect(editor.getByText('Monday')).toBeVisible();
     await expect(editor.getByText('9:00 AM to 5:00 PM')).toBeVisible();
     expect(profileWrites).toBe(0);
@@ -399,7 +400,7 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
     expect(csrfHeaders.every(Boolean)).toBe(true);
 
     await editor.getByRole('button', { name: 'Apply imported availability' }).click();
-    await expect(editor.getByText('Imported availability applied and scheduling profile saved.')).toBeVisible();
+    await expect(page.getByRole('status', { name: 'Notifications' }).getByText('Imported availability applied and scheduling profile saved.')).toBeVisible();
     expect(profileWrites).toBe(1);
     expect(loadedProfileVersion).toMatch(/^[a-f0-9]{64}$/);
     expect(appliedProfile).toEqual({
@@ -543,25 +544,41 @@ test.describe('Staff and platform admin safety controls', { tag: '@chromium' }, 
 
     const confirmation = `reset-mfa:${MFA_ADMIN_USER_ID}`;
     const reason = 'Support verified account ownership.';
-    const promptMessages: string[] = [];
-    const promptResponses = [confirmation, reason];
-    page.on('dialog', async (dialog) => {
-      promptMessages.push(dialog.message());
-      await dialog.accept(promptResponses.shift());
+    const resetRequests: string[] = [];
+    page.on('request', (request) => {
+      if (request.method() === 'POST' && request.url().endsWith(`/api/v2/admin/users/${MFA_ADMIN_USER_ID}/mfa/reset`)) {
+        resetRequests.push(request.postData() ?? '');
+      }
     });
-
     const resetRequestPromise = page.waitForRequest((request) =>
       request.method() === 'POST' && request.url().endsWith(`/api/v2/admin/users/${MFA_ADMIN_USER_ID}/mfa/reset`),
     );
     await resetMfaButton.click();
-    const resetRequest = await resetRequestPromise;
 
-    expect(promptMessages).toEqual([
-      `Type reset-mfa:${MFA_ADMIN_USER_ID} to clear MFA factors and revoke all sessions.`,
-      'Enter the support reason for this MFA recovery.',
-    ]);
-    expect(promptResponses).toHaveLength(0);
+    // Both steps are in-page AppMessages prompts (role="alertdialog"), validated in place.
+    const confirmDialog = page.getByRole('alertdialog', { name: 'Clear MFA factors?', exact: true });
+    await expect(confirmDialog).toHaveAccessibleDescription('This clears MFA factors and revokes all sessions.');
+    const confirmInput = confirmDialog.getByRole('textbox', { name: `Type ${confirmation} to confirm`, exact: true });
+    await confirmInput.fill('reset-mfa:wrong');
+    await confirmDialog.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(confirmDialog.getByRole('alert')).toHaveText(`Confirmation must exactly equal ${confirmation}.`);
+    await confirmInput.fill(confirmation);
+    await confirmDialog.getByRole('button', { name: 'Continue', exact: true }).click();
+    await expect(confirmDialog).toHaveCount(0);
+
+    const reasonDialog = page.getByRole('alertdialog', { name: 'Support reason', exact: true });
+    const reasonInput = reasonDialog.getByRole('textbox', { name: 'Enter the support reason for this MFA recovery', exact: true });
+    await reasonInput.fill('too short');
+    await reasonDialog.getByRole('button', { name: 'Clear MFA', exact: true }).click();
+    await expect(reasonDialog.getByRole('alert')).toHaveText('Recovery reason must contain at least 10 characters.');
+    expect(resetRequests).toHaveLength(0);
+    await reasonInput.fill(reason);
+    await reasonDialog.getByRole('button', { name: 'Clear MFA', exact: true }).click();
+    await expect(reasonDialog).toHaveCount(0);
+
+    const resetRequest = await resetRequestPromise;
     expect(resetRequest.postDataJSON()).toEqual({ confirmation, reason });
+    expect(resetRequests).toHaveLength(1);
     await expect(page.getByText('MFA factors cleared for E2E MFA Admin; all sessions were revoked.')).toBeVisible();
     await expect(resetMfaButton).toBeDisabled();
   });

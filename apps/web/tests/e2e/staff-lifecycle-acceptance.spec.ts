@@ -13,9 +13,12 @@ import { expect, test } from './qa-isolation-fixture';
 import { closeQaContexts } from './qa-context-cleanup';
 import { captureOriginalNativeResponse, consumeOriginalNativeJson, finishOriginalNativeCaptures } from './staff-native-response-capture';
 import {
-  csrfHeaders, e2eManagerPin, e2eManagerUsername, e2eStaffPin, e2eStaffUsername,
+  answerInPageConfirm, csrfHeaders, e2eManagerPin, e2eManagerUsername, e2eStaffPin, e2eStaffUsername,
   e2eTenantName, e2eTenantSlug, loginAsSeedAdmin, loginAsSeedManager, loginWithPin, runFullStack, seedTenant,
 } from './support';
+
+const DISCARD_IDENTITY = { title: 'Discard your edits?', confirmLabel: 'Discard' };
+const DISCARD_PROFILE = { title: 'Discard this draft?', confirmLabel: 'Discard and reload' };
 
 let currentStaffPin = e2eStaffPin;
 let errors: Array<{ kind: string; path: string; digest: string; expected: boolean }> = [];
@@ -182,12 +185,10 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
       const beforeSession = await me(staffPage); expect(beforeSession.publicUserId).toBe(original.id);
       const region = await editor(page, original.username);
       await region.getByLabel('Full name', { exact: true }).fill('Unsaved identity draft');
-      page.once('dialog', dialog => dialog.dismiss());
-      await region.getByRole('button', { name: 'Close identity editor', exact: true }).click();
+      await answerInPageConfirm(page, DISCARD_IDENTITY, false, () => region.getByRole('button', { name: 'Close identity editor', exact: true }).click());
       await expect(region.getByLabel('Full name', { exact: true })).toHaveValue('Unsaved identity draft');
       expect((await native<StaffMember>(page.request, `/api/v2/users/${original.id}`)).identityVersion).toBe(original.identityVersion);
-      page.once('dialog', dialog => dialog.accept());
-      await region.getByRole('button', { name: 'Reload saved identity', exact: true }).click();
+      await answerInPageConfirm(page, DISCARD_IDENTITY, true, () => region.getByRole('button', { name: 'Reload saved identity', exact: true }).click());
       await expect(region.getByLabel('Full name', { exact: true })).toHaveValue(original.name);
       await region.getByLabel('Full name', { exact: true }).fill('Staff One Renamed');
       await region.getByLabel('Username', { exact: true }).fill(renamed);
@@ -225,9 +226,9 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
     expect((await browserJson<ProblemDetails>(response)).code).toBe('staff_identity_conflict');
     await expect(region.getByLabel('Full name', { exact: true })).toHaveValue('Losing identity draft');
     expect(await native<StaffMember>(page.request, `/api/v2/users/${original.id}`)).toEqual(competitor);
-    page.once('dialog', dialog => dialog.dismiss()); await region.getByRole('button', { name: 'Reload saved identity', exact: true }).click();
+    await answerInPageConfirm(page, DISCARD_IDENTITY, false, () => region.getByRole('button', { name: 'Reload saved identity', exact: true }).click());
     await expect(region.getByLabel('Full name', { exact: true })).toHaveValue('Losing identity draft');
-    page.once('dialog', dialog => dialog.accept()); await region.getByRole('button', { name: 'Reload saved identity', exact: true }).click();
+    await answerInPageConfirm(page, DISCARD_IDENTITY, true, () => region.getByRole('button', { name: 'Reload saved identity', exact: true }).click());
     await expect(region.getByLabel('Full name', { exact: true })).toHaveValue(competitor.name);
     await proof(page, info, 'identity-real-version-conflict', { status: 409, code: 'staff_identity_conflict', winningVersionRetained: true });
     await region.getByLabel('Full name', { exact: true }).fill(original.name);
@@ -301,9 +302,9 @@ test.describe.serial('Proposed native Staff lifecycle acceptance', { tag: '@full
     expect(rejected.status()).toBe(409); expect((await browserJson<ProblemDetails>(rejected)).code).toBe('scheduling_profile_changed');
     await expect(profile).toContainText('Your draft is retained'); await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toBeVisible();
     expect(await native<StaffSchedulingProfile>(page.request, `/api/v2/users/${user.id}/scheduling-profile`)).toEqual(competitor);
-    page.once('dialog', confirmation => confirmation.dismiss()); await profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click();
+    await answerInPageConfirm(page, DISCARD_PROFILE, false, () => profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click());
     await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toBeVisible();
-    page.once('dialog', confirmation => confirmation.accept()); await profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click();
+    await answerInPageConfirm(page, DISCARD_PROFILE, true, () => profile.getByRole('button', { name: 'Reload saved profile', exact: true }).click());
     await expect(profile.getByRole('button', { name: 'Remove winning saved skill', exact: true })).toBeVisible();
     await expect(profile.getByRole('button', { name: 'Remove losing draft skill', exact: true })).toHaveCount(0);
     await proof(page, info, 'profile-native-version-conflict', { actualConflict: 409, persistedWindows: 1, persistedExceptions: 1, explicitReload: true });
