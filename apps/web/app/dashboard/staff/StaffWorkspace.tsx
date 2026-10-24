@@ -200,6 +200,8 @@ export function StaffWorkspace({ currentUserPublicId, creationRecoveryScope, can
             tone: action === 'remove' ? 'danger' : 'default',
         })) return;
         if (action === 'reset-pin') {
+            // A reset may have started while the confirmation was open.
+            if (pinResetInFlight.current) return;
             // Select the credential recipient on confirmation, never on a late response.
             setSchedulingProfileUser(user);
             void resetPin(user.id);
