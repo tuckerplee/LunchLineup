@@ -27,6 +27,7 @@ COPY --from=builder --chown=65532:65532 /opt/venv /opt/venv
 COPY --from=builder --chown=65532:65532 /app /app
 COPY --from=builder --chown=65532:65532 /run/lunchlineup-parser /run/lunchlineup-parser
 USER 65532:65532
+RUN ["/opt/venv/bin/python", "-c", "from zoneinfo import ZoneInfo; ZoneInfo('America/Los_Angeles'); ZoneInfo('UTC')"]
 ENTRYPOINT []
 
 EXPOSE 3003

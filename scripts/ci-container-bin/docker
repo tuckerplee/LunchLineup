@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+adapter="$(cd -- "$(dirname -- "$0")" && pwd)/podman"
+if [[ "${1:-}" == compose ]]; then
+  shift
+  args=()
+  development_compose=""
+  if [[ "${LUNCHLINEUP_DEVELOPMENT_QA:-}" == 1 && -n "${LUNCHLINEUP_DEV_COMPOSE:-}" ]]; then
+    development_compose="$RUNNER_TEMP/lunchlineup-beta-qualification-$CI_RUN_ID/development-compose.json"
+    [[ "$LUNCHLINEUP_DEV_COMPOSE" == "$development_compose" && -f "$development_compose" && ! -L "$development_compose" ]] || exit 64
+  fi
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--file)
+        file="${2:?}"
+        if [[ -n "$development_compose" && "$file" == "$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID/build/docker-compose.yml" ]]; then file="$development_compose"; fi
+        args+=("$1" "$file"); shift 2;;
+      --project-directory) cd -- "${2:?}"; shift 2;;
+      --project-directory=*) cd -- "${1#*=}"; shift;;
+      *) args+=("$1"); shift;;
+    esac
+  done
+  for argument in "${args[@]}"; do
+    if [[ "$argument" == config || "$argument" == version ]]; then
+      exec /usr/bin/docker-compose "${args[@]}"
+    fi
+  done
+  exec /usr/bin/podman-compose --podman-path "$adapter" --parallel 1 "${args[@]}"
+fi
+if [[ "${1:-}" == run ]]; then
+  shift
+  for argument in "$@"; do
+    if [[ "$argument" == --group-add || "$argument" == --group-add=* ]]; then
+      exec "$adapter" run "$@"
+    fi
+  done
+  exec "$adapter" run --group-add keep-groups "$@"
+fi
+exec "$adapter" "$@"

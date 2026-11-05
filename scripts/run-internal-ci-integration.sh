@@ -5,22 +5,25 @@ umask 077
 context=$2; workspace=$PWD; artifact_root="$workspace/.release/internal-ci/${CI_COMMIT_SHA:?}"; source_root="${RUNNER_TEMP:?}/lunchlineup-source-${CI_RUN_ID:?}"; build_root="$source_root/build"
 test "$context" = "$source_root/source-context.json"; node "$build_root/scripts/verify-internal-ci-source-clone.mjs" --proof "$artifact_root/source/source-proof.json" --clone "$build_root" --purpose build >/dev/null
 suffix="${CI_RUN_ID//[^a-zA-Z0-9]/}"; prefix="lunchlineup-integration-$suffix"; postgres="${prefix}-postgres"; redis="${prefix}-redis"; rabbitmq="${prefix}-rabbitmq"; output="$artifact_root/integration"; venv="$RUNNER_TEMP/lunchlineup-integration-venv-$CI_RUN_ID"; mkdir -p "$output" "$artifact_root/results" "$artifact_root/details"; started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-runtime_root=''; graph_root=''; container_run_root=''
+python3 "$build_root/scripts/check-internal-ci-target.py" integration
+runtime_root=''; graph_root=''; container_run_root=''; owns_store=false
 container(){ /usr/bin/podman --root "$graph_root" --runroot "$container_run_root" "$@"; }
-cleanup(){ if [[ -n "$graph_root" && -n "$container_run_root" ]]; then container rm -f "$postgres" "$redis" "$rabbitmq" >/dev/null 2>&1 || true; container system reset --force >/dev/null 2>&1 || true; fi; if [[ -n "$graph_root" && -e "$graph_root" && ! -L "$graph_root" ]]; then case "$graph_root" in "$RUNNER_TEMP"/*) rm -rf -- "$graph_root";; esac; fi; if [[ -n "$runtime_root" && -e "$runtime_root" && ! -L "$runtime_root" ]]; then case "$runtime_root" in /tmp/llr.*) rm -rf -- "$runtime_root";; esac; fi; }; trap cleanup EXIT
+cleanup(){ if [[ "$owns_store" == true && -n "$graph_root" && -n "$container_run_root" ]]; then container rm -f "$postgres" "$redis" "$rabbitmq" >/dev/null 2>&1 || true; container system reset --force >/dev/null 2>&1 || true; fi; if [[ "$owns_store" == true && -n "$graph_root" && -e "$graph_root" && ! -L "$graph_root" ]]; then case "$graph_root" in "$RUNNER_TEMP"/*) rm -rf -- "$graph_root";; esac; fi; if [[ -n "$runtime_root" && -e "$runtime_root" && ! -L "$runtime_root" ]]; then case "$runtime_root" in /tmp/llr.*) rm -rf -- "$runtime_root";; esac; fi; }; trap cleanup EXIT
 umask 022
 controller_runtime_root=$(realpath -e "${XDG_RUNTIME_DIR:?}")
 controller_private_root=$(realpath -e "$RUNNER_TEMP/..")
 case "$controller_runtime_root" in "$controller_private_root"/*) ;; *) echo 'Controller rootless runtime escaped the private run root.' >&2; exit 1;; esac
 runtime_root=$(mktemp -d /tmp/llr.XXXXXX)
 test ! -L "$runtime_root"; chmod 700 "$runtime_root"; export XDG_RUNTIME_DIR="$runtime_root"
-graph_root="$RUNNER_TEMP/lunchlineup-integration-containers-$CI_RUN_ID"; test ! -e "$graph_root"
+graph_root="$RUNNER_TEMP/lunchlineup-integration-containers-$CI_RUN_ID"; test ! -e "$graph_root"; mkdir -- "$graph_root"; owns_store=true
 container_run_root="$runtime_root/containers"
 rootless_netns="$container_run_root/networks/rootless-netns"
 case "$rootless_netns" in "$runtime_root"/*) ;; *) echo 'Rootless network runtime escaped XDG_RUNTIME_DIR.' >&2; exit 1;; esac
 container system migrate >/dev/null
 if [[ -e "$rootless_netns" || -L "$rootless_netns" ]]; then test ! -L "$rootless_netns"; rm -rf -- "$rootless_netns"; fi
-container rm -f "$postgres" "$redis" "$rabbitmq" >/dev/null 2>&1 || true
+for resource in "$postgres" "$redis" "$rabbitmq"; do
+  if container container exists "$resource"; then echo "Refusing pre-existing integration container: $resource" >&2; exit 1; fi
+done
 pg_password="pg_$(openssl rand -hex 24)"; app_password="app_$(openssl rand -hex 24)"; mq_password="mq_$(openssl rand -hex 24)"
 container run -d --name "$postgres" --network slirp4netns:port_handler=slirp4netns -p 127.0.0.1::5432 -e POSTGRES_USER=root -e POSTGRES_PASSWORD="$pg_password" -e POSTGRES_DB=lunchlineup_test postgres:16-alpine@sha256:cf78e76683b9ca8c5733cbbdce6c9262b45b6767934dd0a95e671f9a0fc20685 >/dev/null
 container run -d --name "$redis" --network slirp4netns:port_handler=slirp4netns -p 127.0.0.1::6379 redis:7-alpine@sha256:e7723ff73d963f5cc6d9c4643ea3d989527a402a319239054e9472a7fb9219a2 >/dev/null

@@ -13,6 +13,7 @@ import {
     resolveTrustProxy,
     validateProductionEnvironment,
 } from './common/bootstrap-security';
+import { StripeExceptionFilter } from './billing/stripe-exception.filter';
 import { ProductionExceptionFilter } from './common/production-exception.filter';
 import { installProcessShutdownDeadline } from './common/shutdown-deadline';
 
@@ -52,6 +53,8 @@ async function bootstrap() {
     if (isProduction()) {
         app.useGlobalFilters(new ProductionExceptionFilter());
     }
+
+    app.useGlobalFilters(new StripeExceptionFilter());
 
     // 4. Security Headers (redundant but safe if Caddy is bypassed)
     app.enableCors(buildCorsOptions());

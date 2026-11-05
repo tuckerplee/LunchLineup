@@ -6,6 +6,12 @@ import {
 } from '../../../app/dashboard/payroll/payroll-normalize';
 
 describe('payroll service response normalization', () => {
+  it('preserves the absence of a policy so a new workspace can initialize payroll', () => {
+    expect(normalizePayrollPolicyEnvelope({ data: null })).toBeNull();
+    expect(normalizePayrollPolicyEnvelope({ policy: null })).toBeNull();
+    expect(normalizePayrollPolicyEnvelope(null)).toBeNull();
+  });
+
   it('reads the current immutable policy from the direct data envelope', () => {
     expect(normalizePayrollPolicyEnvelope({ data: {
       id: 'policy-1', version: 1, timeZone: 'America/Los_Angeles', cadence: 'BIWEEKLY',

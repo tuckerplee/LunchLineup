@@ -3,6 +3,7 @@
 import type { CSSProperties, KeyboardEvent } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { fetchJsonWithSession, fetchWithSession } from '@/lib/client-api';
+import { generalSettingsRequest, teamSettingsRequest } from './settings-request';
 import { BillingSettingsPanel } from './BillingSettingsPanel';
 import { AccountLifecyclePanel } from './AccountLifecyclePanel';
 import { MfaEnrollmentPanel } from './MfaEnrollmentPanel';
@@ -357,12 +358,7 @@ export function SettingsWorkspace({
         setGeneralSaving(true);
         setGeneralNotice(null);
         try {
-            await writeJson('/settings/general', {
-                organizationName,
-                name: organizationName,
-                slug,
-                timezone: generalForm.timezone,
-            });
+            await writeJson('/settings/general', generalSettingsRequest(generalForm));
             setGeneralNotice({ tone: 'success', text: 'General settings saved.' });
         } catch (error) {
             setGeneralNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to save general settings.' });
@@ -379,11 +375,7 @@ export function SettingsWorkspace({
         setTeamSaving(true);
         setTeamNotice(null);
         try {
-            await writeJson('/settings/team', {
-                defaultRole: teamForm.defaultRole,
-                defaultInviteRole: teamForm.defaultRole,
-                shiftApprovalPolicy: teamForm.shiftApprovalPolicy,
-            });
+            await writeJson('/settings/team', teamSettingsRequest(teamForm));
             setTeamNotice({ tone: 'success', text: 'Team settings saved.' });
         } catch (error) {
             setTeamNotice({ tone: 'error', text: error instanceof Error ? error.message : 'Unable to save team settings.' });
@@ -713,7 +705,7 @@ export function SettingsWorkspace({
                                 ).map((setting) => (
                                     <label
                                         key={setting.key}
-                                        className="surface-muted"
+                                        className="surface-muted security-toggle"
                                         style={{
                                             padding: '0.8rem 0.9rem',
                                             display: 'flex',
@@ -738,6 +730,7 @@ export function SettingsWorkspace({
                                                 setSecurityForm((current) => ({ ...current, [setting.key]: event.target.checked } as SecurityFormState))
                                             }
                                             disabled={!canMutateSettings}
+                                            aria-label={setting.label}
                                             style={{ position: 'absolute', opacity: 0, pointerEvents: 'none' }}
                                         />
                                         <div
@@ -839,7 +832,12 @@ export function SettingsWorkspace({
                     )}
                 </div>
             </section>
-
+            <style jsx global>{`
+                .security-toggle:has(input:focus-visible) {
+                    outline: 3px solid #2f63ff;
+                    outline-offset: 3px;
+                }
+            `}</style>
         </div>
     );
 }

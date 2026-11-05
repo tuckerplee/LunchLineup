@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { CalendarClock, RotateCcw, Trash2, UserMinus, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { fetchWithSession } from '@/lib/client-api';
+import { fetchWithSession, idempotentRequestAttempt, withIdempotencyKey, type IdempotentRequestAttempt } from '@/lib/client-api';
 import {
     continuationCursor,
     type UserDirectoryPageMetadata,
@@ -13,6 +13,8 @@ import { buildStaffActionConfirmation, type StaffAction } from './staff-action-c
 import { buildRoleDeletionConfirmation, canConfirmRoleDeletion } from './role-deletion-confirmation';
 import { AddTeamMemberForm, type AddTeamMemberResult } from './AddTeamMemberForm';
 import { InvitationDeliveryStatus } from './InvitationDeliveryStatus';
+import { StaffLifecyclePanel } from './StaffLifecyclePanel';
+import { StaffIdentityEditor } from './StaffIdentityEditor';
 import { StaffSchedulingProfileEditor } from './StaffSchedulingProfileEditor';
 import {
     resolveEmailInvitationAvailability,
@@ -50,6 +52,7 @@ type ApiUser = {
     role: 'SUPER_ADMIN' | 'ADMIN' | 'MANAGER' | 'STAFF';
     pinEnabled?: boolean;
     pinResetRequired?: boolean;
+    suspendedAt?: string | null;
     assignedRoles: AssignedRole[];
 };
 
@@ -108,10 +111,10 @@ function jsonWriteInit(method: 'POST' | 'PUT' | 'DELETE', payload?: unknown): Re
         method,
         credentials: 'include',
         headers: {
-            'Content-Type': 'application/json',
+            ...(payload !== undefined ? { 'Content-Type': 'application/json' } : {}),
             ...(csrfToken ? { 'x-csrf-token': csrfToken } : {}),
         },
-        ...(payload ? { body: JSON.stringify(payload) } : {}),
+        ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
     };
 }
 
@@ -153,7 +156,7 @@ function toStaffUsers(users: ApiUser[]): StaffUser[] {
     return users.map((user) => ({
         ...user,
         assignedRoles: user.assignedRoles ?? [],
-        status: 'active' as const,
+        status: user.suspendedAt ? 'inactive' as const : 'active' as const,
     }));
 }
 
@@ -320,13 +323,17 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         setEditorPermissionKeys([]);
     }, []);
 
+    const [identityUserId, setIdentityUserId] = useState<string | null>(null);
+    const inviteAttempt = useRef<IdempotentRequestAttempt | null>(null);
+
     const inviteUser = useCallback(async (
         invitation: StaffInvitationPayload,
         method: StaffOnboardingMethod,
     ): Promise<AddTeamMemberResult> => {
         setLastInvitationUserId(null);
         try {
-            const res = await fetchWithSession('/users/invite', jsonWriteInit('POST', invitation));
+            inviteAttempt.current = idempotentRequestAttempt(invitation, inviteAttempt.current);
+            const res = await fetchWithSession('/users/invite', withIdempotencyKey(jsonWriteInit('POST', invitation), inviteAttempt.current.key));
             const payload = (await res.json().catch(() => ({}))) as {
                 id?: unknown;
                 temporaryPin?: string;
@@ -342,6 +349,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             }
 
             await loadWorkspace();
+            inviteAttempt.current = null;
             return { temporaryPin: payload.temporaryPin ?? null };
         } catch (err) {
             throw err instanceof Error ? err : new Error('Failed to create staff member.');
@@ -413,15 +421,18 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         setLastTemporaryPin(null);
         setLastTemporaryPinUserId(null);
         try {
-            const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST'));
+            const res = await fetchWithSession(`/users/${id}/pin/reset`, jsonWriteInit('POST', {}));
             const payload = (await res.json().catch(() => ({}))) as { temporaryPin?: string; username?: string; message?: string };
             if (!res.ok) throw new Error(payload.message ?? 'Failed to reset PIN.');
             setUsers((prev) => prev.map((u) => (
                 u.id === id ? { ...u, username: payload.username ?? u.username, pinEnabled: true, pinResetRequired: true } : u
             )));
-            setSchedulingProfileUser((current) => current?.id === id
-                ? { ...current, username: payload.username ?? current.username, pinEnabled: true, pinResetRequired: true }
-                : current);
+            setSchedulingProfileUser((current) => {
+                const target = current?.id === id ? current : users.find((user) => user.id === id);
+                return target
+                    ? { ...target, username: payload.username ?? target.username, pinEnabled: true, pinResetRequired: true }
+                    : current;
+            });
             setLastTemporaryPin(payload.temporaryPin ?? null);
             setLastTemporaryPinUserId(id);
         } catch (err) {
@@ -429,9 +440,9 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
         } finally {
             setIsSaving(null);
         }
-    }, []);
+    }, [users]);
 
-    const deactivate = useCallback(async (id: string) => {
+    const removeStaff = useCallback(async (id: string) => {
         setIsSaving(id);
         setError(null);
         try {
@@ -455,8 +466,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
             void resetPin(user.id);
             return;
         }
-        void deactivate(user.id);
-    }, [deactivate, pendingAction, resetPin]);
+        void removeStaff(user.id);
+    }, [removeStaff, pendingAction, resetPin]);
 
     const saveRole = useCallback(async () => {
         if (!editorName.trim()) {
@@ -634,7 +645,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                         </div>
                                         <div>
                                             <div style={{ fontWeight: 700, fontSize: '0.88rem', color: 'var(--text-primary)' }}>{user.name}</div>
-                                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{user.role}</div>
+                                            <div style={{ fontSize: '0.74rem', color: 'var(--text-muted)' }}>{user.role} · {user.status === 'inactive' ? 'Inactive' : 'Active'}</div>
                                         </div>
                                     </div>
                                 </td>
@@ -727,6 +738,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                 {canAdminister || canManageSchedulingProfiles ? (
                                     <td style={{ padding: '0.86rem 1rem' }}>
                                         <div style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                                            {canAdminister && user.id !== currentUserPublicId ? <Button size="sm" variant="outline" onClick={() => setIdentityUserId(user.id)}>Edit identity</Button> : null}
                                             {canManageSchedulingProfiles ? (
                                                 <Button size="sm" variant="outline" onClick={() => setSchedulingProfileUser(user)}>
                                                     <CalendarClock aria-hidden="true" size={14} />
@@ -742,7 +754,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                             {canAdminister && user.id !== currentUserPublicId ? (
                                                 <Button size="sm" variant="outline" onClick={() => setPendingAction({ action: 'remove', user })} disabled={isSaving === user.id}>
                                                     <UserMinus aria-hidden="true" size={14} />
-                                                    {isSaving === user.id ? 'Removing...' : 'Remove'}
+                                                    {isSaving === user.id ? 'Removing...' : 'Remove permanently'}
                                                 </Button>
                                             ) : null}
                                         </div>
@@ -898,6 +910,14 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                             ) : null}
 
                             {canAdminister && schedulingProfileUser.id !== currentUserPublicId ? (
+                                <StaffLifecyclePanel key={schedulingProfileUser.id} userId={schedulingProfileUser.id} onChanged={(saved) => {
+                                    const updated = toStaffUsers([saved])[0];
+                                    setUsers(current => current.map(user => user.id === updated.id ? updated : user));
+                                    setSchedulingProfileUser(current => current?.id === updated.id ? updated : current);
+                                }} />
+                            ) : null}
+
+                            {canAdminister && schedulingProfileUser.id !== currentUserPublicId ? (
                                 <div className="staff-profile-drawer__account-actions">
                                     {!schedulingProfileUser.email ? (
                                         <Button
@@ -917,7 +937,7 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                                         disabled={isSaving === schedulingProfileUser.id}
                                     >
                                         <UserMinus aria-hidden="true" size={14} />
-                                        Remove
+                                        Remove permanently
                                     </Button>
                                 </div>
                             ) : null}
@@ -1069,6 +1089,8 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                 </section>
             ) : null}
 
+            {identityUserId ? <StaffIdentityEditor key={identityUserId} userId={identityUserId} onClose={() => setIdentityUserId(null)} onSaved={loadWorkspace} /> : null}
+
             {pendingAction ? (() => {
                 const confirmation = buildStaffActionConfirmation(pendingAction.action, pendingAction.user);
                 return (
@@ -1121,6 +1143,13 @@ export function StaffWorkspace({ currentUserPublicId, canInvite, canAdminister, 
                             aria-describedby="role-deletion-description"
                             onKeyDown={(event) => {
                                 if (event.key === 'Escape') setPendingRoleDeletion(null);
+                                if (event.key === 'Tab') {
+                                    const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled])'));
+                                    const first = controls[0];
+                                    const last = controls[controls.length - 1];
+                                    if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+                                    else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+                                }
                             }}
                         >
                             <div>

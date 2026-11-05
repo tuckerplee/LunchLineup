@@ -177,4 +177,11 @@ describe('assertTenantCanAddActiveUser', () => {
             .rejects
             .toThrow(/tenant-1 has 12 active users/i);
     });
+
+    it('allows editing a catalog-only plan that cannot have tenant assignments', async () => {
+        const prisma = buildPrismaMock();
+        await expect(assertPlanUserLimitChangeAllowsExistingTenants(prisma as any, 'QA-COVERAGE', 10))
+            .resolves.toBeUndefined();
+        expect(prisma.tenant.findMany).not.toHaveBeenCalled();
+    });
 });

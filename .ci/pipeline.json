@@ -23,7 +23,7 @@
   "steps": [
     {
       "name": "Materialize and verify exact candidate source",
-      "run": "set -euo pipefail; node scripts/materialize-internal-ci-source.mjs --artifact-root \"$PWD/.release/internal-ci/$CI_COMMIT_SHA\" --run-root \"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID\"",
+      "run": "set -euo pipefail; python3 scripts/check-internal-ci-storage.py; node scripts/materialize-internal-ci-source.mjs --artifact-root \"$PWD/.release/internal-ci/$CI_COMMIT_SHA\" --run-root \"$RUNNER_TEMP/lunchlineup-source-$CI_RUN_ID\"",
       "timeout_seconds": 600
     },
     {
